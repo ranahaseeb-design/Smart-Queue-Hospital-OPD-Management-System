@@ -1,0 +1,37 @@
+name: smart_opd
+description: >-
+  Smart OPD patient app - remote OPD tokens, live queue tracking, AI waiting-time
+  estimates, branch recommendations, appointments, history and feedback.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  # Dart 3.4+ (Flutter 3.22 or newer): socket_io_client 3.1.x needs it.
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # REST calls with the backend-issued JWT (docs/API_CONTRACT.md).
+  http: ^1.2.1
+  # ChangeNotifier-based state (AuthState, TokenState, NotificationState).
+  provider: ^6.1.2
+  # Keeps the JWT and cached profile between launches (FR-01).
+  shared_preferences: ^2.2.3
+  # Live queue updates (FR-05). The backend runs socket.io ^4.8; according to
+  # the package's compatibility table the 2.x client only supports servers
+  # v3.x - v4.6.x and the 3.x client is the one for v4.7+. The API used here
+  # (io(), OptionBuilder, setAuth, onConnect, emit, dispose) is the same.
+  socket_io_client: ^3.1.2
+  # Optional patient location for branch distance (FR-08), asked on demand.
+  # 13.x and 14.x share the API used in lib/services/location_service.dart.
+  geolocator: '>=13.0.1 <15.0.0'
+  intl: '>=0.19.0 <0.21.0'
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

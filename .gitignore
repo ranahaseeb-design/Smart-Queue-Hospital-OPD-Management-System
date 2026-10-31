@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+*.log
+backend/data/*.db
+backend/data/*.db-*
+__pycache__/
+*.pyc
+.venv/
+ai-service/models/*.joblib
+.pytest_cache/
+mobile_app/.dart_tool/
+mobile_app/build/
+mobile_app/.flutter-plugins*
+mobile_app/.packages
+mobile_app/pubspec.lock

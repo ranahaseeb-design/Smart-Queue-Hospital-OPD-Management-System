@@ -1,0 +1,231 @@
+# Smart OPD — Backend API
+
+Node.js + Express REST API and Socket.IO real-time channel of the *Smart Digital Queue Management
+System for Hospital OPD with AI-Based Waiting Time Prediction and Branch Recommendation*.
+
+- REST under `http://localhost:4000/api`, Socket.IO on the same port.
+- The shared contract is [`docs/API_CONTRACT.md`](../docs/API_CONTRACT.md); every endpoint, JSON
+  shape and socket event in it is implemented here.
+- Canonical database schema: [`database/schema.mysql.sql`](../database/schema.mysql.sql).
+  `src/db/schema.sqlite.sql` mirrors it table for table and column for column for development.
+
+Stack: Node ≥ 22.13 (developed on Node 24), Express 4, socket.io 4, jsonwebtoken, bcryptjs,
+mysql2/promise, built-in `node:sqlite`, cors, dotenv, morgan, nodemailer (optional channel),
+CommonJS. Tests use `node:test`, supertest and socket.io-client.
+
+---
+
+## Quick start (SQLite, zero install)
+
+```bash
+cd backend
+npm install
+cp .env.example .env        # optional: the defaults work without it
+npm run seed                # drop + recreate data/smart_opd.db with ~60 days of demo history (~15-30 s)
+npm start                   # http://localhost:4000/api/health
+```
+
+`npm run dev` starts the same server with `node --watch`.
+
+The AI service (`ai-service/`, port 8000) reads the same SQLite file by default
+(`DATABASE_URL=sqlite:///../backend/data/smart_opd.db`). The backend works without it (see
+[AI fallback behaviour](#ai-service-and-fallback-behaviour)).
+
+## Production (MySQL 8)
+
+```bash
+# backend/.env
+DB_CLIENT=mysql
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=opd_user
+DB_PASSWORD=...
+DB_NAME=smart_opd
+JWT_SECRET=<long random string>        # mandatory when NODE_ENV=production
+NODE_ENV=production
+DEMO_ALWAYS_OPEN=false
+```
+
+- `npm run db:init` creates the schema from `../database/schema.mysql.sql` if it does not exist
+  (the database name is adjusted to `DB_NAME`), and writes the default settings.
+- `npm run seed` **drops the database `DB_NAME`** and recreates it with demo data — development only.
+- The MySQL adapter uses a `mysql2` pool with `dateStrings` (DATETIME values stay hospital local
+  time strings, exactly like SQLite) and `SELECT … FOR UPDATE` row locks inside transactions.
+
+All SQL is portable between MySQL 8 and SQLite: `?` placeholders, every date computed in JS
+(no `NOW()`/`DATE()`), no `ON DUPLICATE KEY`/`INSERT OR`, booleans as 0/1, JSON stored as strings.
+Datetimes are stored as local `YYYY-MM-DD HH:mm:ss` (`TZ`, default `Asia/Karachi`) and serialised
+in the API as `YYYY-MM-DDTHH:mm:ss` without a zone suffix.
+
+> The automated tests and the smoke tests were run on SQLite. The MySQL driver is written against
+> the canonical schema but has not been exercised against a live MySQL server in this repository.
+
+---
+
+## Scripts
+
+| Script | What it does |
+|---|---|
+| `npm start` | API + Socket.IO + scheduled jobs (`src/server.js`) |
+| `npm run dev` | Same with `node --watch` |
+| `npm run db:init` | Create the schema for the configured driver if missing (+ default settings) |
+| `npm run seed` | **Drop**, recreate and fill the database with demo data (honours `SQLITE_PATH` / `DB_*`, `SEED_HISTORY_DAYS`) |
+| `npm test` | Full test suite (`node --test`), each file on its own temporary SQLite database |
+
+Tests write their temporary databases to `$TEST_TMPDIR` (or the OS temp directory) and delete them
+afterwards. They need no running services: the AI service is replaced by a closed port or by a fake
+HTTP server inside the test.
+
+## Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `4000` | HTTP + Socket.IO port |
+| `TZ` | `Asia/Karachi` | Hospital time zone for every stored/served datetime |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:5174` (+ `127.0.0.1` variants) | Allowed browser origins (`*` = any). Requests without `Origin` (mobile app, curl) are always allowed |
+| `JWT_SECRET` | dev-only fallback | JWT signing secret; **required** with `NODE_ENV=production` |
+| `JWT_EXPIRES_IN` | `7d` | Token lifetime |
+| `BCRYPT_ROUNDS` | `10` | Password hashing cost |
+| `DB_CLIENT` | `sqlite` | `sqlite` or `mysql` |
+| `SQLITE_PATH` | `data/smart_opd.db` | SQLite file (relative to `backend/`) |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | `localhost`, `3306`, `root`, empty, `smart_opd` | MySQL connection |
+| `AI_SERVICE_URL` | `http://localhost:8000` | Internal AI service; empty = disabled |
+| `AI_TIMEOUT_MS` | `1500` | Timeout of prediction / ranking calls |
+| `AI_JOB_TIMEOUT_MS` | `120000` | Timeout of the forecast job and model retraining proxies |
+| `DEMO_ALWAYS_OPEN` | `false` (`.env.example`: `true`) | Ignore the clock for `acceptingNow` (a schedule for the weekday is still required) |
+| `JOBS_ENABLED` | `true` (false in tests) | Background jobs |
+| `AUTO_SEED` | `false` | Seed automatically when the server starts on an empty database |
+| `SEED_HISTORY_DAYS` | `60` | Days of synthetic history generated by the seed |
+| `LOG_REQUESTS` | `true` (false in tests) | morgan request log |
+| `FIREBASE_SERVICE_ACCOUNT` | empty | Path to / inline JSON of a Firebase service account → push notifications (requires `npm install firebase-admin`, not a default dependency) |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | empty / `587` / `false` | E-mail notifications via nodemailer (disabled while `SMTP_HOST` is empty) |
+
+---
+
+## Seed / demo accounts
+
+| Role | Login | Password |
+|---|---|---|
+| Hospital Admin | `admin@opd.test` | `Admin@123` |
+| Branch Admin (branch 1, Model Town) | `branchadmin@opd.test` | `Admin@123` |
+| Doctors (one OPD room each) | `doctor1@opd.test` … `doctor28@opd.test` | `Staff@123` |
+| Lab staff (Model Town lab counter) | `lab1@opd.test` | `Staff@123` |
+| Pharmacy staff (Model Town pharmacy counter) | `pharmacy1@opd.test` | `Staff@123` |
+| Patient | `patient@opd.test` or phone `03001234567` | `Patient@123` |
+
+What `npm run seed` generates (`src/db/seed.js`):
+
+- **Branches** (Lahore): Model Town (31.4834, 74.3255), Gulberg (31.5204, 74.3587), DHA (31.4697, 74.4091).
+- **Departments**: Model Town — General Medicine, Cardiology, Pediatrics, ENT, Orthopedics;
+  Gulberg — General Medicine, Cardiology, Dermatology, Pediatrics; DHA — General Medicine,
+  Cardiology, Orthopedics, Dermatology, ENT. Two doctors per department (`doctor1` = Model Town
+  General Medicine), one OPD room per doctor, one LAB and one PHARMACY counter per branch.
+- **Schedules** Monday–Sunday: every doctor works one session a day, alternating between
+  08:00–14:00 and 14:00–22:00 (the two doctors of a department are on opposite shifts), max 40 patients.
+- **Staff assignments**: each doctor → own room; `lab1` / `pharmacy1` → the Model Town counters.
+- **~60 days of synthetic history** (every token `is_synthetic = 1`), produced by a discrete-event
+  simulation of each room and counter: morning and Monday peaks, consultation times scattered around
+  each doctor's own average, elderly / differently-abled patients (priority 1), emergencies
+  (`PRIORITY_SET` → 2), skips and recalls, cancellations, appointment check-ins, linked LAB/PHARMACY
+  tokens, end-of-day no-shows, all matching `queue_events`, feedback on ~30 % of completed visits and
+  one `wait_predictions` row per token (`model_version = 'baseline'`). Doctors'
+  `avg_consult_minutes` evolve day by day exactly like the nightly job (rolling mean of the last 30
+  consultations).
+- `features_json` of every synthetic prediction is what the live feature builder would have stored
+  at issue time: `src/db/history.js` replays each day "as of" every token's issue instant through
+  the same `featureBuilder` functions, and `test/seed.test.js` proves the replay reproduces live
+  API predictions exactly (so the AI service trains on realistic, consistent features).
+- **Today**: 5 WAITING tokens of synthetic patients (3 in doctor1's room, 2 in Gulberg General
+  Medicine) so the dashboards are not empty, plus baseline forecasts for the next 7 days.
+- `patient@opd.test` (priority NONE) has one past completed visit without feedback.
+
+About 1,500 synthetic patients exist (phone-only accounts with an unusable random password).
+
+---
+
+## Module map (Section 4.2.4 → requirements)
+
+| Module | Files | Requirements |
+|---|---|---|
+| Bootstrap | `src/app.js` (Express, CORS, errors), `src/server.js` (HTTP + Socket.IO + jobs), `src/config.js` | NFR-02, NFR-04 |
+| Auth | `routes/auth.js`, `services/userService.js`, `middleware/auth.js` (JWT, role guard), `services/accessService.js` (branch scoping, service-point assignment) | FR-01, Section 3.2 |
+| Browse | `routes/browse.js`, `services/scheduleService.js` (sessions, `acceptingNow`) | FR-02 |
+| Queue & tokens | `services/queueService.js`, `routes/tokens.js`, `routes/staff.js` — numbering per service point per day, order `priority DESC, issued_at ASC`, transitions, `queue_events` in the same transaction, re-prediction after every change, `recentlyCompleted` | FR-03, FR-05, FR-12, FR-13, FR-21 |
+| Linked tokens | `queueService.issueLinkedToken`, `POST /visits/:id/linked-tokens` | FR-04 |
+| Prediction | `services/featureBuilder.js` (Section 6.3 features, Eq. 6.2 baseline, Eq. 6.4/6.5), `services/predictionService.js`, `services/aiClient.js` | FR-06, FR-07 |
+| Recommendations | `services/recommendationService.js` (Eq. 6.3, haversine, reasons; location never stored) | FR-08, FR-09 |
+| Appointments | `services/appointmentService.js` (slots from schedule, no double booking, reschedule, cancel, check-in → token) | FR-10 |
+| Notifications | `services/notificationService.js` (IN_APP row + socket always; PUSH / EMAIL optional) | FR-11 |
+| Visits & feedback | `routes/patient.js` | FR-19, FR-20 |
+| Administration | `routes/admin.js`, `services/adminService.js` (CRUD + soft deactivate + scoping) | FR-14 |
+| Analytics | `services/analyticsService.js` (dashboard, alerts, 5 reports + CSV, workload & resource recommendations, feedback summary), `services/forecastService.js` | FR-15, FR-16, FR-17, FR-18, FR-20 |
+| Settings | `services/settingsService.js` | FR-09, FR-10, FR-11, FR-17 |
+| Model management | `aiClient.listModels / retrain / activate` behind `/admin/models*` | FR-22 |
+| Real-time | `services/realtime.js` | FR-05, NFR-01 |
+| Jobs | `src/jobs.js` | FR-07, FR-17 |
+| Database | `src/db/index.js` (adapter factory), `sqlite.js`, `mysql.js`, `schema.sqlite.sql`, `init.js`, `seed.js`, `history.js` | Section 4.9 |
+
+Every status change writes its `queue_events` row inside the same DB transaction as the token
+update (FR-21). Afterwards the affected queue is re-predicted (FR-07), patients are notified (the
+called patient, those within `notifyPositionsAhead` positions, large estimate changes — FR-11) and
+socket events are emitted: `queue:updated` to `sp:<id>` + `admin`, `token:updated` for every
+token whose position or estimate changed, `notification` to `user:<id>`, and `alert` when a
+department's live congestion escalates to HIGH/CRITICAL.
+
+### Scheduled jobs (`src/jobs.js`)
+
+- **Hourly**: forecast refresh (AI `/ai/jobs/forecast`, else the JS seasonal baseline), then
+  `alert` events for HIGH/CRITICAL forecasts of the coming hour. Also once at start-up when no
+  forecast covers the current hour.
+- **Once per day** (checked every minute and at start-up): end-of-day closure — unserved
+  WAITING/CALLED/SKIPPED tokens of past days → NO_SHOW (with events), past BOOKED appointments →
+  NO_SHOW, past OPEN visits → CLOSED — and refresh of `doctors.avg_consult_minutes` (rolling mean of
+  each doctor's last 30 completed consultations).
+
+### Real-time channel
+
+```js
+const socket = io('http://localhost:4000', { auth: { token: jwt } });   // joins user:<id>
+socket.emit('subscribe', { room: 'sp:3' }, (ack) => console.log(ack));  // { ok: true, room: 'sp:3' }
+socket.on('queue:updated', ({ servicePointId, branchId }) => refetchQueue());
+```
+
+Allowed rooms: `token:<id>` (owner, staff of the branch, admins of the branch), `sp:<id>`
+(assigned staff, admins of the branch), `admin` (administrators; a branch admin only receives events
+of their branch). Rejected subscriptions are acknowledged with `{ ok: false, error }`.
+
+---
+
+## AI service and fallback behaviour
+
+The backend talks to the internal FastAPI service (`AI_SERVICE_URL`) and never depends on it:
+
+| Use | AI call | Fallback (silent) |
+|---|---|---|
+| Waiting-time prediction for every WAITING token of an affected queue, and the hypothetical "join now" estimate shown when browsing doctors | `POST /ai/predict-wait` with the 14 contract feature keys, 1.5 s timeout | Eq. 6.2 baseline `W = (patients_ahead + priority_ahead) × doctor_avg_consult + minutes_to_start` (`model_version = 'baseline'`) |
+| Branch ranking | `POST /ai/rank-branches` | Same Eq. 6.3 scoring in JS (min-max normalisation; without location the distance weight is redistributed) |
+| Forecasts (`POST /admin/forecasts/run`, hourly job) | `POST /ai/jobs/forecast` | JS seasonal baseline: mean arrivals at the same weekday + hour over the last 4 weeks, capacity from schedules and average consultation time, levels from the settings thresholds, `is_peak` above the 80th percentile, next 7 days |
+| Model list / retrain / activate | proxied | `503 AI_UNAVAILABLE` |
+
+Every prediction (AI or baseline) is bounded (non-negative, at most the session end + 60 min) and
+stored in `wait_predictions` with its `features_json`; the first prediction of each token joined
+with its actual wait (`called_at − issued_at`) is the AI training set. After a network failure or
+timeout a 15-second circuit breaker skips further AI calls so requests never wait repeatedly.
+`GET /api/health` reports `ai: true` when the AI service answers its `/health`.
+
+---
+
+## Design notes
+
+- **Errors** always have the contract shape `{ "error": { "code", "message" } }` with
+  `VALIDATION_ERROR` 400, `UNAUTHORIZED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409,
+  `AI_UNAVAILABLE` 503 (unexpected failures: 500 `INTERNAL_ERROR`). All input is validated server-side
+  (`src/utils/validate.js`); `password_hash` is never serialised.
+- **Concurrency**: SQLite transactions are serialised by the adapter; on MySQL the service point /
+  doctor row is locked (`FOR UPDATE`) while numbering tokens, calling the next patient or booking a
+  slot, so numbers stay unique and slots cannot be double-booked.
+- **SQLite indexes**: InnoDB indexes every foreign-key column automatically; `schema.sqlite.sql`
+  creates the same indexes explicitly so both drivers have the same access paths.
+- **Additive response fields** beyond the contract (clients may ignore them): `TokenDetail.appointmentId`,
+  `recentlyCompleted[].completedAt`, `User.createdAt` / `adminBranchName` (admin lists),
+  `branchName` / `isActive` on several admin rows, `aiActiveModel` on `/health`.
