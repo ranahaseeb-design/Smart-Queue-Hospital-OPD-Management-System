@@ -19,6 +19,9 @@ from sqlalchemy import text
 from app import db
 from app.config import settings
 from app.predictor import registry
+from app.security import TOKEN_HEADER
+
+TEST_SERVICE_TOKEN = "test-ai-service-token"
 
 SQLITE_SCHEMA = [
     """CREATE TABLE users (
@@ -78,6 +81,8 @@ def engine(tmp_path):
     settings.search_iter = 2  # keep the hyperparameter search quick in tests
     settings.n_jobs = 1  # single-threaded forests -> bit-for-bit reproducible predictions
     settings.min_training_rows = 200
+    settings.ai_service_token = TEST_SERVICE_TOKEN
+    settings.allow_unauthenticated = False
     eng = db.reset_engine("sqlite://")
     with eng.begin() as conn:
         for statement in SQLITE_SCHEMA:
@@ -85,13 +90,23 @@ def engine(tmp_path):
     registry.invalidate()
     yield eng
     registry.invalidate()
-    for name in ("database_url", "models_dir", "search_iter", "n_jobs", "min_training_rows", "forecast_lookback_days"):
+    for name in ("database_url", "models_dir", "search_iter", "n_jobs", "min_training_rows", "forecast_lookback_days",
+                 "ai_service_token", "allow_unauthenticated"):
         setattr(settings, name, getattr(original, name))
     db.reset_engine(original.database_url)
 
 
 @pytest.fixture
 def client(engine):
+    from app.main import app
+
+    with TestClient(app, headers={TOKEN_HEADER: TEST_SERVICE_TOKEN}) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def anon_client(engine):
+    """Client WITHOUT the X-AI-Service-Token header."""
     from app.main import app
 
     with TestClient(app) as test_client:

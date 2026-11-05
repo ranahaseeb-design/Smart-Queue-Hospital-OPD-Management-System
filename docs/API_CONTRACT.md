@@ -181,6 +181,8 @@ Server → client events (clients just re-fetch the relevant REST resource):
 
 ## Internal AI service (FastAPI, port 8000) — backend only (`AI_SERVICE_URL`)
 
+Authentication: every `/ai/*` request carries the header `X-AI-Service-Token: <AI_SERVICE_TOKEN>` (the same shared secret is configured on the backend and the AI service). Missing/wrong token → 401; if the AI service has no `AI_SERVICE_TOKEN` configured it answers 503 (unless `AI_ALLOW_UNAUTHENTICATED=true`, local development only). `GET /health` needs no token.
+
 Feature vector (Section 6.3), keys exactly:
 `patients_ahead, priority_ahead, doctor_avg_consult, doctor_recent_consult, interruptions_last_hour, session_started (0/1), minutes_to_start, hour_of_day, day_of_week (1-7), appointments_ahead, department_load, doctor_id, department_id, branch_id`.
 The backend stores this object as `wait_predictions.features_json` for every prediction; the first prediction of each token joined with its actual wait (`called_at − issued_at`) is the training set.

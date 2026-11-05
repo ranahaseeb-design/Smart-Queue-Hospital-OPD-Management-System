@@ -24,6 +24,8 @@ const ACCOUNTS = Object.freeze({
 
 /** Closed local port: connections are refused immediately (AI service "down"). */
 const AI_DOWN_URL = 'http://127.0.0.1:9';
+/** Shared secret the backend sends to the (fake) AI service as X-AI-Service-Token. */
+const AI_TEST_SERVICE_TOKEN = 'test-ai-service-token';
 
 function configureEnv(name, { aiUrl = AI_DOWN_URL, env = {} } = {}) {
   const base = process.env.TEST_TMPDIR || os.tmpdir();
@@ -40,6 +42,7 @@ function configureEnv(name, { aiUrl = AI_DOWN_URL, env = {} } = {}) {
     BCRYPT_ROUNDS: '4',
     JWT_SECRET: 'test-suite-jwt-secret-0123456789abcdef0123456789abcdef',
     AI_SERVICE_URL: aiUrl,
+    AI_SERVICE_TOKEN: AI_TEST_SERVICE_TOKEN,
     AI_TIMEOUT_MS: '1500',
     SMTP_HOST: '',
     FIREBASE_SERVICE_ACCOUNT: '',
@@ -133,4 +136,4 @@ function assertNoSecrets(assert, body) {
   assert.ok(!/password_hash|passwordHash|\$2[aby]\$/.test(text), 'response must not contain password hashes');
 }
 
-module.exports = { ACCOUNTS, AI_DOWN_URL, configureEnv, createContext, assertNoSecrets };
+module.exports = { ACCOUNTS, AI_DOWN_URL, AI_TEST_SERVICE_TOKEN, configureEnv, createContext, assertNoSecrets };

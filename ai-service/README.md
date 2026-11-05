@@ -49,9 +49,10 @@ cd ai-service
 python -m venv .venv
 # Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt        # or requirements-dev.txt to run the tests
-cp .env.example .env                   # then edit DATABASE_URL if needed
+cp .env.example .env                   # then set AI_SERVICE_TOKEN (and DATABASE_URL if needed)
+python -c "import secrets; print(secrets.token_hex(32))"   # same value in backend/.env AI_SERVICE_TOKEN
 
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 # interactive docs: http://localhost:8000/docs
 ```
 
@@ -59,6 +60,12 @@ Start the backend first, or at least create and seed its database. The service r
 tables as the backend (`database/schema.mysql.sql`). On a fresh database `/ai/predict-wait` returns
 503 until a model has been trained. Train one with `POST /ai/models/retrain` (from the Admin
 Dashboard through the backend) or with `python scripts/train_cli.py`.
+
+**Authentication.** Every `/ai/*` endpoint requires the header `X-AI-Service-Token` to equal
+`AI_SERVICE_TOKEN` (401 otherwise); the backend sends it from its own `AI_SERVICE_TOKEN`. If the
+service has no token configured it fails closed with 503, unless `AI_ALLOW_UNAUTHENTICATED=true`
+(local development only). `GET /health` is open. The Docker image listens on `0.0.0.0` inside the
+container; publish port 8000 only on the internal network that the backend uses.
 
 Run **one** uvicorn worker. The retrain and forecast "already running" guards and the model cache
 live in each process.
@@ -75,6 +82,8 @@ live in each process.
 | `AI_MIN_TRAINING_ROWS` | `200` | Retraining is refused (400) below this many labelled tokens |
 | `AI_FORECAST_LOOKBACK_DAYS` | `182` | History window of the forecast job |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `AI_SERVICE_TOKEN` | empty | **Required** shared secret expected in `X-AI-Service-Token` on `/ai/*` (empty → 503) |
+| `AI_ALLOW_UNAUTHENTICATED` | `false` | Dev only: accept `/ai/*` without a token when `AI_SERVICE_TOKEN` is empty |
 
 ### Docker
 

@@ -96,6 +96,7 @@ HTTP server inside the test.
 | `SQLITE_PATH` | `data/smart_opd.db` | SQLite file (relative to `backend/`) |
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | `localhost`, `3306`, `root`, empty, `smart_opd` | MySQL connection |
 | `AI_SERVICE_URL` | `http://localhost:8000` | Internal AI service; empty = disabled |
+| `AI_SERVICE_TOKEN` | empty | Shared secret sent as `X-AI-Service-Token` on every `/ai/*` call; must equal the AI service's `AI_SERVICE_TOKEN` (otherwise the AI service answers 401/503 and the backend uses its fallbacks) |
 | `AI_TIMEOUT_MS` | `1500` | Timeout of prediction / ranking calls |
 | `AI_JOB_TIMEOUT_MS` | `120000` | Timeout of the forecast job and model retraining proxies |
 | `DEMO_ALWAYS_OPEN` | `false` (`.env.example`: `true`) | Ignore the clock for `acceptingNow` (a schedule for the weekday is still required) |

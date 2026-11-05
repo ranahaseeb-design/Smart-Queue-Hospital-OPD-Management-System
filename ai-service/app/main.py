@@ -10,7 +10,8 @@ POST /ai/models/retrain              FR-22: train, evaluate against the baseline
 GET  /ai/models                      FR-22: model registry
 POST /ai/models/{version}/activate   FR-22: make a version the active one
 
-Run: ``uvicorn app.main:app --host 0.0.0.0 --port 8000`` from the ai-service folder.
+Run: ``uvicorn app.main:app --host 127.0.0.1 --port 8000`` from the ai-service folder.
+Every /ai/* endpoint requires the X-AI-Service-Token header (see app/security.py).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Body, FastAPI, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -42,6 +43,7 @@ from .schemas import (
     RankResponse,
     RetrainResponse,
 )
+from .security import require_service_token
 from .training import ModelNotFoundError, TrainingError, activate, list_models, retrain
 
 logging.basicConfig(
@@ -103,6 +105,9 @@ async def _database_error(_request: Request, exc: SQLAlchemyError) -> JSONRespon
 
 
 # --------------------------------------------------------------------------- endpoints
+# /health is open (container health checks); every /ai/* route requires X-AI-Service-Token.
+
+ai = APIRouter(prefix="/ai", dependencies=[Depends(require_service_token)])
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -114,7 +119,7 @@ def health() -> HealthResponse:
         return HealthResponse(status="ok", active_model=None, db=False)
 
 
-@app.post("/ai/predict-wait", response_model=PredictResponse)
+@ai.post("/predict-wait", response_model=PredictResponse)
 def predict_wait(body: PredictRequest) -> PredictResponse:
     """FR-06/FR-07: predicted wait in minutes per token (non-negative, rounded to 0.1)."""
     features = [item.features.model_dump() for item in body.items]
@@ -127,7 +132,7 @@ def predict_wait(body: PredictRequest) -> PredictResponse:
     )
 
 
-@app.post("/ai/rank-branches", response_model=RankResponse)
+@ai.post("/rank-branches", response_model=RankResponse)
 def rank_branches(body: RankRequest) -> RankResponse:
     """FR-08/FR-09: Eq. 6.3 score per candidate, sorted ascending (lower = better)."""
     candidates = [
@@ -144,24 +149,27 @@ def rank_branches(body: RankRequest) -> RankResponse:
     return RankResponse(ranked=[RankedItem(branch_id=r.branch_id, doctor_id=r.doctor_id, score=r.score) for r in ranked])
 
 
-@app.post("/ai/jobs/forecast", response_model=ForecastResponse)
+@ai.post("/jobs/forecast", response_model=ForecastResponse)
 def forecast_job(body: Optional[ForecastRequest] = Body(default=None)) -> dict:
     """FR-17: regenerate hourly forecasts for the next ``days`` days (default 7)."""
     days = body.days if body is not None else 7
     return run_forecast(days)
 
 
-@app.post("/ai/models/retrain", response_model=RetrainResponse)
+@ai.post("/models/retrain", response_model=RetrainResponse)
 def retrain_model() -> dict:
     """FR-22: 400 when fewer than 200 labelled tokens exist; 409 while another retrain runs."""
     return retrain()
 
 
-@app.get("/ai/models", response_model=list[ModelVersionOut])
+@ai.get("/models", response_model=list[ModelVersionOut])
 def get_models() -> list[dict]:
     return list_models()
 
 
-@app.post("/ai/models/{version}/activate", response_model=ActivateResponse)
+@ai.post("/models/{version}/activate", response_model=ActivateResponse)
 def activate_model(version: str) -> dict:
     return activate(version)
+
+
+app.include_router(ai)
