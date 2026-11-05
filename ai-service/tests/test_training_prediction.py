@@ -150,3 +150,36 @@ def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, mo
     monkeypatch.undo()
 
     assert client.post("/ai/models/rf-unknown/activate").status_code == 404
+
+
+def test_data_source_label_and_synthetic_share():
+    import pandas as pd
+
+    from app.training import data_source_label, synthetic_share
+
+    assert data_source_label(pd.Series([True, True])) == "synthetic"
+    assert data_source_label(pd.Series([False, False])) == "pilot"
+    assert data_source_label(pd.Series([True, False, False])) == "mixed"
+    assert synthetic_share(pd.Series([True, False, False, False])) == 0.25
+    assert synthetic_share(pd.Series([], dtype=bool)) == 0.0
+
+
+def test_retrain_with_pilot_rows_is_mixed_and_stores_shares(client, engine, seed_wait_history):
+    import json
+
+    seed_wait_history(days=40)
+    # The newest tokens (test period) come from the pilot deployment, not the synthetic history.
+    with engine.begin() as conn:
+        cutoff = conn.execute(text("SELECT MAX(issued_at) FROM tokens")).scalar()
+        conn.execute(text("UPDATE tokens SET is_synthetic = 0 WHERE issued_at >= date(:c, '-3 day')"), {"c": cutoff})
+    response = client.post("/ai/models/retrain")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT data_source, metrics_json FROM model_versions WHERE version = :v"), {"v": body["version"]}
+        ).mappings().one()
+    assert row["data_source"] == "mixed"
+    stored = json.loads(row["metrics_json"])
+    assert stored["syntheticShareTrain"] == 1.0
+    assert 0.0 <= stored["syntheticShareTest"] < 1.0

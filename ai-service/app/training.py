@@ -182,6 +182,23 @@ def _department_check(test_X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarr
     return rows
 
 
+def synthetic_share(flags: pd.Series) -> float:
+    """Fraction (0-1, 4 decimals) of rows flagged tokens.is_synthetic; 0.0 for no rows."""
+    if len(flags) == 0:
+        return 0.0
+    return round(float(flags.astype(bool).mean()), 4)
+
+
+def data_source_label(flags: pd.Series) -> str:
+    """model_versions.data_source: 'synthetic' (all rows synthetic), 'pilot' (none), 'mixed'."""
+    synthetic = flags.astype(bool)
+    if len(synthetic) and bool(synthetic.all()):
+        return "synthetic"
+    if not bool(synthetic.any()):
+        return "pilot"
+    return "mixed"
+
+
 def _new_version_name(now: datetime) -> str:
     base = now.strftime("rf-%Y%m%d-%H%M")  # 16 chars; model_versions.version is VARCHAR(20)
     version, suffix = base, 2
@@ -221,7 +238,10 @@ def _retrain_locked(now: datetime) -> dict:
         name: round(float(value), 5) for name, value in sorted(zip(FEATURES, model.feature_importances_), key=lambda p: -p[1])
     }
     version = _new_version_name(now)
-    data_source = "synthetic" if bool(data.is_synthetic.iloc[:split].all()) else "pilot"
+    # Over every labelled row used (training + test period); the shares are stored in metrics_json.
+    data_source = data_source_label(data.is_synthetic)
+    share_train = synthetic_share(data.is_synthetic.iloc[:split])
+    share_test = synthetic_share(data.is_synthetic.iloc[split:])
     bundle = {
         "version": version,
         "model": model,
@@ -251,6 +271,8 @@ def _retrain_locked(now: datetime) -> dict:
     baseline_mae = float(np.mean(np.abs(y_true - y_base)))
     model_mae = float(np.mean(np.abs(y_true - y_pred)))
     metrics = _metrics(y_true, y_pred, baseline_mae)
+    metrics["syntheticShareTrain"] = share_train
+    metrics["syntheticShareTest"] = share_test
     department_check = _department_check(X_test, y_true, y_pred, y_base)
 
     # Compare with the currently active model on the same test rows (FR-22, Section 6.8).

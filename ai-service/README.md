@@ -15,8 +15,9 @@ Stack: FastAPI + uvicorn, scikit-learn `RandomForestRegressor`, pandas, numpy, S
 > **Training-data caveat (Sections 6.2, 6.9, 6.11).** The development database is seeded with
 > **synthetic** history (`tokens.is_synthetic = 1`). Models trained on it only show that the pipeline
 > works end to end. Their metrics are **not** real-world accuracy and must not be reported as such.
-> Each model version records its `data_source` (`synthetic` when every training token is synthetic,
-> otherwise `pilot`). Real accuracy can only come from pilot or partner-hospital data, evaluated with
+> Each model version records its `data_source` over all labelled rows used (training + test period):
+> `synthetic` when every token is synthetic, `pilot` when none is, `mixed` otherwise; the synthetic
+> shares are stored in `metrics_json` as `syntheticShareTrain` / `syntheticShareTest` (0-1). Real accuracy can only come from pilot or partner-hospital data, evaluated with
 > the procedure below. This README makes no accuracy claim.
 
 ---
