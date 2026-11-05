@@ -105,3 +105,16 @@ src/
   of truth for FR-13 ordering.
 - Linked-token counters are listed from `GET /api/staff/transfer-targets` (same-branch active points,
   filtered to LAB / PHARMACY). If that call fails, the dialog still works in "automatic" mode.
+
+## Security notes for production
+
+This build is set up for a university project and local development. Before a real deployment:
+
+- **Session token storage.** The JWT is kept in `localStorage` (`src/utils/storage.js`), where any
+  script running on the page (for example through an XSS bug or a compromised dependency) can read it.
+  In production, move the session to an `HttpOnly`, `Secure`, `SameSite` cookie set by the backend (with
+  CSRF protection for state-changing requests), or at least use short-lived access tokens with a
+  refresh flow, so a leaked token expires quickly. Sign staff out on shared counter PCs.
+- **HTTPS only.** Serve the dashboard and point `VITE_API_URL` / the Socket.IO URL at `https://` /
+  `wss://` endpoints; never send credentials or JWTs over plain HTTP outside a developer machine.
+- Add a Content Security Policy and keep dependencies patched (`npm audit`).

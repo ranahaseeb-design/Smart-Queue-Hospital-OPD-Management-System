@@ -167,3 +167,16 @@ These points are not fixed by the contract, so the client handles them as follow
 `react-router-dom` 6.30.6 (moderate; the fix is in v7 — the post-login redirect is sanitised independently),
 `vite` 6.4.4 (moderate, dev server only; fixed in 6.4.5, which was too new to adopt) and `vitest` 3.2.7 /
 `tinypool` (test runner only; fixed in vitest 5). Only react-router-dom ships in the production bundle.
+
+## Security notes for production
+
+This build is set up for a university project and local development. Before a real deployment:
+
+- **Session token storage.** The admin JWT is kept in `localStorage` (`src/api/client.js`), where any
+  script running on the page (an XSS bug or a compromised dependency) can read it. Administrator tokens
+  carry the widest permissions in the system, so in production move the session to an `HttpOnly`,
+  `Secure`, `SameSite` cookie set by the backend (with CSRF protection for state-changing requests), or
+  at least use short-lived access tokens with a refresh flow so a leaked token expires quickly.
+- **HTTPS only.** Serve the dashboard and point the API / Socket.IO URLs at `https://` / `wss://`
+  endpoints; never send credentials or JWTs over plain HTTP outside a developer machine.
+- Add a Content Security Policy and keep dependencies patched (see the dependency audit above).
