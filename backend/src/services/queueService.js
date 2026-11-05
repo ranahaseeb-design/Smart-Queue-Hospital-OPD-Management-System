@@ -342,15 +342,16 @@ async function checkCongestionAlert(db, departmentId, now) {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Issue an OPD token for a patient (FR-03) — also used by appointment check-in (FR-10).
- * Returns the new token id.
+ * Issue an OPD token for a patient (FR-03) — also used by appointment check-in (FR-10), which
+ * passes the session containing the appointment slot (`slotSession`) so the token goes to that
+ * session's service point. Returns the new token id.
  */
-async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now = time.clock.now() } = {}) {
+async function issueOpdToken(db, patient, doctorId, { appointmentId = null, session: slotSession = null, now = time.clock.now() } = {}) {
   const doctor = await scheduleService.getDoctor(db, doctorId);
   if (!doctor || !scheduleService.isDoctorBookable(doctor)) throw notFound('Doctor not found or not active');
-  const date = time.formatDate(now);
-  const sessions = await scheduleService.doctorSessions(db, doctorId, date);
-  const session = scheduleService.pickSession(sessions, date, now);
+  const date = slotSession ? time.formatDate(slotSession.start) : time.formatDate(now);
+  const session =
+    slotSession || scheduleService.pickSession(await scheduleService.doctorSessions(db, doctorId, date), date, now);
   if (!session) throw conflict('The doctor is not scheduled today');
   if (!config.demoAlwaysOpen && now >= session.end) throw conflict("The doctor's session has ended for today");
 
@@ -389,10 +390,12 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now 
       at: issuedAt,
     });
     if (appointmentId) {
-      await tx.run(`UPDATE appointments SET status = 'CHECKED_IN', updated_at = ? WHERE appointment_id = ?`, [
-        issuedAt,
-        appointmentId,
-      ]);
+      // Guarded: a concurrent check-in / cancel of the same appointment rolls this one back.
+      const r = await tx.run(
+        `UPDATE appointments SET status = 'CHECKED_IN', updated_at = ? WHERE appointment_id = ? AND status = 'BOOKED'`,
+        [issuedAt, appointmentId]
+      );
+      if (r.changes !== 1) throw conflict('Appointment changed, please refresh');
     }
     return id;
   });

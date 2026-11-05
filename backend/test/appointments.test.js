@@ -105,7 +105,7 @@ test('cancel releases the slot; a cancelled appointment cannot be changed', asyn
   assert.equal((await ctx.api.post('/appointments', C.token, { doctorId, slotStart: s.slots[2].start })).status, 201);
 });
 
-test('check-in only on the appointment day: creates a token linked to the appointment', async () => {
+test('check-in only inside its window: creates a token linked to the appointment', async () => {
   const future = await ctx.api.post('/appointments', A.token, { doctorId, slotStart: (await slots(tomorrow)).slots[7].start });
   assert.equal(future.status, 201);
   const early = await ctx.api.post(`/appointments/${future.body.id}/check-in`, A.token);
@@ -115,6 +115,12 @@ test('check-in only on the appointment day: creates a token linked to the appoin
   const free = today.slots.find((x) => x.available);
   const appt = await ctx.api.post('/appointments', A.token, { doctorId, slotStart: free.start });
   assert.equal(appt.status, 201);
+  // Check-in opens 60 min before the slot (doctor1 may be on the evening shift today).
+  const minutesToSlot = (ctx.time.combine(free.start.slice(0, 10), free.start.slice(11)) - ctx.time.clock.now()) / 60000;
+  if (minutesToSlot > 60) {
+    ctx.advance(minutesToSlot - 61);
+    assert.equal((await ctx.api.post(`/appointments/${appt.body.id}/check-in`, A.token)).status, 409);
+  }
   ctx.advance(2);
   const res = await ctx.api.post(`/appointments/${appt.body.id}/check-in`, A.token);
   assert.equal(res.status, 201);
@@ -137,4 +143,51 @@ test('check-in only on the appointment day: creates a token linked to the appoin
   assert.equal(token.fromAppointment, true);
   const issued = await ctx.db.get(`SELECT note FROM queue_events WHERE token_id = ? AND event_type = 'ISSUED'`, [res.body.id]);
   assert.equal(issued.note, `Checked in for appointment #${appt.body.id}`);
+});
+
+test('check-in goes to the session containing the slot; closed before slot-60 min and after that session', async () => {
+  // A second, later session for doctor1 today in another OPD room of the same branch.
+  const doc = await ctx.db.get(
+    `SELECT sp.branch_id, ds.service_point_id FROM doctors d
+       JOIN doctor_schedules ds ON ds.doctor_id = d.doctor_id
+       JOIN service_points sp ON sp.service_point_id = ds.service_point_id
+      WHERE d.doctor_id = ? AND ds.day_of_week = ?`,
+    [doctorId, ctx.time.isoDow(ctx.time.clock.now())]
+  );
+  const other = await ctx.db.get(
+    `SELECT service_point_id FROM service_points WHERE branch_id = ? AND type = 'OPD' AND is_active = 1 AND service_point_id <> ?
+      ORDER BY service_point_id LIMIT 1`,
+    [doc.branch_id, doc.service_point_id]
+  );
+  await ctx.db.run(
+    `INSERT INTO doctor_schedules (doctor_id, service_point_id, day_of_week, start_time, end_time, max_patients)
+     VALUES (?, ?, ?, '22:00:00', '23:30:00', NULL)`,
+    [doctorId, other.service_point_id, ctx.time.isoDow(ctx.time.clock.now())]
+  );
+  const P = await ctx.newPatient();
+  const slotStart = `${ctx.time.today()}T22:30:00`;
+  const appt = await ctx.api.post('/appointments', P.token, { doctorId, slotStart });
+  assert.equal(appt.status, 201);
+
+  const tooEarly = await ctx.api.post(`/appointments/${appt.body.id}/check-in`, P.token);
+  assert.equal(tooEarly.status, 409);
+  assert.match(tooEarly.body.error.message, /60 minutes before/);
+
+  // 21:35: inside the window while the first (earlier) session may still be running.
+  ctx.time.clock.set(ctx.time.combine(ctx.time.today(), '21:35:00'));
+  const res = await ctx.api.post(`/appointments/${appt.body.id}/check-in`, P.token);
+  assert.equal(res.status, 201);
+  assert.equal(res.body.servicePoint.id, other.service_point_id);
+
+  // An appointment whose session already ended cannot be checked in any more.
+  const late = await ctx.db.run(
+    `INSERT INTO appointments (patient_id, doctor_id, slot_start, status, updated_at) VALUES (?, ?, ?, 'BOOKED', ?)`,
+    [P.user.id, doctorId, `${ctx.time.today()} 23:00:00`, `${ctx.time.today()} 10:00:00`]
+  );
+  await ctx.db.run(`UPDATE appointments SET status = 'COMPLETED' WHERE appointment_id = ?`, [appt.body.id]);
+  await ctx.db.run(`UPDATE tokens SET status = 'COMPLETED' WHERE token_id = ?`, [res.body.id]);
+  ctx.time.clock.set(ctx.time.combine(ctx.time.today(), '23:31:00'));
+  const closed = await ctx.api.post(`/appointments/${late.insertId}/check-in`, P.token);
+  assert.equal(closed.status, 409);
+  assert.match(closed.body.error.message, /session of this appointment has ended/);
 });

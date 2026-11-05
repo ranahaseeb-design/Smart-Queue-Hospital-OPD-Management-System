@@ -154,7 +154,7 @@ About 1,500 synthetic patients exist (phone-only accounts with an unusable rando
 | Linked tokens | `queueService.issueLinkedToken`, `POST /visits/:id/linked-tokens` | FR-04 |
 | Prediction | `services/featureBuilder.js` (Section 6.3 features, Eq. 6.2 baseline, Eq. 6.4/6.5), `services/predictionService.js`, `services/aiClient.js` | FR-06, FR-07 |
 | Recommendations | `services/recommendationService.js` (Eq. 6.3, haversine, reasons; location never stored) | FR-08, FR-09 |
-| Appointments | `services/appointmentService.js` (slots from schedule, no double booking, reschedule, cancel, check-in → token) | FR-10 |
+| Appointments | `services/appointmentService.js` (slots from schedule, no double booking, reschedule, cancel, check-in → token; check-in window = `CHECK_IN_EARLY_MINUTES` (60) before `slot_start` until the end of the session containing the slot, token issued to that session's room) | FR-10 |
 | Notifications | `services/notificationService.js` (IN_APP row + socket always; PUSH / EMAIL optional) | FR-11 |
 | Visits & feedback | `routes/patient.js` | FR-19, FR-20 |
 | Administration | `routes/admin.js`, `services/adminService.js` (CRUD + soft deactivate + scoping) | FR-14 |

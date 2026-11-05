@@ -112,7 +112,7 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | POST | `/appointments` | `{ doctorId, slotStart }` | 201 `Appointment`; 409 if slot taken |
 | PUT | `/appointments/:id` | `{ slotStart }` | `Appointment` (reschedule, only BOOKED) |
 | DELETE | `/appointments/:id` | – | `Appointment` status CANCELLED (slot released) |
-| POST | `/appointments/:id/check-in` | – | 201 `TokenDetail` (only on the appointment day; token gets `appointment_id`) |
+| POST | `/appointments/:id/check-in` | – | 201 `TokenDetail` (only `BOOKED` appointments, from 60 min before `slot_start` until the end of the doctor's session containing the slot, else 409; the token is issued to that session's service point and gets `appointment_id`) |
 
 ### Visits, feedback, notifications (FR-19, FR-20, FR-11)
 | GET | `/visits` | – | `[ { id, visitDate, status, branch: {id,name}, tokens: [ { id, displayNumber, queueType, status, issuedAt, calledAt, completedAt, doctorName, servicePointName } ], feedback: { rating, comment } | null, canGiveFeedback } ]` newest first |
