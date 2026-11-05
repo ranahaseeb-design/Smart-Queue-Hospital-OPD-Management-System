@@ -3,6 +3,13 @@
 The backend builds the feature object for every prediction and stores it in
 ``wait_predictions.features_json``; the same keys (in this order) are used for
 training and for online prediction, so there is no train/serve skew.
+
+The identifier features (doctor_id, department_id, branch_id) are categories, not quantities:
+models are a scikit-learn Pipeline whose first step (:func:`build_preprocessor`) one-hot encodes
+them (an id unseen in training becomes all-zero columns) and passes the numeric features through.
+The external feature keys and the predict API are unchanged. Every bundle records
+``feature_encoding`` (:data:`FEATURE_ENCODING`); older bundles without it used the ids as raw
+numbers (:data:`RAW_FEATURE_ENCODING`) and still load and predict unchanged.
 """
 
 from __future__ import annotations
@@ -11,6 +18,8 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
 
 # Exact keys and order from docs/API_CONTRACT.md ("Feature vector (Section 6.3)").
 FEATURES: list[str] = [
@@ -29,6 +38,39 @@ FEATURES: list[str] = [
     "department_id",
     "branch_id",
 ]
+
+# Identifier features: one-hot encoded inside the model pipeline (they have no numeric order).
+ID_FEATURES: list[str] = ["doctor_id", "department_id", "branch_id"]
+NUMERIC_FEATURES: list[str] = [name for name in FEATURES if name not in ID_FEATURES]
+
+# Stored in every model bundle; a bundle without it predates the encoding (ids used as numbers).
+FEATURE_ENCODING = "onehot-ids-v1"
+RAW_FEATURE_ENCODING = "raw"
+
+
+def build_preprocessor() -> ColumnTransformer:
+    """One-hot encode the id columns (unknown ids ignored) and pass the numeric columns through.
+
+    Applied to frames from :func:`prepare_frame`; columns are selected by name.
+    """
+    return ColumnTransformer(
+        transformers=[
+            ("ids", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ID_FEATURES),
+            ("num", "passthrough", NUMERIC_FEATURES),
+        ],
+        remainder="drop",
+    )
+
+
+def source_feature(encoded_name: str) -> str:
+    """Original feature key of a :func:`build_preprocessor` output column (e.g. ``ids__doctor_id_3.0``)."""
+    group, _, name = encoded_name.partition("__")
+    if group == "ids":
+        for key in ID_FEATURES:
+            if name == key or name.startswith(f"{key}_"):
+                return key
+    return name
+
 
 # Used only when a stored/sent feature is missing or null.
 DEFAULT_CONSULT_MINUTES = 10.0

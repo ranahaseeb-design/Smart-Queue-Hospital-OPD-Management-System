@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.features import FEATURES, baseline_minutes, prepare_frame
+from app.features import FEATURES, ID_FEATURES, NUMERIC_FEATURES, baseline_minutes, build_preprocessor, prepare_frame, source_feature
 from app.ranking import Candidate, effective_weights, min_max_normalise, rank_candidates
 
 CONTRACT_FEATURES = [
@@ -119,3 +119,20 @@ def test_rank_branches_endpoint(client):
     assert [item["doctorId"] for item in ranked] == [21, 31, 11]
     assert ranked[0]["score"] <= ranked[1]["score"] <= ranked[2]["score"]
     assert ranked[2]["score"] == pytest.approx(1.0)
+
+
+def test_id_features_are_one_hot_encoded_and_unknown_ids_ignored():
+    assert ID_FEATURES == ["doctor_id", "department_id", "branch_id"]
+    assert NUMERIC_FEATURES + ID_FEATURES == [f for f in FEATURES if f not in ID_FEATURES] + ID_FEATURES
+    train = prepare_frame([
+        {"patients_ahead": 1, "doctor_id": 3, "department_id": 1, "branch_id": 1},
+        {"patients_ahead": 2, "doctor_id": 7, "department_id": 2, "branch_id": 1},
+    ])
+    encoder = build_preprocessor().fit(train)
+    names = [str(n) for n in encoder.get_feature_names_out()]
+    # 2 doctors + 2 departments + 1 branch one-hot columns, then the 11 numeric features
+    assert len(names) == 5 + len(NUMERIC_FEATURES)
+    assert {source_feature(n) for n in names} == set(FEATURES)
+    unknown = encoder.transform(prepare_frame([{"patients_ahead": 4, "doctor_id": 99, "department_id": 1, "branch_id": 1}]))
+    assert list(unknown[0][:2]) == [0.0, 0.0]  # unseen doctor -> all-zero doctor columns, no error
+    assert unknown[0][5] == 4.0  # patients_ahead passed through

@@ -212,7 +212,13 @@ plus additions `reason`, `activeModelMae` and `departmentCheck[]`.
   reported but do not reject a model on their own.
 - **Versioning:** the version is named `rf-YYYYMMDD-HHMM`, with `-2`, `-3`… on a collision. The joblib
   bundle holds the model, the feature list, the training and test periods, the chosen hyperparameters,
-  the CV MAE, feature importances, metrics, the per-department check and the sklearn version. A
+  the CV MAE, feature importances, metrics, the per-department check and the sklearn version. The
+  model is a scikit-learn `Pipeline`: a `ColumnTransformer` one-hot encodes `doctor_id`,
+  `department_id` and `branch_id` (`OneHotEncoder(handle_unknown="ignore")`, so an id unseen in
+  training adds nothing instead of being read as a number) and passes the 11 numeric features
+  through to the forest; feature importances are summed back onto the 14 contract keys. The bundle
+  records `feature_encoding = "onehot-ids-v1"`; bundles saved before this change have no such key,
+  are reported as `"raw"` and still load and predict unchanged (same feature keys and predict API). A
   `model_versions` row is written: `ACTIVE`/`is_active = 1` when accepted (the previous active model
   becomes `RETIRED`), otherwise `REJECTED`.
 
