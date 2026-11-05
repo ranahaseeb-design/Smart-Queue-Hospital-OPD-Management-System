@@ -475,7 +475,7 @@ async function openTokenAt(tx, servicePointId, date, excludeId = 0) {
 
 /** Staff service points list (GET /staff/service-points). */
 async function staffServicePoints(db, user, now = time.clock.now()) {
-  const ids = [...(await access.staffServicePointIds(db, user.user_id))];
+  const ids = [...(await access.staffServicePointIds(db, user.user_id, now))];
   const ownDoctor = await access.getDoctorForUser(db, user.user_id);
   const date = time.formatDate(now);
   const out = [];
@@ -634,15 +634,10 @@ async function callNext(db, user, servicePointId, now = time.clock.now()) {
     let doctorSql = '';
     const params = [servicePointId, date];
     if (ownDoctor && sp.type === 'OPD') {
-      // A doctor calls their own patients (rooms can be shared between sessions).
-      const mine = await tx.get(
-        `SELECT COUNT(*) AS n FROM tokens WHERE service_point_id = ? AND token_date = ? AND status = 'WAITING' AND doctor_id = ?`,
-        [servicePointId, date, ownDoctor.doctor_id]
-      );
-      if (Number(mine.n) > 0) {
-        doctorSql = 'AND doctor_id = ?';
-        params.push(ownDoctor.doctor_id);
-      }
+      // A doctor only ever calls their own patients (rooms can be shared between sessions):
+      // with none waiting the result is { token: null }, never another doctor's patient.
+      doctorSql = 'AND doctor_id = ?';
+      params.push(ownDoctor.doctor_id);
     }
     const next = await tx.get(
       `SELECT token_id FROM tokens WHERE service_point_id = ? AND token_date = ? AND status = 'WAITING' ${doctorSql}
@@ -680,6 +675,7 @@ async function afterStatusChange(db, row, now, extraKeys = []) {
 async function staffTransition(db, user, tokenId, { from, to, event, setCalled = false, setCompleted = false, checkOpen = false, now }) {
   const row = await requireTokenRow(db, tokenId);
   await access.assertServicePointAccess(db, user, row.service_point_id, { staffOnly: true });
+  await access.assertOwnsOpdToken(db, user, row);
   if (!from.includes(row.status)) {
     throw conflict(`Token is ${row.status}; expected ${from.join(' or ')}`);
   }
@@ -764,6 +760,7 @@ async function completeToken(db, user, tokenId, now = time.clock.now()) {
 async function setPriority(db, user, tokenId, level, reason, now = time.clock.now()) {
   const row = await requireTokenRow(db, tokenId);
   await access.assertServicePointAccess(db, user, row.service_point_id, { staffOnly: true });
+  await access.assertOwnsOpdToken(db, user, row);
   if (!['WAITING', 'SKIPPED'].includes(row.status)) throw conflict(`Priority cannot be changed for a ${row.status} token`);
   const at = time.formatDateTime(now);
   await db.transaction(async (tx) => {
@@ -786,6 +783,7 @@ async function setPriority(db, user, tokenId, level, reason, now = time.clock.no
 async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId = null }, now = time.clock.now()) {
   const row = await requireTokenRow(db, tokenId);
   await access.assertServicePointAccess(db, user, row.service_point_id, { staffOnly: true });
+  await access.assertOwnsOpdToken(db, user, row);
   if (!['WAITING', 'CALLED'].includes(row.status)) throw conflict(`A ${row.status} token cannot be transferred`);
   const target = await db.get(
     'SELECT service_point_id, branch_id, type, name, is_active FROM service_points WHERE service_point_id = ?',
