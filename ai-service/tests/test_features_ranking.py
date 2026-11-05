@@ -33,14 +33,20 @@ def test_prepare_frame_fills_missing_values_consistently():
 
 
 def test_baseline_before_session_start_adds_delay():
-    # Eq. 6.2: (n_ahead + n_priority) * c_doctor + d_start
+    # Eq. 6.2: n_ahead * c_doctor + d_start; the priority token ahead is already in patients_ahead
     features = {"patients_ahead": 4, "priority_ahead": 1, "doctor_avg_consult": 8, "session_started": 0, "minutes_to_start": 15}
-    assert baseline_minutes(features) == pytest.approx(5 * 8 + 15)
+    assert baseline_minutes(features) == pytest.approx(4 * 8 + 15)
 
 
 def test_baseline_ignores_start_delay_once_started():
     features = {"patients_ahead": 4, "priority_ahead": 1, "doctor_avg_consult": 8, "session_started": True, "minutes_to_start": 15}
-    assert baseline_minutes(features) == pytest.approx(40)
+    assert baseline_minutes(features) == pytest.approx(32)
+
+
+def test_baseline_does_not_double_count_priority_tokens():
+    without = {"patients_ahead": 3, "priority_ahead": 0, "doctor_avg_consult": 10, "session_started": 1}
+    with_priority = dict(without, priority_ahead=3)  # all three patients ahead are priority tokens
+    assert baseline_minutes(with_priority) == baseline_minutes(without) == pytest.approx(30)
 
 
 def test_baseline_is_never_negative():

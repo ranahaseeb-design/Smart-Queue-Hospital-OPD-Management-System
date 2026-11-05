@@ -185,7 +185,7 @@ Feature vector (Section 6.3), keys exactly:
 `patients_ahead, priority_ahead, doctor_avg_consult, doctor_recent_consult, interruptions_last_hour, session_started (0/1), minutes_to_start, hour_of_day, day_of_week (1-7), appointments_ahead, department_load, doctor_id, department_id, branch_id`.
 The backend stores this object as `wait_predictions.features_json` for every prediction; the first prediction of each token joined with its actual wait (`called_at − issued_at`) is the training set.
 
-Baseline (Eq. 6.2): `W = (patients_ahead + priority_ahead) * doctor_avg_consult + minutes_to_start` (minutes_to_start = 0 once started). Used when the AI service is down/has no active model, and as the benchmark.
+Baseline (Eq. 6.2): `W = patients_ahead * doctor_avg_consult + minutes_to_start` (minutes_to_start = 0 once started). `patients_ahead` already counts the priority tokens ahead, so `priority_ahead` is not added again (it is a model feature only). Used when the AI service is down/has no active model, and as the benchmark.
 
 | Method | Path | Body | Response |
 |---|---|---|---|

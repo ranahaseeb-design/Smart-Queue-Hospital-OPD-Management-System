@@ -119,9 +119,14 @@ function computeFeatures(ctx, token, now) {
   };
 }
 
-/** Baseline estimate, Eq. 6.2: W = (n_ahead + n_priority) * c_doctor + d_start. */
+/**
+ * Baseline estimate, Eq. 6.2: W = n_ahead * c_doctor + d_start.
+ * The priority tokens ahead (priority_ahead) are already counted in patients_ahead (computeFeatures
+ * counts every WAITING token ordered before this one, priority or not), so adding n_priority again
+ * would double-count them. priority_ahead is kept as a model feature only.
+ */
 function baselineMinutes(f) {
-  return (f.patients_ahead + f.priority_ahead) * f.doctor_avg_consult + f.minutes_to_start;
+  return f.patients_ahead * f.doctor_avg_consult + f.minutes_to_start;
 }
 
 /**

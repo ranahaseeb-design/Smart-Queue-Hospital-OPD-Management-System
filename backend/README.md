@@ -202,7 +202,7 @@ The backend talks to the internal FastAPI service (`AI_SERVICE_URL`) and never d
 
 | Use | AI call | Fallback (silent) |
 |---|---|---|
-| Waiting-time prediction for every WAITING token of an affected queue, and the hypothetical "join now" estimate shown when browsing doctors | `POST /ai/predict-wait` with the 14 contract feature keys, 1.5 s timeout | Eq. 6.2 baseline `W = (patients_ahead + priority_ahead) × doctor_avg_consult + minutes_to_start` (`model_version = 'baseline'`) |
+| Waiting-time prediction for every WAITING token of an affected queue, and the hypothetical "join now" estimate shown when browsing doctors | `POST /ai/predict-wait` with the 14 contract feature keys, 1.5 s timeout | Eq. 6.2 baseline `W = patients_ahead × doctor_avg_consult + minutes_to_start` (priority tokens ahead are already counted in `patients_ahead`) (`model_version = 'baseline'`) |
 | Branch ranking | `POST /ai/rank-branches` | Same Eq. 6.3 scoring in JS (min-max normalisation; without location the distance weight is redistributed) |
 | Forecasts (`POST /admin/forecasts/run`, hourly job) | `POST /ai/jobs/forecast` | JS seasonal baseline: mean arrivals at the same weekday + hour over the last 4 weeks, capacity from schedules and average consultation time, levels from the settings thresholds, `is_peak` above the 80th percentile, next 7 days |
 | Model list / retrain / activate | proxied | `503 AI_UNAVAILABLE` |

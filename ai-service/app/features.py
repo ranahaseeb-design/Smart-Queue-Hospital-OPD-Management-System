@@ -68,13 +68,18 @@ def prepare_frame(rows: Iterable[Mapping[str, Any]], feature_order: list[str] | 
 
 
 def baseline_minutes(features: Mapping[str, Any]) -> float:
-    """Eq. 6.2: W = (n_ahead + n_priority) * c_doctor + d_start (d_start = 0 once started)."""
+    """Eq. 6.2: W = n_ahead * c_doctor + d_start (d_start = 0 once started).
+
+    ``patients_ahead`` already includes the priority tokens ahead of this one (the backend counts
+    every WAITING token ordered before it), so ``priority_ahead`` is not added again; it would be
+    double-counted. ``priority_ahead`` stays a model feature.
+    """
     frame = prepare_frame([features])
     return float(baseline_series(frame).iloc[0])
 
 
 def baseline_series(frame: pd.DataFrame) -> pd.Series:
     """Vectorised Eq. 6.2 over a frame produced by :func:`prepare_frame`."""
-    ahead = frame["patients_ahead"].clip(lower=0) + frame["priority_ahead"].clip(lower=0)
+    ahead = frame["patients_ahead"].clip(lower=0)
     start_delay = frame["minutes_to_start"].clip(lower=0).where(frame["session_started"] < 0.5, 0.0)
     return (ahead * frame["doctor_avg_consult"] + start_delay).clip(lower=0)

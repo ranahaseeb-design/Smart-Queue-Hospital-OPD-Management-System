@@ -169,7 +169,7 @@ test('AI service down: baseline predictions, JS ranking, baseline forecast, 503 
   const f = JSON.parse(row.features_json);
   assert.equal(
     Math.round(res.body.estimate.minutes),
-    Math.round((f.patients_ahead + f.priority_ahead) * f.doctor_avg_consult + f.minutes_to_start)
+    Math.round(f.patients_ahead * f.doctor_avg_consult + f.minutes_to_start)
   );
 
   const rec = await ctx.api.get('/recommendations?specialty=Cardiology', p.token);
