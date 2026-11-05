@@ -148,10 +148,10 @@ const meanOrNull = (arr) => (arr.length >= MIN_SAMPLES ? time.round(arr.reduce((
 function lastStatus(tok) {
   return tok.changes[tok.changes.length - 1].status;
 }
-function lastCalledAt(tok) {
-  let at = null;
-  for (const c of tok.changes) if (c.status === 'CALLED') at = c.at;
-  return at;
+/** First call time: a recall does not overwrite tokens.called_at (live recallToken behaviour). */
+function firstCalledAt(tok) {
+  const c = tok.changes.find((x) => x.status === 'CALLED');
+  return c ? c.at : null;
 }
 function completedAt(tok) {
   const c = tok.changes.find((x) => x.status === 'COMPLETED');
@@ -287,7 +287,10 @@ function buildMasterData(rng, now, historyDays) {
   for (let i = 1; i <= SYNTHETIC_PATIENTS; i += 1) {
     const r = rng.next();
     const priorityCategory = r < 0.11 ? 'ELDERLY' : r < 0.14 ? 'DIFFERENTLY_ABLED' : 'NONE';
-    const year = priorityCategory === 'ELDERLY' ? rng.int(1938, 1961) : rng.int(1962, 2020);
+    // ELDERLY is derived from the date of birth (userService.ELDERLY_MIN_AGE = 60): keep the stored
+    // categories consistent with it (ELDERLY >= 61, everyone else < 60 years old today).
+    const thisYear = now.getFullYear();
+    const year = priorityCategory === 'ELDERLY' ? rng.int(thisYear - 88, thisYear - 61) : rng.int(thisYear - 59, 2020);
     const u = addUser({
       fullName: `${rng.pick(FIRST_NAMES)} ${rng.pick(LAST_NAMES)}`,
       phone: `0321${String(i).padStart(7, '0')}`,
@@ -752,7 +755,7 @@ class Simulator {
         finalPriority(tok),
         lastStatus(tok),
         fmt(tok.issuedAt),
-        fmt(lastCalledAt(tok)),
+        fmt(firstCalledAt(tok)),
         fmt(completedAt(tok)),
         1,
       ]);
@@ -792,7 +795,7 @@ class Simulator {
     const nowMs = this.now.getTime();
     for (const tok of opdTokens) {
       if (tok.noFeedback || lastStatus(tok) !== 'COMPLETED' || !rng.chance(P.feedback)) continue;
-      const wait = (lastCalledAt(tok) - tok.issuedAt) / 60000;
+      const wait = (firstCalledAt(tok) - tok.issuedAt) / 60000;
       const dist =
         wait < 20
           ? [[5, 0.55], [4, 0.35], [3, 0.1]]
@@ -822,7 +825,7 @@ function durationsOf(tokens) {
   return tokens
     .filter((t) => lastStatus(t) === 'COMPLETED')
     .sort((a, b) => completedAt(a) - completedAt(b) || a.id - b.id)
-    .map((t) => (completedAt(t) - lastCalledAt(t)) / 60000)
+    .map((t) => (completedAt(t) - firstCalledAt(t)) / 60000)
     .filter((d) => d >= 0);
 }
 

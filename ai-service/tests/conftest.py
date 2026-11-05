@@ -139,9 +139,11 @@ def _seed_wait_history(eng, days: int = 40, per_session: int = 8, start: datetim
                 token_id += 1
                 issued = day.replace(hour=8) + timedelta(minutes=9 * i + rng.randint(0, 5))
                 started = rng.random() < 0.6
+                patients_ahead = rng.randint(0, 12)
                 features = {
-                    "patients_ahead": rng.randint(0, 12),
-                    "priority_ahead": rng.randint(0, 2),
+                    "patients_ahead": patients_ahead,
+                    # priority tokens ahead are a subset of the patients ahead (as in the backend)
+                    "priority_ahead": min(patients_ahead, rng.randint(0, 2)),
                     "doctor_avg_consult": 10.0,
                     "doctor_recent_consult": round(consult + rng.uniform(-1.0, 1.0), 1),
                     "interruptions_last_hour": rng.randint(0, 3),
@@ -155,7 +157,7 @@ def _seed_wait_history(eng, days: int = 40, per_session: int = 8, start: datetim
                     "department_id": DEPARTMENT_OF[doctor_id],
                     "branch_id": 1,
                 }
-                wait = (features["patients_ahead"] + features["priority_ahead"]) * consult
+                wait = features["patients_ahead"] * consult
                 wait = max(0.0, wait + features["minutes_to_start"] + rng.gauss(0.0, 2.0))
                 called = None if rng.random() < 0.05 else issued + timedelta(minutes=wait)
                 if called is not None:

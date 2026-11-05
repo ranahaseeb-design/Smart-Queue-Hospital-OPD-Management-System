@@ -64,7 +64,8 @@ Seed: 3 branches in Lahore, 4–5 departments each (standardised specialties: Ge
 // QueueToken (staff-facing)
 { "id": 42, "tokenNumber": 7, "displayNumber": "OPD-007", "status": "WAITING", "priorityLevel": 1,
   "priorityCategory": "ELDERLY", "patientName": "Ali Khan", "issuedAt": "...", "calledAt": null,
-  "visitId": 17, "doctorId": 2, "estimateMinutes": 30, "fromAppointment": false }
+  "visitId": 17, "doctorId": 2, "estimateMinutes": 30, "fromAppointment": false,
+  "priorityDeclared": false }  // true while priority 1 rests only on a self-declared DIFFERENTLY_ABLED category (no PRIORITY_SET in the visit yet)
 
 // Appointment
 { "id": 5, "doctor": { "id": 2, "fullName": "Dr. Sara Ahmed", "specialty": "Cardiology" },
@@ -82,10 +83,10 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 | Method | Path | Body / query | Response |
 |---|---|---|---|
 | GET | `/health` | – | `{ status: "ok", db: "mysql|sqlite", ai: true|false }` |
-| POST | `/auth/register` | `{ fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }` (≥1 of email/phone, password ≥ 6) | 201 `{ token, user }` — role is always PATIENT |
+| POST | `/auth/register` | `{ fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }` (≥1 of email/phone, password ≥ 6) | 201 `{ token, user }` — role is always PATIENT. `ELDERLY` is derived from `dateOfBirth` (age ≥ 60, set automatically); declaring it without a qualifying `dateOfBirth` → 400. `DIFFERENTLY_ABLED` may be declared (staff confirm per token) |
 | POST | `/auth/login` | `{ identifier, password }` (identifier = email or phone) | `{ token, user }` |
 | GET | `/auth/me` | – | `{ user }` |
-| PUT | `/auth/me` | `{ fullName?, email?, phone?, dateOfBirth?, priorityCategory?, password? }` | `{ user }` |
+| PUT | `/auth/me` | `{ fullName?, email?, phone?, dateOfBirth?, priorityCategory?, password? }` | `{ user }` (same `priorityCategory` rules as register) |
 
 ### Browse (FR-02) — any authenticated role
 | GET | `/branches` | – | `[ { id, name, address, latitude, longitude, status } ]` (ACTIVE only for patients) |
@@ -112,7 +113,7 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | POST | `/appointments` | `{ doctorId, slotStart }` | 201 `Appointment`; 409 if slot taken |
 | PUT | `/appointments/:id` | `{ slotStart }` | `Appointment` (reschedule, only BOOKED) |
 | DELETE | `/appointments/:id` | – | `Appointment` status CANCELLED (slot released) |
-| POST | `/appointments/:id/check-in` | – | 201 `TokenDetail` (only on the appointment day; token gets `appointment_id`) |
+| POST | `/appointments/:id/check-in` | – | 201 `TokenDetail` (only `BOOKED` appointments, from 60 min before `slot_start` until the end of the doctor's session containing the slot, else 409; the token is issued to that session's service point and gets `appointment_id`) |
 
 ### Visits, feedback, notifications (FR-19, FR-20, FR-11)
 | GET | `/visits` | – | `[ { id, visitDate, status, branch: {id,name}, tokens: [ { id, displayNumber, queueType, status, issuedAt, calledAt, completedAt, doctorName, servicePointName } ], feedback: { rating, comment } | null, canGiveFeedback } ]` newest first |
@@ -129,7 +130,7 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | POST | `/tokens/:id/skip` | – | CALLED → SKIPPED |
 | POST | `/tokens/:id/recall` | – | SKIPPED → CALLED (409 if another token is open) |
 | POST | `/tokens/:id/complete` | – | CALLED/IN_SERVICE → COMPLETED |
-| POST | `/tokens/:id/transfer` | `{ toServicePointId, toDoctorId? }` | `{ from: QueueToken, to: QueueToken }`; WAITING/CALLED → TRANSFERRED, new WAITING token in the target queue, same visit, priority kept |
+| POST | `/tokens/:id/transfer` | `{ toServicePointId, toDoctorId? }` | `{ from: QueueToken, to: QueueToken }`; WAITING/CALLED → TRANSFERRED, new WAITING token in the target queue, same visit, priority kept; an appointment link (`appointment_id`) moves to the new token |
 | POST | `/tokens/:id/priority` | `{ level: 0-2, reason }` | `QueueToken`; logs PRIORITY_SET with note = reason |
 | GET | `/staff/transfer-targets` | `?servicePointId=` | `[ { servicePointId, name, type, doctorId, doctorName, specialty, waiting } ]` active points in the same branch except this one |
 | POST | `/visits/:id/linked-tokens` | `{ type: "LAB"|"PHARMACY", servicePointId? }` | 201 `TokenDetail`; default target = the branch's active point of that type with the shortest queue. Doctors only (roles matrix): 403 `FORBIDDEN` for staff without a doctor profile |
@@ -142,7 +143,7 @@ Every status change writes a `queue_events` row in the same DB transaction (FR-2
 | CRUD | `/admin/doctors` | create: `{ fullName, email, phone?, password, departmentId, avgConsultMinutes? }` (creates STAFF user + doctor) | row: `{ id, userId, fullName, email, phone, departmentId, departmentName, specialty, branchId, branchName, avgConsultMinutes, isActive }` |
 | CRUD | `/admin/schedules` | `{ doctorId, servicePointId, dayOfWeek (1=Mon..7=Sun), startTime "HH:mm", endTime, maxPatients? }` | `?doctorId=&branchId=`; row adds `doctorName`, `servicePointName` |
 | CRUD | `/admin/service-points` | `{ branchId, type, name, isActive }` | |
-| CRUD | `/admin/users` | `{ fullName, email, phone?, password?, role (STAFF|BRANCH_ADMIN|HOSPITAL_ADMIN), adminBranchId?, isActive }` | `?role=` (one role or a comma-separated list, e.g. `?role=STAFF,BRANCH_ADMIN,HOSPITAL_ADMIN`); branch admin may only manage STAFF of own branch |
+| CRUD | `/admin/users` | `{ fullName, email, phone?, password?, role (STAFF|BRANCH_ADMIN|HOSPITAL_ADMIN), adminBranchId?, isActive }` | `?role=` (one role or a comma-separated list, e.g. `?role=STAFF,BRANCH_ADMIN,HOSPITAL_ADMIN`); branch admin may only manage STAFF of own branch (home branch, assignment or doctor department there); staff with no branch at all are managed by the hospital admin only (403 for branch admins, also for `POST /admin/assignments`) |
 | GET/POST/DELETE | `/admin/assignments` | `{ userId, servicePointId }` | row: `{ id, userId, userName, servicePointId, servicePointName, type, branchName }` |
 
 `DELETE` on master data = soft deactivate (`is_active=false` / `status=INACTIVE`), except schedules and assignments which are hard-deleted. Each CRUD resource: `GET /x` list, `GET /x/:id`, `POST /x` → 201, `PUT /x/:id`, `DELETE /x/:id`.
@@ -156,7 +157,7 @@ Every status change writes a `queue_events` row in the same DB transaction (FR-2
 | GET | `/admin/feedback` | `?branchId=` | `{ summary: { count, average, distribution: { "1": n, ..., "5": n } }, items: [ { id, rating, comment, createdAt, patientName, branchName, visitDate } ] }` |
 | GET/PUT | `/admin/settings` | PUT hospital admin only | `{ recommendationWeights: { wait: 0.6, distance: 0.25, congestion: 0.15 }, congestionThresholds: { high: 0.85, critical: 1.0 }, alternativeSuggestionWaitMinutes: 45, notifyPositionsAhead: 3, slotMinutes: 15 }` |
 | GET | `/admin/models` | – | `[ { version, trainedAt, trainingRows, dataSource, status, isActive, metrics: { mae, rmse, r2, within10, baselineMae, testRows } } ]` |
-| POST | `/admin/models/retrain` | – | hospital admin; proxies AI `/ai/models/retrain` → `{ version, metrics, accepted, activated }`; 503 `AI_UNAVAILABLE` |
+| POST | `/admin/models/retrain` | – | hospital admin; proxies AI `/ai/models/retrain` → `{ version, metrics, accepted, activated }`; 409 `CONFLICT` with the AI's message while a retraining job is already running; 503 `AI_UNAVAILABLE` |
 | POST | `/admin/models/:version/activate` | – | hospital admin; proxies AI |
 
 Congestion (Eq. 6.5): live ratio for a department = waiting tokens ÷ remaining capacity this session (Σ over active doctors of remaining session minutes ÷ avg consult minutes); `NORMAL` < high ≤ `HIGH` < critical ≤ `CRITICAL`. `suggestAlternatives` (FR-09) = estimate ≥ `alternativeSuggestionWaitMinutes` or level HIGH/CRITICAL.
@@ -187,7 +188,7 @@ Feature vector (Section 6.3), keys exactly:
 `patients_ahead, priority_ahead, doctor_avg_consult, doctor_recent_consult, interruptions_last_hour, session_started (0/1), minutes_to_start, hour_of_day, day_of_week (1-7), appointments_ahead, department_load, doctor_id, department_id, branch_id`.
 The backend stores this object as `wait_predictions.features_json` for every prediction; the first prediction of each token joined with its actual wait (`called_at − issued_at`) is the training set.
 
-Baseline (Eq. 6.2): `W = (patients_ahead + priority_ahead) * doctor_avg_consult + minutes_to_start` (minutes_to_start = 0 once started). Used when the AI service is down/has no active model, and as the benchmark.
+Baseline (Eq. 6.2): `W = patients_ahead * doctor_avg_consult + minutes_to_start` (minutes_to_start = 0 once started). `patients_ahead` already counts the priority tokens ahead, so `priority_ahead` is not added again (it is a model feature only). Used when the AI service is down/has no active model, and as the benchmark.
 
 | Method | Path | Body | Response |
 |---|---|---|---|

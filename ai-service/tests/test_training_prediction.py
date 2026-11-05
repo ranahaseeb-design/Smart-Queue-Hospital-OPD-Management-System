@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from app import db, predictor
 from app.config import settings
-from app.features import FEATURES
+from app.features import FEATURE_ENCODING, FEATURES, RAW_FEATURE_ENCODING, prepare_frame
 from app.predictor import registry
 from app.training import load_training_data
 
@@ -105,6 +105,12 @@ def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, mo
     assert bundle["features"] == FEATURES
     assert set(bundle["feature_importances"]) == set(FEATURES)
     assert bundle["training_period"]["from"] < bundle["training_period"]["to"]
+    # Ids are one-hot encoded inside a saved Pipeline (unknown ids are ignored at prediction time).
+    assert bundle["feature_encoding"] == FEATURE_ENCODING
+    assert list(bundle["model"].named_steps) == ["encode", "forest"]
+    assert all(not name.startswith("forest__") for name in bundle["hyperparameters"])
+    unseen = dict(PREDICT_BODY["items"][0]["features"], doctor_id=999, department_id=99, branch_id=42)
+    assert predictor.predict_with_bundle(bundle, [unseen])[0] >= 0
 
     assert client.get("/health").json()["activeModel"] == version
     listed = client.get("/ai/models").json()
@@ -219,3 +225,51 @@ def test_major_department_regression_rejects_the_model(client, engine, seed_wait
     assert response.status_code == 409
     assert "REJECTED" in response.json()["detail"]
     assert client.get("/health").json()["activeModel"] is None
+
+
+def test_data_source_label_and_synthetic_share():
+    import pandas as pd
+
+    from app.training import data_source_label, synthetic_share
+
+    assert data_source_label(pd.Series([True, True])) == "synthetic"
+    assert data_source_label(pd.Series([False, False])) == "pilot"
+    assert data_source_label(pd.Series([True, False, False])) == "mixed"
+    assert synthetic_share(pd.Series([True, False, False, False])) == 0.25
+    assert synthetic_share(pd.Series([], dtype=bool)) == 0.0
+
+
+def test_retrain_with_pilot_rows_is_mixed_and_stores_shares(client, engine, seed_wait_history):
+    import json
+
+    seed_wait_history(days=40)
+    # The newest tokens (test period) come from the pilot deployment, not the synthetic history.
+    with engine.begin() as conn:
+        cutoff = conn.execute(text("SELECT MAX(issued_at) FROM tokens")).scalar()
+        conn.execute(text("UPDATE tokens SET is_synthetic = 0 WHERE issued_at >= date(:c, '-3 day')"), {"c": cutoff})
+    response = client.post("/ai/models/retrain")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT data_source, metrics_json FROM model_versions WHERE version = :v"), {"v": body["version"]}
+        ).mappings().one()
+    assert row["data_source"] == "mixed"
+    stored = json.loads(row["metrics_json"])
+    assert stored["syntheticShareTrain"] == 1.0
+    assert 0.0 <= stored["syntheticShareTest"] < 1.0
+
+
+def test_old_raw_id_bundle_still_loads_and_predicts(engine):
+    """A bundle saved before the one-hot encoding (bare forest on the raw 14 columns) keeps working."""
+    from sklearn.ensemble import RandomForestRegressor
+
+    rows = [dict(item["features"]) for item in PREDICT_BODY["items"]] * 5
+    forest = RandomForestRegressor(n_estimators=5, random_state=0).fit(prepare_frame(rows), [10.0, 30.0] * 5)
+    settings.models_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"version": "rf-legacy", "model": forest, "features": list(FEATURES)}, settings.models_dir / "rf-legacy.joblib")
+
+    bundle = predictor.load_bundle("rf-legacy")
+    assert bundle["feature_encoding"] == RAW_FEATURE_ENCODING
+    values = predictor.predict_with_bundle(bundle, [item["features"] for item in PREDICT_BODY["items"]])
+    assert len(values) == 2 and all(v >= 0 for v in values)

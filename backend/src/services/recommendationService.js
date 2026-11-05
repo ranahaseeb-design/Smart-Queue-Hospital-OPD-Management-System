@@ -80,7 +80,7 @@ async function recommend(db, { specialty, lat = null, lng = null, excludeDoctorI
   const settings = await settingsService.getSettings(db);
   const hasLocation = lat !== null && lng !== null;
   const weights = effectiveWeights(settings.recommendationWeights, hasLocation);
-  const priorityLevel = user && user.role === 'PATIENT' ? queueService.priorityFromCategory(user.priority_category) : 0;
+  const priorityLevel = user && user.role === 'PATIENT' ? queueService.priorityFromCategory(user.priority_category, user.date_of_birth) : 0;
   const date = time.formatDate(now);
 
   const departments = (

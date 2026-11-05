@@ -7,7 +7,7 @@
  * the service is down (NFR-02).
  */
 const config = require('../config');
-const { aiUnavailable } = require('../utils/errors');
+const { aiUnavailable, badRequest, conflict, notFound } = require('../utils/errors');
 
 const BREAKER_MS = 15 * 1000;
 let downUntil = 0;
@@ -132,24 +132,19 @@ async function runForecastJob(days) {
   }
 }
 
-/** Model management proxies (FR-22). These throw 503 AI_UNAVAILABLE on failure. */
+/**
+ * Model management proxies (FR-22). AI 404 -> 404 NOT_FOUND, 409 (e.g. a retraining job is already
+ * running) -> 409 CONFLICT, other 4xx -> 400 VALIDATION_ERROR, all with the AI's message;
+ * anything else (5xx, timeout, unreachable) -> 503 AI_UNAVAILABLE.
+ */
 async function proxy(method, path, timeoutMs) {
   if (!enabled()) throw aiUnavailable('The AI service is not configured');
   try {
     return await request(method, path, method === 'POST' ? {} : undefined, timeoutMs);
   } catch (err) {
-    if (err.status === 404) {
-      const e = aiUnavailable(err.message);
-      e.status = 404;
-      e.code = 'NOT_FOUND';
-      throw e;
-    }
-    if (err.status && err.status >= 400 && err.status < 500) {
-      const e = aiUnavailable(err.message);
-      e.status = 400;
-      e.code = 'VALIDATION_ERROR';
-      throw e;
-    }
+    if (err.status === 404) throw notFound(err.message);
+    if (err.status === 409) throw conflict(err.message);
+    if (err.status && err.status >= 400 && err.status < 500) throw badRequest(err.message);
     throw aiUnavailable(`The AI service is unavailable (${err.message})`);
   }
 }

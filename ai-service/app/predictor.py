@@ -16,7 +16,7 @@ import numpy as np
 
 from . import db
 from .config import settings
-from .features import FEATURES, prepare_frame
+from .features import FEATURES, RAW_FEATURE_ENCODING, prepare_frame
 
 
 class NoActiveModelError(RuntimeError):
@@ -35,8 +35,13 @@ def prepare_for_serving(bundle: dict, version: str) -> dict:
     """
     bundle.setdefault("features", list(FEATURES))
     bundle.setdefault("version", version)
-    if hasattr(bundle["model"], "n_jobs"):
-        bundle["model"].n_jobs = 1
+    # Bundles saved before the one-hot id encoding hold a bare forest fed the raw 14 columns; they
+    # are labelled "raw" and still predict through the same prepare_frame -> model.predict path.
+    bundle.setdefault("feature_encoding", RAW_FEATURE_ENCODING)
+    model = bundle["model"]
+    estimator = model.steps[-1][1] if hasattr(model, "steps") else model  # Pipeline -> its forest
+    if hasattr(estimator, "n_jobs"):
+        estimator.n_jobs = 1
     return bundle
 
 

@@ -2,7 +2,8 @@
 
 Training set: the FIRST ``wait_predictions`` row of every token (its ``features_json`` is
 the feature vector known when the token was issued) joined with the token's actual wait
-``called_at - issued_at`` in minutes (Section 6.1). All queue types are used.
+``called_at - issued_at`` in minutes (Section 6.1). ``called_at`` is the FIRST call: the backend
+never overwrites it on a recall (a recall is only a RECALLED queue_event). All queue types are used.
 
 Procedure:
 1. Chronological 80/20 split by ``issued_at`` (Section 6.7.1 — a random split would leak the future).
@@ -34,11 +35,12 @@ import sklearn
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
+from sklearn.pipeline import Pipeline
 from sqlalchemy import text
 
 from . import db
 from .config import local_now, settings
-from .features import FEATURES, baseline_series, prepare_frame
+from .features import FEATURE_ENCODING, FEATURES, baseline_series, build_preprocessor, prepare_frame, source_feature
 from .predictor import active_version, load_bundle, model_path, predict_with_bundle, registry
 
 log = logging.getLogger(__name__)
@@ -135,11 +137,25 @@ def load_training_data(engine=None) -> TrainingData:
     return TrainingData(X=X, y=frame["wait"], issued_at=frame["issued_at"], is_synthetic=frame["is_synthetic"])
 
 
-def _search_model(X: pd.DataFrame, y: pd.Series) -> tuple[RandomForestRegressor, dict, float]:
-    """Section 6.4.2: hyperparameter search with time-series cross-validation on the training period."""
+def build_pipeline() -> Pipeline:
+    """One-hot id encoding (features.build_preprocessor) followed by the random forest."""
+    return Pipeline(
+        steps=[
+            ("encode", build_preprocessor()),
+            ("forest", RandomForestRegressor(random_state=RANDOM_STATE, n_jobs=settings.n_jobs)),
+        ]
+    )
+
+
+def _search_model(X: pd.DataFrame, y: pd.Series) -> tuple[Pipeline, dict, float]:
+    """Section 6.4.2: hyperparameter search with time-series cross-validation on the training period.
+
+    The encoder is refitted inside every CV fold (part of the pipeline), so no id seen only in a
+    validation fold leaks into training. Returned hyperparameters use the plain forest names.
+    """
     search = RandomizedSearchCV(
-        estimator=RandomForestRegressor(random_state=RANDOM_STATE, n_jobs=settings.n_jobs),
-        param_distributions=PARAM_DISTRIBUTIONS,
+        estimator=build_pipeline(),
+        param_distributions={f"forest__{name}": values for name, values in PARAM_DISTRIBUTIONS.items()},
         n_iter=settings.search_iter,
         scoring="neg_mean_absolute_error",
         cv=TimeSeriesSplit(n_splits=3),
@@ -149,7 +165,17 @@ def _search_model(X: pd.DataFrame, y: pd.Series) -> tuple[RandomForestRegressor,
         error_score="raise",
     )
     search.fit(X, y)
-    return search.best_estimator_, dict(search.best_params_), float(-search.best_score_)
+    params = {name.removeprefix("forest__"): value for name, value in search.best_params_.items()}
+    return search.best_estimator_, params, float(-search.best_score_)
+
+
+def _feature_importances(pipeline: Pipeline) -> dict[str, float]:
+    """Forest importances summed back onto the 14 contract feature keys (one-hot columns per id)."""
+    names = pipeline.named_steps["encode"].get_feature_names_out()
+    totals = {name: 0.0 for name in FEATURES}
+    for encoded, value in zip(names, pipeline.named_steps["forest"].feature_importances_):
+        totals[source_feature(str(encoded))] += float(value)
+    return {name: round(value, 5) for name, value in sorted(totals.items(), key=lambda p: -p[1])}
 
 
 def _metrics(y_true: np.ndarray, y_pred: np.ndarray, baseline_mae: float) -> dict:
@@ -197,6 +223,23 @@ def _department_check(test_X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarr
     return rows
 
 
+def synthetic_share(flags: pd.Series) -> float:
+    """Fraction (0-1, 4 decimals) of rows flagged tokens.is_synthetic; 0.0 for no rows."""
+    if len(flags) == 0:
+        return 0.0
+    return round(float(flags.astype(bool).mean()), 4)
+
+
+def data_source_label(flags: pd.Series) -> str:
+    """model_versions.data_source: 'synthetic' (all rows synthetic), 'pilot' (none), 'mixed'."""
+    synthetic = flags.astype(bool)
+    if len(synthetic) and bool(synthetic.all()):
+        return "synthetic"
+    if not bool(synthetic.any()):
+        return "pilot"
+    return "mixed"
+
+
 def _new_version_name(now: datetime) -> str:
     base = now.strftime("rf-%Y%m%d-%H%M")  # 16 chars; model_versions.version is VARCHAR(20)
     version, suffix = base, 2
@@ -232,15 +275,17 @@ def _retrain_locked(now: datetime) -> dict:
     log.info("Training on %d rows, testing on %d rows", len(X_train), len(X_test))
     model, best_params, cv_mae = _search_model(X_train, y_train)
 
-    feature_importances = {
-        name: round(float(value), 5) for name, value in sorted(zip(FEATURES, model.feature_importances_), key=lambda p: -p[1])
-    }
+    feature_importances = _feature_importances(model)
     version = _new_version_name(now)
-    data_source = "synthetic" if bool(data.is_synthetic.iloc[:split].all()) else "pilot"
+    # Over every labelled row used (training + test period); the shares are stored in metrics_json.
+    data_source = data_source_label(data.is_synthetic)
+    share_train = synthetic_share(data.is_synthetic.iloc[:split])
+    share_test = synthetic_share(data.is_synthetic.iloc[split:])
     bundle = {
         "version": version,
         "model": model,
         "features": list(FEATURES),
+        "feature_encoding": FEATURE_ENCODING,
         "trained_at": db.fmt_dt(now),
         "training_rows": int(len(X_train)),
         "data_source": data_source,
@@ -266,6 +311,8 @@ def _retrain_locked(now: datetime) -> dict:
     baseline_mae = float(np.mean(np.abs(y_true - y_base)))
     model_mae = float(np.mean(np.abs(y_true - y_pred)))
     metrics = _metrics(y_true, y_pred, baseline_mae)
+    metrics["syntheticShareTrain"] = share_train
+    metrics["syntheticShareTest"] = share_test
     department_check = _department_check(X_test, y_true, y_pred, y_base)
 
     # Compare with the currently active model on the same test rows (FR-22, Section 6.8).

@@ -15,8 +15,9 @@ Stack: FastAPI + uvicorn, scikit-learn `RandomForestRegressor`, pandas, numpy, S
 > **Training-data caveat (Sections 6.2, 6.9, 6.11).** The development database is seeded with
 > **synthetic** history (`tokens.is_synthetic = 1`). Models trained on it only show that the pipeline
 > works end to end. Their metrics are **not** real-world accuracy and must not be reported as such.
-> Each model version records its `data_source` (`synthetic` when every training token is synthetic,
-> otherwise `pilot`). Real accuracy can only come from pilot or partner-hospital data, evaluated with
+> Each model version records its `data_source` over all labelled rows used (training + test period):
+> `synthetic` when every token is synthetic, `pilot` when none is, `mixed` otherwise; the synthetic
+> shares are stored in `metrics_json` as `syntheticShareTrain` / `syntheticShareTest` (0-1). Real accuracy can only come from pilot or partner-hospital data, evaluated with
 > the procedure below. This README makes no accuracy claim.
 
 ---
@@ -227,7 +228,13 @@ plus additions `reason`, `activeModelMae` and `departmentCheck[]`.
   (`ACTIVE`, or `RETIRED` for a rollback) can be activated. A `REJECTED` version answers **409**.
 - **Versioning:** the version is named `rf-YYYYMMDD-HHMM`, with `-2`, `-3`… on a collision. The joblib
   bundle holds the model, the feature list, the training and test periods, the chosen hyperparameters,
-  the CV MAE, feature importances, metrics, the per-department check and the sklearn version. A
+  the CV MAE, feature importances, metrics, the per-department check and the sklearn version. The
+  model is a scikit-learn `Pipeline`: a `ColumnTransformer` one-hot encodes `doctor_id`,
+  `department_id` and `branch_id` (`OneHotEncoder(handle_unknown="ignore")`, so an id unseen in
+  training adds nothing instead of being read as a number) and passes the 11 numeric features
+  through to the forest; feature importances are summed back onto the 14 contract keys. The bundle
+  records `feature_encoding = "onehot-ids-v1"`; bundles saved before this change have no such key,
+  are reported as `"raw"` and still load and predict unchanged (same feature keys and predict API). A
   `model_versions` row is written: `ACTIVE`/`is_active = 1` when accepted (the previous active model
   becomes `RETIRED`), otherwise `REJECTED`.
 

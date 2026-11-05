@@ -15,6 +15,7 @@ const { badRequest, conflict, forbidden, notFound } = require('../utils/errors')
 const fb = require('./featureBuilder');
 const access = require('./accessService');
 const scheduleService = require('./scheduleService');
+const userService = require('./userService');
 const predictionService = require('./predictionService');
 const notificationService = require('./notificationService');
 const settingsService = require('./settingsService');
@@ -29,9 +30,32 @@ const lastDepartmentLevel = new Map(); // departmentId -> last live congestion l
 const lastPosition = new Map();
 const LAST_POSITION_LIMIT = 50000;
 
-function priorityFromCategory(category) {
-  return category === 'ELDERLY' || category === 'DIFFERENTLY_ABLED' ? 1 : 0;
+/**
+ * Pre-set priority of a new token (FR-13): 1 for ELDERLY / DIFFERENTLY_ABLED, and for a patient who
+ * has reached userService.ELDERLY_MIN_AGE by dateStr even if the stored category predates that.
+ */
+function priorityFromCategory(category, dateOfBirth = null, dateStr = time.today()) {
+  if (category === 'ELDERLY' || category === 'DIFFERENTLY_ABLED') return 1;
+  return userService.isElderly(dateOfBirth, dateStr) ? 1 : 0;
 }
+
+/**
+ * True while a token's priority 1 rests only on the patient's self-declared DIFFERENTLY_ABLED
+ * category (not on age) and no staff member has confirmed/overridden priority in this visit.
+ */
+function isPriorityDeclared(row) {
+  return (
+    Number(row.priority_level) === 1 &&
+    row.priority_category === 'DIFFERENTLY_ABLED' &&
+    !userService.isElderly(row.patient_dob, time.toApiDate(row.token_date)) &&
+    !Number(row.priority_confirmed)
+  );
+}
+
+// Columns for isPriorityDeclared (t = tokens, pu = the patient's users row).
+const PRIORITY_DECLARED_COLUMNS = `pu.date_of_birth AS patient_dob,
+            (SELECT COUNT(*) FROM queue_events pe JOIN tokens pt ON pt.token_id = pe.token_id
+              WHERE pt.visit_id = t.visit_id AND pe.event_type = 'PRIORITY_SET') AS priority_confirmed`;
 
 function queueKeyOf(row) {
   return {
@@ -51,7 +75,7 @@ async function loadTokenRow(db, tokenId) {
     `SELECT t.*, v.patient_id, v.branch_id, v.status AS visit_status, b.name AS branch_name,
             sp.name AS sp_name, sp.type AS sp_type,
             du.full_name AS doctor_name, dep.specialty, dep.department_id, dep.name AS department_name,
-            pu.full_name AS patient_name, pu.priority_category
+            pu.full_name AS patient_name, pu.priority_category, ${PRIORITY_DECLARED_COLUMNS}
        FROM tokens t
        JOIN visits v ON v.visit_id = t.visit_id
        JOIN branches b ON b.branch_id = v.branch_id
@@ -191,6 +215,7 @@ function toQueueToken(row, estimateMinutes = null) {
     status: row.status,
     priorityLevel: Number(row.priority_level),
     priorityCategory: row.priority_category || 'NONE',
+    priorityDeclared: isPriorityDeclared(row),
     patientName: row.patient_name,
     issuedAt: time.toApi(row.issued_at),
     calledAt: time.toApi(row.called_at),
@@ -355,15 +380,16 @@ async function checkCongestionAlert(db, departmentId, now) {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Issue an OPD token for a patient (FR-03) — also used by appointment check-in (FR-10).
- * Returns the new token id.
+ * Issue an OPD token for a patient (FR-03) — also used by appointment check-in (FR-10), which
+ * passes the session containing the appointment slot (`slotSession`) so the token goes to that
+ * session's service point. Returns the new token id.
  */
-async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now = time.clock.now() } = {}) {
+async function issueOpdToken(db, patient, doctorId, { appointmentId = null, session: slotSession = null, now = time.clock.now() } = {}) {
   const doctor = await scheduleService.getDoctor(db, doctorId);
   if (!doctor || !scheduleService.isDoctorBookable(doctor)) throw notFound('Doctor not found or not active');
-  const date = time.formatDate(now);
+  const date = slotSession ? time.formatDate(slotSession.start) : time.formatDate(now);
   const sessions = await scheduleService.doctorSessions(db, doctorId, date);
-  const session = scheduleService.pickSession(sessions, date, now);
+  const session = slotSession || scheduleService.pickSession(sessions, date, now);
   if (!session) throw conflict('The doctor is not scheduled today');
   if (!config.demoAlwaysOpen && now >= session.end) throw conflict("The doctor's session has ended for today");
 
@@ -394,7 +420,7 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now 
       tokenNumber,
       date,
       queueType: 'OPD',
-      priorityLevel: priorityFromCategory(patient.priority_category),
+      priorityLevel: priorityFromCategory(patient.priority_category, patient.date_of_birth, date),
       issuedAt,
     });
     await insertEvent(tx, {
@@ -406,10 +432,12 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now 
       at: issuedAt,
     });
     if (appointmentId) {
-      await tx.run(`UPDATE appointments SET status = 'CHECKED_IN', updated_at = ? WHERE appointment_id = ?`, [
-        issuedAt,
-        appointmentId,
-      ]);
+      // Guarded: a concurrent check-in / cancel of the same appointment rolls this one back.
+      const r = await tx.run(
+        `UPDATE appointments SET status = 'CHECKED_IN', updated_at = ? WHERE appointment_id = ? AND status = 'BOOKED'`,
+        [issuedAt, appointmentId]
+      );
+      if (r.changes !== 1) throw conflict('Appointment changed, please refresh');
     }
     return id;
   });
@@ -535,7 +563,7 @@ async function servicePointQueue(db, user, servicePointId, now = time.clock.now(
   const sp = await access.assertServicePointAccess(db, user, servicePointId);
   const date = time.formatDate(now);
   const rows = await db.query(
-    `SELECT t.*, pu.full_name AS patient_name, pu.priority_category
+    `SELECT t.*, pu.full_name AS patient_name, pu.priority_category, ${PRIORITY_DECLARED_COLUMNS}
        FROM tokens t JOIN visits v ON v.visit_id = t.visit_id JOIN users pu ON pu.user_id = v.patient_id
       WHERE t.service_point_id = ? AND t.token_date = ?`,
     [servicePointId, date]
@@ -691,7 +719,9 @@ async function staffTransition(db, user, tokenId, { from, to, event, setCalled =
     const sets = ['status = ?'];
     const params = [to];
     if (setCalled) {
-      sets.push('called_at = ?');
+      // called_at is the FIRST call time (label of the waiting-time model and of the wait
+      // analytics); a recall is recorded only as a RECALLED queue_event and keeps it.
+      sets.push('called_at = COALESCE(called_at, ?)');
       params.push(at);
     }
     if (setCompleted) {
@@ -814,10 +844,12 @@ async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId =
   const newId = await db.transaction(async (tx) => {
     // Service points (ascending id) before the token row, the same order as callNext.
     await lockServicePoints(tx, [row.service_point_id, target.service_point_id]);
-    const r = await tx.run(`UPDATE tokens SET status = 'TRANSFERRED' WHERE token_id = ? AND status = ?`, [
-      tokenId,
-      row.status,
-    ]);
+    // The appointment linkage moves to the new token (tokens.appointment_id is UNIQUE, so it is
+    // cleared on the old one first) so the appointment is COMPLETED / NO_SHOW with the new token.
+    const r = await tx.run(
+      `UPDATE tokens SET status = 'TRANSFERRED', appointment_id = NULL WHERE token_id = ? AND status = ?`,
+      [tokenId, row.status]
+    );
     if (r.changes !== 1) throw conflict('Token status changed, please refresh');
     await insertEvent(tx, {
       tokenId,
@@ -832,7 +864,7 @@ async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId =
       visitId: row.visit_id,
       servicePointId: target.service_point_id,
       doctorId,
-      appointmentId: null,
+      appointmentId: row.appointment_id || null,
       tokenNumber,
       date,
       queueType: target.type,
@@ -987,7 +1019,11 @@ async function issueLinkedToken(db, user, visitId, { type, servicePointId = null
 
 /**
  * End-of-day closure: CALLED/SKIPPED/WAITING tokens of past days -> NO_SHOW (with events),
- * BOOKED appointments of past days -> NO_SHOW, OPEN visits of past days -> CLOSED.
+ * IN_SERVICE tokens of past days -> COMPLETED (completed_at = run time, COMPLETED event noted
+ * 'auto-closed at end of day'), their appointments NO_SHOW / COMPLETED accordingly, BOOKED
+ * appointments of past days -> NO_SHOW, CHECKED_IN appointments of past days left behind by an
+ * ended token -> COMPLETED if their token was completed, else NO_SHOW, OPEN visits of past
+ * days -> CLOSED.
  */
 async function endOfDay(db, now = time.clock.now()) {
   const date = time.formatDate(now);
@@ -1008,12 +1044,49 @@ async function endOfDay(db, now = time.clock.now()) {
         ]);
       }
     }
+    // A consultation left IN_SERVICE (never completed by staff) was served: close it as COMPLETED.
+    const inService = await tx.query(
+      `SELECT token_id, service_point_id, appointment_id FROM tokens WHERE token_date < ? AND status = 'IN_SERVICE'`,
+      [date]
+    );
+    for (const t of inService) {
+      await tx.run(`UPDATE tokens SET status = 'COMPLETED', completed_at = ? WHERE token_id = ?`, [at, t.token_id]);
+      await insertEvent(tx, {
+        tokenId: t.token_id,
+        type: 'COMPLETED',
+        from: t.service_point_id,
+        note: 'auto-closed at end of day',
+        at,
+      });
+      if (t.appointment_id) {
+        await tx.run(`UPDATE appointments SET status = 'COMPLETED', updated_at = ? WHERE appointment_id = ?`, [
+          at,
+          t.appointment_id,
+        ]);
+      }
+    }
     const appts = await tx.run(
       `UPDATE appointments SET status = 'NO_SHOW', updated_at = ? WHERE status = 'BOOKED' AND slot_start < ?`,
       [at, `${date} 00:00:00`]
     );
+    // Safety net: a CHECKED_IN appointment of a past day whose linked token has ended.
+    const doneAppts = await tx.run(
+      `UPDATE appointments SET status = 'COMPLETED', updated_at = ?
+        WHERE status = 'CHECKED_IN' AND slot_start < ?
+          AND EXISTS (SELECT 1 FROM tokens t WHERE t.appointment_id = appointments.appointment_id AND t.status = 'COMPLETED')`,
+      [at, `${date} 00:00:00`]
+    );
+    const missedAppts = await tx.run(
+      `UPDATE appointments SET status = 'NO_SHOW', updated_at = ? WHERE status = 'CHECKED_IN' AND slot_start < ?`,
+      [at, `${date} 00:00:00`]
+    );
     const visits = await tx.run(`UPDATE visits SET status = 'CLOSED' WHERE status = 'OPEN' AND visit_date < ?`, [date]);
-    return { tokens: stale.length, appointments: appts.changes, visits: visits.changes };
+    return {
+      tokens: stale.length,
+      autoCompleted: inService.length,
+      appointments: appts.changes + doneAppts.changes + missedAppts.changes,
+      visits: visits.changes,
+    };
   });
 }
 

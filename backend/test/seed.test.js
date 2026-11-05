@@ -251,7 +251,7 @@ test('seed replay reproduces the live first prediction of every token (features 
 
   const pt = {};
   for (const k of ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'L']) {
-    pt[k] = await ctx.newPatient(k === 'E' || k === 'H' ? { priorityCategory: 'ELDERLY' } : {});
+    pt[k] = await ctx.newPatient(k === 'E' || k === 'H' ? { priorityCategory: 'ELDERLY', dateOfBirth: '1952-06-15' } : {});
   }
   const ok = (res, status = 200) => {
     assert.equal(res.status, status, JSON.stringify(res.body));
@@ -262,6 +262,11 @@ test('seed replay reproduces the live first prediction of every token (features 
 
   // F books an appointment with doctor2 later today (before any scenario token exists)
   const slots = ok(await api.get(`/doctors/${me2.doctorId}/slots?date=${today}`, pt.F.token));
+  // Check-in opens 60 min before the slot and F checks in ~27 min into the scenario: on days
+  // doctor2 works the evening shift, start the scenario 75 min before the slot.
+  const s3 = slots.slots[3].start;
+  const toSlot = (time.combine(s3.slice(0, 10), s3.slice(11)) - time.clock.now()) / 60000;
+  if (toSlot > 75) ctx.advance(toSlot - 75);
   const appt = ok(await api.post('/appointments', pt.F.token, { doctorId: me2.doctorId, slotStart: slots.slots[3].start }), 201);
 
   const tok = {};

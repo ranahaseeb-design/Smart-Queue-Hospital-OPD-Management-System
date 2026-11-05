@@ -84,7 +84,7 @@ router.get('/departments/:id/doctors', async (req, res) => {
     const avail = await scheduleService.availability(db, doctor, date, now);
     doctors.push({ doctor, avail });
   }
-  const priorityLevel = req.user.role === 'PATIENT' ? queueService.priorityFromCategory(req.user.priority_category) : 0;
+  const priorityLevel = req.user.role === 'PATIENT' ? queueService.priorityFromCategory(req.user.priority_category, req.user.date_of_birth) : 0;
   const isToday = date === time.formatDate(now);
   const predictions = isToday
     ? await predictionService.predictHypothetical(

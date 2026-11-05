@@ -161,7 +161,7 @@ About 1,500 synthetic patients exist (phone-only accounts with an unusable rando
 | Linked tokens | `queueService.issueLinkedToken`, `POST /visits/:id/linked-tokens` | FR-04 |
 | Prediction | `services/featureBuilder.js` (Section 6.3 features, Eq. 6.2 baseline, Eq. 6.4/6.5), `services/predictionService.js`, `services/aiClient.js` | FR-06, FR-07 |
 | Recommendations | `services/recommendationService.js` (Eq. 6.3, haversine, reasons; location never stored) | FR-08, FR-09 |
-| Appointments | `services/appointmentService.js` (slots from schedule, no double booking, reschedule, cancel, check-in → token) | FR-10 |
+| Appointments | `services/appointmentService.js` (slots from schedule, no double booking, reschedule, cancel, check-in → token; check-in window = `CHECK_IN_EARLY_MINUTES` (60) before `slot_start` until the end of the session containing the slot, token issued to that session's room) | FR-10 |
 | Notifications | `services/notificationService.js` (IN_APP row + socket always; PUSH / EMAIL optional) | FR-11 |
 | Visits & feedback | `routes/patient.js` | FR-19, FR-20 |
 | Administration | `routes/admin.js`, `services/adminService.js` (CRUD + soft deactivate + scoping) | FR-14 |
@@ -185,8 +185,10 @@ department's live congestion escalates to HIGH/CRITICAL.
   `alert` events for HIGH/CRITICAL forecasts of the coming hour. Also once at start-up when no
   forecast covers the current hour.
 - **Once per day** (checked every minute and at start-up): end-of-day closure — unserved
-  WAITING/CALLED/SKIPPED tokens of past days → NO_SHOW (with events), past BOOKED appointments →
-  NO_SHOW, past OPEN visits → CLOSED — and refresh of `doctors.avg_consult_minutes` (rolling mean of
+  WAITING/CALLED/SKIPPED tokens of past days → NO_SHOW (with events), past IN_SERVICE tokens →
+  COMPLETED (`completed_at` = run time, COMPLETED event noted 'auto-closed at end of day'), past BOOKED
+  appointments → NO_SHOW, past CHECKED_IN appointments → COMPLETED/NO_SHOW following their token,
+  past OPEN visits → CLOSED — and refresh of `doctors.avg_consult_minutes` (rolling mean of
   each doctor's last 30 completed consultations).
 
 ### Real-time channel
@@ -209,7 +211,7 @@ The backend talks to the internal FastAPI service (`AI_SERVICE_URL`) and never d
 
 | Use | AI call | Fallback (silent) |
 |---|---|---|
-| Waiting-time prediction for every WAITING token of an affected queue, and the hypothetical "join now" estimate shown when browsing doctors | `POST /ai/predict-wait` with the 14 contract feature keys, 1.5 s timeout | Eq. 6.2 baseline `W = (patients_ahead + priority_ahead) × doctor_avg_consult + minutes_to_start` (`model_version = 'baseline'`) |
+| Waiting-time prediction for every WAITING token of an affected queue, and the hypothetical "join now" estimate shown when browsing doctors | `POST /ai/predict-wait` with the 14 contract feature keys, 1.5 s timeout | Eq. 6.2 baseline `W = patients_ahead × doctor_avg_consult + minutes_to_start` (priority tokens ahead are already counted in `patients_ahead`) (`model_version = 'baseline'`) |
 | Branch ranking | `POST /ai/rank-branches` | Same Eq. 6.3 scoring in JS (min-max normalisation; without location the distance weight is redistributed) |
 | Forecasts (`POST /admin/forecasts/run`, hourly job) | `POST /ai/jobs/forecast` | JS seasonal baseline: mean arrivals at the same weekday + hour over the last 4 weeks, capacity from schedules and average consultation time, levels from the settings thresholds, `is_peak` above the 80th percentile, next 7 days |
 | Model list / retrain / activate | proxied | `503 AI_UNAVAILABLE` |
@@ -223,6 +225,15 @@ timeout a 15-second circuit breaker skips further AI calls so requests never wai
 ---
 
 ## Design notes
+
+- **Priority categories (FR-13).** `ELDERLY` is derived from `date_of_birth`
+  (`userService.ELDERLY_MIN_AGE` = 60): registering or `PUT /auth/me` with `priorityCategory: ELDERLY`
+  without a date of birth showing age >= 60 is a 400, and a qualifying date of birth sets `ELDERLY`
+  automatically (a later, younger corrected DOB drops it). `DIFFERENTLY_ABLED` may be self-declared:
+  it pre-sets priority 1 on new tokens ("pre-set by the patient's registered priority category and
+  confirmed by staff"), and `QueueToken.priorityDeclared` is `true` while that priority rests only on
+  the declaration — until a staff member confirms or overrides it with `POST /tokens/:id/priority`
+  (any `PRIORITY_SET` in the visit clears the flag).
 
 - **Errors** always have the contract shape `{ "error": { "code", "message" } }` with
   `VALIDATION_ERROR` 400, `UNAUTHORIZED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409,

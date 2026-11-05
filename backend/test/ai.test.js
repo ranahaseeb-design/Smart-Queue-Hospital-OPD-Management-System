@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { createContext, AI_TEST_SERVICE_TOKEN } = require('./helpers');
 
-const fake = { slow: false, predictCalls: [], rankCalls: 0, tokenHeaders: [] };
+const fake = { slow: false, predictCalls: [], rankCalls: 0, tokenHeaders: [], retrainBusy: false };
 let server;
 let ctx;
 let doctorId;
@@ -67,6 +67,7 @@ function startFakeAi() {
         ]);
       }
       if (req.method === 'POST' && req.url === '/ai/models/retrain') {
+        if (fake.retrainBusy) return send(409, { detail: 'A retraining job is already running.' });
         return send(200, { version: 'rf-test-2', metrics: { mae: 5.9 }, accepted: true, activated: false });
       }
       const m = /^\/ai\/models\/([^/]+)\/activate$/.exec(req.url);
@@ -75,6 +76,7 @@ function startFakeAi() {
         if (m[1] === 'rf-rejected') {
           return send(409, { detail: 'Model version rf-rejected was REJECTED by the acceptance rules and cannot be activated.' });
         }
+        if (m[1] === 'rejected') return send(422, { detail: 'Model rejected by the acceptance criteria' });
         return send(200, { version: decodeURIComponent(m[1]), activated: true });
       }
       return send(404, { detail: 'Not Found' });
@@ -151,6 +153,17 @@ test('forecast job and model management are proxied to the AI service (FR-17, FR
   const missing = await ctx.api.post('/admin/models/missing/activate', admin);
   assert.equal(missing.status, 404);
   assert.equal((await ctx.api.post('/admin/models/bad%20version/activate', admin)).status, 400);
+  // AI 409 passes through as CONFLICT with the AI's message; other 4xx become 400.
+  fake.retrainBusy = true;
+  const busy = await ctx.api.post('/admin/models/retrain', admin);
+  fake.retrainBusy = false;
+  assert.equal(busy.status, 409);
+  assert.deepEqual(busy.body, { error: { code: 'CONFLICT', message: 'A retraining job is already running.' } });
+  const rejected = await ctx.api.post('/admin/models/rejected/activate', admin);
+  assert.equal(rejected.status, 400);
+  assert.equal(rejected.body.error.code, 'VALIDATION_ERROR');
+  assert.equal(rejected.body.error.message, 'Model rejected by the acceptance criteria');
+  assert.equal(missing.body.error.code, 'NOT_FOUND');
 });
 
 test('activating a REJECTED model surfaces the AI service refusal (FR-22)', async () => {
@@ -193,7 +206,7 @@ test('AI service down: baseline predictions, JS ranking, baseline forecast, 503 
   const f = JSON.parse(row.features_json);
   assert.equal(
     Math.round(res.body.estimate.minutes),
-    Math.round((f.patients_ahead + f.priority_ahead) * f.doctor_avg_consult + f.minutes_to_start)
+    Math.round(f.patients_ahead * f.doctor_avg_consult + f.minutes_to_start)
   );
 
   const rec = await ctx.api.get('/recommendations?specialty=Cardiology', p.token);
@@ -211,4 +224,13 @@ test('AI service down: baseline predictions, JS ranking, baseline forecast, 503 
   ai.reset();
   const health = await ctx.api.get('/health');
   assert.equal(health.body.ai, false);
+});
+
+test('Eq. 6.2 baseline does not double-count priority tokens already in patients_ahead', () => {
+  const fb = require('../src/services/featureBuilder');
+  const base = { patients_ahead: 3, priority_ahead: 0, doctor_avg_consult: 10, minutes_to_start: 0 };
+  assert.equal(fb.baselineMinutes(base), 30);
+  // All three patients ahead are priority tokens: still 3 consultations ahead, not 6.
+  assert.equal(fb.baselineMinutes({ ...base, priority_ahead: 3 }), 30);
+  assert.equal(fb.baselineMinutes({ ...base, minutes_to_start: 15 }), 45);
 });

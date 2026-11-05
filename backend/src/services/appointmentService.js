@@ -13,6 +13,13 @@ const queueService = require('./queueService');
 
 const BLOCKING = ['BOOKED', 'CHECKED_IN'];
 
+/**
+ * Check-in window (FR-10): opens CHECK_IN_EARLY_MINUTES before slot_start and closes at the end
+ * of the doctor's schedule session that contains the slot. The token is issued to that session's
+ * service point, so an appointment in a later session is not queued in an earlier room.
+ */
+const CHECK_IN_EARLY_MINUTES = 60;
+
 function formatSlotHuman(d) {
   return `${time.dayName(d)} ${time.formatDate(d)} at ${time.formatTime(d)}`;
 }
@@ -197,14 +204,41 @@ async function cancel(db, user, appointmentId, now = time.clock.now()) {
   return toAppointment(await appointmentRow(db, appointmentId));
 }
 
-/** Check in on the appointment day: creates an OPD token linked to the appointment. */
+/**
+ * Check in (FR-10): allowed from CHECK_IN_EARLY_MINUTES before slot_start until the end of the
+ * session containing the slot; creates an OPD token linked to the appointment at that session's
+ * service point.
+ */
 async function checkIn(db, user, appointmentId, now = time.clock.now()) {
   const row = await requireOwn(db, user, appointmentId);
   if (row.status !== 'BOOKED') throw conflict(`Appointment is ${row.status}; only booked appointments can be checked in`);
-  if (String(row.slot_start).slice(0, 10) !== time.formatDate(now)) {
-    throw conflict('Check-in is only possible on the day of the appointment');
+  const slotStart = time.parseDateTime(row.slot_start);
+  const slotDate = time.formatDate(slotStart);
+  const sessions = await scheduleService.doctorSessions(db, row.doctor_id, slotDate);
+  const session = sessions.find((s) => s.start <= slotStart && slotStart < s.end);
+  if (!session) throw conflict('The doctor no longer has a session at the appointment time; please reschedule');
+  const opensAt = new Date(slotStart.getTime() - CHECK_IN_EARLY_MINUTES * time.MINUTE);
+  if (now < opensAt) {
+    throw conflict(
+      `Check-in opens ${CHECK_IN_EARLY_MINUTES} minutes before the appointment (from ${formatSlotHuman(opensAt)})`
+    );
   }
-  return queueService.issueOpdToken(db, user, row.doctor_id, { appointmentId, now });
+  // Not relaxed by DEMO_ALWAYS_OPEN: the window belongs to the booked slot, not to "now".
+  if (now >= session.end) {
+    throw conflict('The session of this appointment has ended; check-in is closed');
+  }
+  return queueService.issueOpdToken(db, user, row.doctor_id, { appointmentId, session, now });
 }
 
-module.exports = { listSlots, listForPatient, book, reschedule, cancel, checkIn, toAppointment, appointmentRow, BLOCKING };
+module.exports = {
+  listSlots,
+  listForPatient,
+  book,
+  reschedule,
+  cancel,
+  checkIn,
+  toAppointment,
+  appointmentRow,
+  BLOCKING,
+  CHECK_IN_EARLY_MINUTES,
+};

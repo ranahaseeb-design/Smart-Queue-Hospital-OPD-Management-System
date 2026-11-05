@@ -47,6 +47,44 @@ test('nightly maintenance closes the previous day: NO_SHOW tokens with events, C
   assert.deepEqual([again.tokens, again.appointments, again.visits], [0, 0, 0]);
 });
 
+test('transfer moves the appointment to the new token; end of day auto-completes IN_SERVICE tokens + their appointment', async () => {
+  // The clock is the next day 00:05 (previous test). Book doctor1's first slot and check in.
+  const day = ctx.time.today();
+  const patient = await ctx.newPatient();
+  const doctorToken = await ctx.login('doctor1');
+  const doctorId = (await ctx.api.get('/auth/me', doctorToken)).body.user.doctorId;
+  const slot = (await ctx.api.get(`/doctors/${doctorId}/slots?date=${day}`, patient.token)).body.slots[0].start;
+  const appt = await ctx.api.post('/appointments', patient.token, { doctorId, slotStart: slot });
+  assert.equal(appt.status, 201);
+  ctx.time.clock.set(new Date(ctx.time.combine(day, slot.slice(11)).getTime() - 30 * 60000));
+  const checked = await ctx.api.post(`/appointments/${appt.body.id}/check-in`, patient.token);
+  assert.equal(checked.status, 201);
+
+  const targets = await ctx.api.get(`/staff/transfer-targets?servicePointId=${checked.body.servicePoint.id}`, doctorToken);
+  const target = targets.body.find((t) => t.type === 'OPD' && t.doctorId);
+  const moved = await ctx.api.post(`/tokens/${checked.body.id}/transfer`, doctorToken, { toServicePointId: target.servicePointId });
+  assert.equal(moved.status, 200);
+  const linkOf = async (id) => (await ctx.db.get('SELECT appointment_id FROM tokens WHERE token_id = ?', [id])).appointment_id;
+  assert.equal(await linkOf(checked.body.id), null);
+  assert.equal(await linkOf(moved.body.to.id), appt.body.id);
+  const list = (await ctx.api.get('/appointments', patient.token)).body;
+  assert.equal(list.find((a) => a.id === appt.body.id).tokenId, moved.body.to.id);
+
+  // Staff started the consultation but never completed it.
+  await ctx.db.run(`UPDATE tokens SET status = 'IN_SERVICE', called_at = ? WHERE token_id = ?`, [ctx.time.nowDb(), moved.body.to.id]);
+  const next = ctx.time.parseDate(ctx.time.addDaysStr(day, 1));
+  ctx.time.clock.set(new Date(next.getFullYear(), next.getMonth(), next.getDate(), 0, 5, 0));
+  const result = await jobs.runDailyMaintenance(ctx.db);
+  assert.equal(result.autoCompleted, 1);
+  const tok = await ctx.db.get('SELECT status, completed_at FROM tokens WHERE token_id = ?', [moved.body.to.id]);
+  assert.equal(tok.status, 'COMPLETED');
+  assert.equal(tok.completed_at, ctx.time.nowDb());
+  const ev = await ctx.db.get(`SELECT note FROM queue_events WHERE token_id = ? AND event_type = 'COMPLETED'`, [moved.body.to.id]);
+  assert.equal(ev.note, 'auto-closed at end of day');
+  const a = await ctx.db.get('SELECT status FROM appointments WHERE appointment_id = ?', [appt.body.id]);
+  assert.equal(a.status, 'COMPLETED');
+});
+
 test('forecast refresh falls back to the baseline and writes the next 7 days', async () => {
   const result = await jobs.runForecastRefresh(ctx.db);
   assert.equal(result.source, 'baseline');
