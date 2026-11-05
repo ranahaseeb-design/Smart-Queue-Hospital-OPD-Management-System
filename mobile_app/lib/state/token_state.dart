@@ -82,6 +82,12 @@ class TokenState extends ChangeNotifier {
   bool _refreshing = false;
   bool _refreshAgain = false;
 
+  /// Session generation, bumped by [start] and [clear]. A refresh captures it
+  /// before awaiting and drops its response when it changed meanwhile, so a
+  /// request from the previous patient's session never lands after
+  /// logout/login.
+  int _session = 0;
+
   List<TokenDetail> _tokens = const [];
   bool _loading = false;
   bool _loaded = false;
@@ -115,6 +121,12 @@ class TokenState extends ChangeNotifier {
 
   /// Called when the patient's home shell opens.
   void start() {
+    // New session: an in-flight refresh of the previous one is now stale and
+    // no longer owns the refresh flags.
+    _session++;
+    _refreshing = false;
+    _refreshAgain = false;
+
     _enabled = true;
     _poll?.cancel();
     _poll = Timer.periodic(_pollInterval, (_) {
@@ -133,6 +145,10 @@ class TokenState extends ChangeNotifier {
     _loaded = false;
     _loading = false;
     _error = null;
+    // Drop any in-flight refresh of this session (see [_session]).
+    _session++;
+    _refreshing = false;
+    _refreshAgain = false;
     notifyListeners();
   }
 
@@ -142,6 +158,7 @@ class TokenState extends ChangeNotifier {
       _refreshAgain = true;
       return;
     }
+    final session = _session;
     _refreshing = true;
     _loading = true;
     notifyListeners();
@@ -150,21 +167,26 @@ class TokenState extends ChangeNotifier {
         _refreshAgain = false;
         try {
           final tokens = await _api.activeTokens();
-          if (!_enabled) return;
+          if (session != _session) return; // stale: logout/login meanwhile
           _tokens = tokens;
           _loaded = true;
           _error = null;
         } on ApiException catch (e) {
+          if (session != _session) return;
           _error = e.message;
         } catch (e) {
+          if (session != _session) return;
           // Unexpected response shape: keep the last good list.
           _error = describeError(e);
         }
-      } while (_refreshAgain && _enabled);
+      } while (_refreshAgain && session == _session);
     } finally {
-      _refreshing = false;
-      _loading = false;
-      notifyListeners();
+      // After clear()/start() the newer session owns the flags.
+      if (session == _session) {
+        _refreshing = false;
+        _loading = false;
+        notifyListeners();
+      }
     }
   }
 

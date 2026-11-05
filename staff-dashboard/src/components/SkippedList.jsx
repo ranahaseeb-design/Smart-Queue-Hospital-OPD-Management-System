@@ -1,8 +1,9 @@
-// Skipped tokens with Recall (FR-12: recall a skipped token).
+// Skipped tokens with Recall (FR-12: recall a skipped token) and Priority (FR-11: the backend
+// accepts priority changes for WAITING and SKIPPED tokens only).
 import PriorityBadge from './PriorityBadge.jsx';
 import { formatClock } from '../utils/format.js';
 
-export default function SkippedList({ tokens, busy, hasOpenToken, onRecall }) {
+export default function SkippedList({ tokens, busy, hasOpenToken, onRecall, onPriority }) {
   const list = Array.isArray(tokens) ? tokens : [];
   return (
     <section className="card" aria-labelledby="skipped-heading">
@@ -34,6 +35,17 @@ export default function SkippedList({ tokens, busy, hasOpenToken, onRecall }) {
                 </div>
               </div>
               <div className="token-actions">
+                {onPriority && (
+                  <button
+                    type="button"
+                    className="btn btn--outline btn--sm"
+                    onClick={() => onPriority(t)}
+                    disabled={Boolean(busy)}
+                    aria-label={`Change priority of ${t.displayNumber}`}
+                  >
+                    Priority
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn btn--primary btn--sm"

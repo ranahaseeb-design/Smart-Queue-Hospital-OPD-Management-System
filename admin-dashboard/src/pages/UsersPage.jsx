@@ -10,16 +10,10 @@ import { useScope } from '../context/ScopeContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { useBranchField, useServicePoints } from '../hooks/useLookups.js';
 import { ROLE_LABELS, ROLES, assignableRoles } from '../utils/roles.js';
+import { MANAGED_ROLES, adminBranchIdPatch, usersRoleQuery } from '../utils/users.js';
 import { ServicePointType } from './ServicePointsPage.jsx';
 
 const ROLE_TONE = { HOSPITAL_ADMIN: 'violet', BRANCH_ADMIN: 'info', STAFF: 'teal', PATIENT: 'neutral' };
-
-/**
- * This screen manages staff and administrator accounts (FR-14). Patients register themselves in
- * the mobile app; the backend may still list them without a role filter, so they are hidden here
- * (otherwise ~1,500 synthetic patient rows bury the staff accounts).
- */
-const withoutPatients = (rows) => rows.filter((r) => r.role !== ROLES.PATIENT);
 
 function spLabel(sp, withBranch) {
   return `${sp.name} (${sp.type})${withBranch && sp.branchName ? ` — ${sp.branchName}` : ''}`;
@@ -34,11 +28,10 @@ function UsersTab({ tabs }) {
   const hospital = permissions.manageAdminAccounts;
   const roles = assignableRoles(me);
 
-  // The admin users API manages STAFF, BRANCH_ADMIN and HOSPITAL_ADMIN accounts (API contract);
-  // patients register themselves in the mobile app, so patient rows (if listed) are read-only.
-  const roleFilterOptions = hospital
-    ? [ROLES.STAFF, ROLES.BRANCH_ADMIN, ROLES.HOSPITAL_ADMIN]
-    : [ROLES.STAFF];
+  // The admin users API manages STAFF, BRANCH_ADMIN and HOSPITAL_ADMIN accounts (API contract).
+  // Patients register themselves in the mobile app: "All roles" does not fetch them (see
+  // usersRoleQuery); hospital admins can still list them explicitly, read-only.
+  const roleFilterOptions = hospital ? [...MANAGED_ROLES, ROLES.PATIENT] : [ROLES.STAFF];
 
   const manageable = (r) => r.role !== ROLES.PATIENT && (hospital || r.role === ROLES.STAFF);
   const canEditRow = (r) => manageable(r);
@@ -116,11 +109,10 @@ function UsersTab({ tabs }) {
         : 'Staff accounts of your branch. Doctors are created under Doctors.'}
       itemName="user"
       endpoint="/admin/users"
-      query={{ ...scopeQuery, role: hospital ? (roleFilter || undefined) : ROLES.STAFF }}
+      query={{ ...scopeQuery, role: usersRoleQuery(hospital, roleFilter) }}
       columns={columns}
       initialSort={{ key: 'fullName', dir: 'asc' }}
       toolbar={roleToolbar}
-      transformRows={withoutPatients}
       canCreate={permissions.manageUsers}
       canEdit={canEditRow}
       canRemove={canRemoveRow}
@@ -136,7 +128,8 @@ function UsersTab({ tabs }) {
         phone: r.phone || '',
         password: '',
         role: r.role,
-        adminBranchId: r.adminBranchId ? String(r.adminBranchId) : branchField.defaultBranchId,
+        // The stored branch only: defaulting here would silently move the account on save.
+        adminBranchId: r.adminBranchId ? String(r.adminBranchId) : '',
         servicePointId: '',
         isActive: r.isActive !== false,
       })}
@@ -163,10 +156,20 @@ function UsersTab({ tabs }) {
             minLength: 6,
             help: mode === 'create' ? 'At least 6 characters.' : 'Leave blank to keep the current password.',
           },
-          {
-            name: 'adminBranchId', label: 'Administered branch', type: 'select', required: true,
-            options: branchField.options, hidden: v.role !== ROLES.BRANCH_ADMIN,
-          },
+          v.role === ROLES.STAFF
+            ? {
+              // Staff home branch: hospital admins pick any branch; branch admins are fixed to theirs.
+              name: 'adminBranchId', label: 'Home branch', type: 'select',
+              placeholder: 'No home branch', options: branchField.options,
+              disabled: branchField.locked,
+              help: branchField.locked
+                ? 'Staff accounts belong to your branch.'
+                : 'The branch this staff member belongs to.',
+            }
+            : {
+              name: 'adminBranchId', label: 'Administered branch', type: 'select', required: true,
+              options: branchField.options, hidden: v.role !== ROLES.BRANCH_ADMIN,
+            },
           {
             name: 'servicePointId', label: 'Assign to service point', type: 'select',
             placeholder: 'No assignment yet', options: spOptions,
@@ -176,13 +179,14 @@ function UsersTab({ tabs }) {
           { name: 'isActive', label: 'Active', type: 'checkbox', checkboxLabel: 'Account is active', hidden: mode === 'create' || self },
         ];
       }}
-      toPayload={(v, mode) => {
+      toPayload={(v, mode, row) => {
         const body = {
           fullName: v.fullName.trim(),
           email: v.email.trim(),
           phone: v.phone?.trim() || null,
           role: v.role,
-          adminBranchId: v.role === ROLES.BRANCH_ADMIN ? Number(v.adminBranchId) : null,
+          // Sent only when set or changed: a present null clears the branch on the backend.
+          ...adminBranchIdPatch(v, mode, row),
           isActive: mode === 'create' ? true : Boolean(v.isActive),
         };
         if (v.password) body.password = v.password;

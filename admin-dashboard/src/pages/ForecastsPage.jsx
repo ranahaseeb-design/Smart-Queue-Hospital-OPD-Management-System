@@ -12,6 +12,7 @@ import {
   Badge, Banner, Card, CongestionBadge, EmptyState, ErrorBanner, KpiTile, LastUpdated, Loading, PageHeader, Spinner,
 } from '../components/ui.jsx';
 import { api } from '../api/client.js';
+import { useAuth } from '../context/AuthContext.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
@@ -28,6 +29,8 @@ function sourceLabel(src) {
 
 export default function ForecastsPage() {
   const { scopeQuery, branchName, branchId, branchNameById } = useScope();
+  const { permissions } = useAuth();
+  const canRun = permissions.runForecasts; // hospital administrators only (hospital-wide job)
   const toast = useToast();
   const [date, setDate] = useState(today());
   const [departmentId, setDepartmentId] = useState('');
@@ -101,9 +104,11 @@ export default function ForecastsPage() {
         actions={(
           <>
             <LastUpdated at={forecasts.updatedAt} refreshing={forecasts.refreshing} />
-            <button type="button" className="btn btn-primary" onClick={runForecast} disabled={running}>
-              {running ? <Spinner size="xs" /> : <Icon name="play" size={14} />} {running ? 'Running…' : 'Run forecast now'}
-            </button>
+            {canRun && (
+              <button type="button" className="btn btn-primary" onClick={runForecast} disabled={running}>
+                {running ? <Spinner size="xs" /> : <Icon name="play" size={14} />} {running ? 'Running…' : 'Run forecast now'}
+              </button>
+            )}
           </>
         )}
       />
@@ -148,7 +153,8 @@ export default function ForecastsPage() {
         !forecasts.error && (
           <Card>
             <EmptyState icon="forecast" title={`No forecast for ${formatDate(date)}`}>
-              Forecasts are generated for the coming days by the forecasting job. Use “Run forecast now” to generate them.
+              Forecasts are generated for the coming days by the forecasting job.
+              {canRun ? ' Use “Run forecast now” to generate them.' : ' The hospital administrator can run it on demand.'}
             </EmptyState>
           </Card>
         )

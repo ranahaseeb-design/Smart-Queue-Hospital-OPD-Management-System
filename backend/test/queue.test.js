@@ -286,6 +286,10 @@ test('linked LAB token after consultation; default counter; duplicate 409 (FR-04
 
   // lab staff operate their counter; a doctor cannot
   const labToken = await ctx.login('lab1');
+  // Roles matrix (Section 3.2): only doctors issue linked tokens; other staff of the branch get 403.
+  const notDoctor = await ctx.api.post(`/visits/${visitId}/linked-tokens`, labToken, { type: 'PHARMACY' });
+  assert.equal(notDoctor.status, 403);
+  assert.equal(notDoctor.body.error.code, 'FORBIDDEN');
   const counter = (await ctx.api.get('/staff/service-points', labToken)).body.find((s) => s.type === 'LAB');
   assert.ok(counter);
   const lq = await ctx.api.get(`/service-points/${counter.id}/queue`, labToken);

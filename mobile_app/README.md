@@ -151,6 +151,22 @@ permission is refused or location is switched off, branches are ranked by predic
 and congestion only. If the permission is blocked permanently, the app offers a button
 that opens the phone's settings.
 
+### Security notes for production
+
+This build is set up for a university project and local development. Before publishing a
+release build:
+
+* **Session token storage.** The JWT and cached profile are kept in `SharedPreferences`
+  (`lib/services/auth_service.dart`), which is a plain, unencrypted file on the device. Store
+  the token with [`flutter_secure_storage`](https://pub.dev/packages/flutter_secure_storage)
+  instead (Android Keystore-backed encryption), and prefer short-lived access tokens with a
+  refresh flow so a leaked token expires quickly.
+* **HTTPS only.** `android:usesCleartextTraffic="true"` in
+  `android/app/src/main/AndroidManifest.xml` exists only so the emulator can reach
+  `http://10.0.2.2:4000`. Remove it for production (or limit cleartext to a debug-only
+  network security config) and build with an `https://` `API_URL`, so credentials, JWTs and
+  queue data are never sent unencrypted.
+
 ## 7. Tests and static analysis
 
 ```bash

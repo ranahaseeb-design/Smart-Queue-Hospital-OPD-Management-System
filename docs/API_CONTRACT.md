@@ -132,7 +132,7 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | POST | `/tokens/:id/transfer` | `{ toServicePointId, toDoctorId? }` | `{ from: QueueToken, to: QueueToken }`; WAITING/CALLED → TRANSFERRED, new WAITING token in the target queue, same visit, priority kept |
 | POST | `/tokens/:id/priority` | `{ level: 0-2, reason }` | `QueueToken`; logs PRIORITY_SET with note = reason |
 | GET | `/staff/transfer-targets` | `?servicePointId=` | `[ { servicePointId, name, type, doctorId, doctorName, specialty, waiting } ]` active points in the same branch except this one |
-| POST | `/visits/:id/linked-tokens` | `{ type: "LAB"|"PHARMACY", servicePointId? }` | 201 `TokenDetail`; default target = the branch's active point of that type with the shortest queue |
+| POST | `/visits/:id/linked-tokens` | `{ type: "LAB"|"PHARMACY", servicePointId? }` | 201 `TokenDetail`; default target = the branch's active point of that type with the shortest queue. Doctors only (roles matrix): 403 `FORBIDDEN` for staff without a doctor profile |
 
 Every status change writes a `queue_events` row in the same DB transaction (FR-21), then re-predicts the affected queue (FR-07), sends notifications (called patient + those within `notifyPositionsAhead` positions, FR-11) and emits socket events.
 
@@ -142,7 +142,7 @@ Every status change writes a `queue_events` row in the same DB transaction (FR-2
 | CRUD | `/admin/doctors` | create: `{ fullName, email, phone?, password, departmentId, avgConsultMinutes? }` (creates STAFF user + doctor) | row: `{ id, userId, fullName, email, phone, departmentId, departmentName, specialty, branchId, branchName, avgConsultMinutes, isActive }` |
 | CRUD | `/admin/schedules` | `{ doctorId, servicePointId, dayOfWeek (1=Mon..7=Sun), startTime "HH:mm", endTime, maxPatients? }` | `?doctorId=&branchId=`; row adds `doctorName`, `servicePointName` |
 | CRUD | `/admin/service-points` | `{ branchId, type, name, isActive }` | |
-| CRUD | `/admin/users` | `{ fullName, email, phone?, password?, role (STAFF|BRANCH_ADMIN|HOSPITAL_ADMIN), adminBranchId?, isActive }` | `?role=`; branch admin may only manage STAFF of own branch |
+| CRUD | `/admin/users` | `{ fullName, email, phone?, password?, role (STAFF|BRANCH_ADMIN|HOSPITAL_ADMIN), adminBranchId?, isActive }` | `?role=` (one role or a comma-separated list, e.g. `?role=STAFF,BRANCH_ADMIN,HOSPITAL_ADMIN`); branch admin may only manage STAFF of own branch |
 | GET/POST/DELETE | `/admin/assignments` | `{ userId, servicePointId }` | row: `{ id, userId, userName, servicePointId, servicePointName, type, branchName }` |
 
 `DELETE` on master data = soft deactivate (`is_active=false` / `status=INACTIVE`), except schedules and assignments which are hard-deleted. Each CRUD resource: `GET /x` list, `GET /x/:id`, `POST /x` → 201, `PUT /x/:id`, `DELETE /x/:id`.
@@ -151,7 +151,7 @@ Every status change writes a `queue_events` row in the same DB transaction (FR-2
 | GET | `/admin/alerts` | `?branchId=` | `[ { id, level: "HIGH"|"CRITICAL", source: "LIVE"|"FORECAST", branchId, branchName, departmentId, departmentName, message, at } ]` |
 | GET | `/admin/reports` | `?type=doctor-consult|department-traffic|branch-utilization|waiting-times|feedback&from=&to=&branchId=&format=json|csv` | json: `{ type, title, columns: [ { key, label } ], rows: [ {...} ] }`; csv: `text/csv` attachment |
 | GET | `/admin/forecasts` | `?branchId=&departmentId=&date=` | `[ { branchId, departmentId, departmentName, forecastHour, expectedArrivals, capacity, congestionRatio, congestionLevel, isPeak, source } ]` |
-| POST | `/admin/forecasts/run` | – | `{ generated, source: "ai"|"baseline" }` — calls AI `/ai/jobs/forecast`; falls back to the JS seasonal baseline (avg of same weekday+hour over last 4 weeks) |
+| POST | `/admin/forecasts/run` | – | `{ generated, source: "ai"|"baseline" }` — calls AI `/ai/jobs/forecast`; falls back to the JS seasonal baseline (avg of same weekday+hour over last 4 weeks). HOSPITAL_ADMIN only (403 `FORBIDDEN` for branch admins) |
 | GET | `/admin/recommendations` | `?branchId=` | `{ workload: [ { branchId, branchName, patientsPerDoctorHour, utilization, avgWaitMinutes } ], recommendations: [ { branchId, branchName, departmentId, departmentName, date, timeRange, shortfallSessions, message } ] }` (FR-18) |
 | GET | `/admin/feedback` | `?branchId=` | `{ summary: { count, average, distribution: { "1": n, ..., "5": n } }, items: [ { id, rating, comment, createdAt, patientName, branchName, visitDate } ] }` |
 | GET/PUT | `/admin/settings` | PUT hospital admin only | `{ recommendationWeights: { wait: 0.6, distance: 0.25, congestion: 0.15 }, congestionThresholds: { high: 0.85, critical: 1.0 }, alternativeSuggestionWaitMinutes: 45, notifyPositionsAhead: 3, slotMinutes: 15 }` |

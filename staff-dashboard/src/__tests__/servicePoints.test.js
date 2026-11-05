@@ -5,6 +5,7 @@ import {
   groupTransferTargets,
   pickInitialServicePoint,
   targetsOfType,
+  transferTargetUnavailableReason,
 } from '../utils/servicePoints.js';
 
 const points = [
@@ -49,10 +50,21 @@ describe('pickInitialServicePoint', () => {
 });
 
 describe('transfer / linked-token targets', () => {
-  it('only OPD rooms issue linked tokens (FR-04)', () => {
-    expect(canIssueLinkedTokens('OPD')).toBe(true);
-    expect(canIssueLinkedTokens('LAB')).toBe(false);
-    expect(canIssueLinkedTokens('PHARMACY')).toBe(false);
+  it('only doctors in OPD rooms issue linked tokens (FR-04, roles matrix)', () => {
+    const doctor = { id: 5, role: 'STAFF', doctorId: 2 };
+    const nurse = { id: 6, role: 'STAFF', doctorId: null };
+    expect(canIssueLinkedTokens('OPD', doctor)).toBe(true);
+    expect(canIssueLinkedTokens('OPD', nurse)).toBe(false);
+    expect(canIssueLinkedTokens('OPD', null)).toBe(false);
+    expect(canIssueLinkedTokens('LAB', doctor)).toBe(false);
+    expect(canIssueLinkedTokens('PHARMACY', doctor)).toBe(false);
+  });
+
+  it('marks OPD rooms without a doctor today as unavailable transfer targets', () => {
+    expect(transferTargetUnavailableReason({ ...targets[0], doctorId: null })).toBe('No doctor today');
+    expect(transferTargetUnavailableReason(targets[0])).toBeNull();
+    expect(transferTargetUnavailableReason(targets[2])).toBeNull(); // pharmacy needs no doctor
+    expect(transferTargetUnavailableReason(targets[3])).toBeNull(); // lab needs no doctor
   });
 
   it('filters by type and sorts by shortest queue', () => {

@@ -35,6 +35,11 @@ class NotificationState extends ChangeNotifier {
       StreamController<IncomingNotification>.broadcast();
   bool _enabled = false;
 
+  /// Session generation, bumped by [start] and [clear]. Requests capture it
+  /// before awaiting and drop their result when it changed meanwhile, so the
+  /// previous patient's notifications never land after logout/login.
+  int _session = 0;
+
   List<AppNotification> _items = const [];
   bool _loading = false;
   bool _loaded = false;
@@ -50,40 +55,50 @@ class NotificationState extends ChangeNotifier {
   Stream<IncomingNotification> get incoming => _incoming.stream;
 
   void start() {
+    _session++;
     _enabled = true;
     unawaited(refresh());
   }
 
   void clear() {
+    _session++;
     _enabled = false;
     _items = const [];
     _loaded = false;
+    _loading = false;
     _error = null;
     notifyListeners();
   }
 
   Future<void> refresh() async {
     if (!_enabled) return;
+    final session = _session;
     _loading = true;
     notifyListeners();
     try {
       final items = await _api.notifications();
-      if (!_enabled) return;
+      if (session != _session) return; // stale: logout/login meanwhile
       _items = items;
       _loaded = true;
       _error = null;
     } on ApiException catch (e) {
+      if (session != _session) return;
       _error = e.message;
     } catch (e) {
+      if (session != _session) return;
       _error = describeError(e);
     } finally {
-      _loading = false;
-      notifyListeners();
+      // After clear()/start() the newer session owns the loading flag.
+      if (session == _session) {
+        _loading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> markAllRead() async {
     if (unreadCount == 0) return;
+    final session = _session;
     // Optimistic: clear the badge immediately.
     final previous = _items;
     _items = _items.map((n) => n.copyWith(isRead: true)).toList();
@@ -91,6 +106,8 @@ class NotificationState extends ChangeNotifier {
     try {
       await _api.markAllNotificationsRead();
     } catch (_) {
+      // Never restore the previous session's list after logout/login.
+      if (session != _session) return;
       // Restore the badge; the patient can try again.
       _items = previous;
       notifyListeners();

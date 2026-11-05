@@ -20,9 +20,14 @@ export function pickInitialServicePoint(points, rememberedId) {
   return null;
 }
 
-/** Linked tokens (FR-04) can only be issued from OPD consultation rooms. */
-export function canIssueLinkedTokens(servicePointType) {
-  return servicePointType === 'OPD';
+/**
+ * Linked tokens (FR-04) are issued by doctors (roles matrix, Section 3.2) from OPD consultation
+ * rooms only; the backend answers 403 for other staff.
+ * @param {string} servicePointType
+ * @param {{doctorId?: number|null}|null} user  the signed-in user (contract User shape)
+ */
+export function canIssueLinkedTokens(servicePointType, user) {
+  return servicePointType === 'OPD' && Boolean(user && user.doctorId);
 }
 
 /** Linked token types offered by the backend (POST /api/visits/:id/linked-tokens). */
@@ -66,6 +71,15 @@ export function groupTransferTargets(targets, query = '') {
       type,
       items: items.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true })),
     }));
+}
+
+/**
+ * Why a transfer target cannot be chosen, or null when it can. The backend rejects a transfer to
+ * an OPD room without a doctor scheduled today (doctorId null in the targets list).
+ */
+export function transferTargetUnavailableReason(target) {
+  if (target && target.type === 'OPD' && target.doctorId == null) return 'No doctor today';
+  return null;
 }
 
 /** One-line description of a transfer target for lists and toasts. */

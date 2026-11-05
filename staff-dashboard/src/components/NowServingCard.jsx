@@ -4,7 +4,7 @@ import { formatClock, formatMinutes, minutesSince, priorityTone, statusLabel } f
 
 export default function NowServingCard({
   token,
-  servicePointType,
+  canIssueLinked, // doctor in an OPD room (canIssueLinkedTokens)
   waitingCount,
   busy,
   now,
@@ -13,7 +13,6 @@ export default function NowServingCard({
   onComplete,
   onSkip,
   onTransfer,
-  onPriority,
   onIssueLinked,
 }) {
   const anyBusy = Boolean(busy);
@@ -127,16 +126,8 @@ export default function NowServingCard({
             >
               Transfer
             </button>
-            <button
-              type="button"
-              className="btn btn--outline btn--lg"
-              onClick={onPriority}
-              disabled={anyBusy}
-              aria-label={`Change priority of ${token.displayNumber}`}
-            >
-              Priority
-            </button>
-            {servicePointType === 'OPD' && (
+            {/* No Priority here: the backend only re-prioritises WAITING or SKIPPED tokens (FR-11). */}
+            {canIssueLinked && (
               <button
                 type="button"
                 className="btn btn--outline btn--lg"

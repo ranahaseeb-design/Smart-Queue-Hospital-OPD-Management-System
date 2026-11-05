@@ -6,7 +6,8 @@ import PriorityBadge from './PriorityBadge.jsx';
 import { api } from '../api.js';
 import { PRIORITY_LEVELS } from '../utils/format.js';
 
-export const REASON_MAX_LENGTH = 255; // queue_events.note is VARCHAR(255)
+// Matches the backend validation of POST /api/tokens/:id/priority (reason max 200 characters).
+export const REASON_MAX_LENGTH = 200;
 const REASON_MIN_LENGTH = 3;
 
 const QUICK_REASONS = {

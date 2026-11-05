@@ -92,6 +92,8 @@ router.get('/forecasts', async (req, res) => {
 });
 
 router.post('/forecasts/run', async (req, res) => {
+  // Regenerates forecasts for every branch, so it is a hospital-wide action.
+  admin.requireHospitalAdmin(req.user, 'forecast runs');
   res.json(await forecastService.runForecasts(getDb()));
 });
 

@@ -883,7 +883,10 @@ async function issueLinkedToken(db, user, visitId, { type, servicePointId = null
     [visitId]
   );
   if (!visit) throw notFound('Visit not found');
-  if (user.role !== 'STAFF') throw forbidden('Only staff can issue linked tokens');
+  // Roles matrix (Section 3.2): linked LAB/PHARMACY tokens are issued by the consulting doctor.
+  if (user.role !== 'STAFF' || !(await access.getDoctorForUser(db, user.user_id))) {
+    throw forbidden('Only doctors can issue linked tokens');
+  }
   const branches = await access.staffBranchIds(db, user);
   if (!branches.has(visit.branch_id)) throw forbidden('You do not work at this branch');
   const date = time.formatDate(now);

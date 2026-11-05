@@ -17,6 +17,7 @@ import SummaryTiles from '../components/SummaryTiles.jsx';
 import TransferModal from '../components/TransferModal.jsx';
 import WaitingList from '../components/WaitingList.jsx';
 import { useToast } from '../components/Toast.jsx';
+import { useAuth } from '../auth/AuthContext.jsx';
 import { useServicePoints } from '../auth/ServicePointsContext.jsx';
 import { useNow } from '../hooks/useNow.js';
 import { useQueue } from '../hooks/useQueue.js';
@@ -63,6 +64,7 @@ function NotAssignedNotice() {
 }
 
 function QueueScreen({ servicePointId, pointInfo }) {
+  const { user } = useAuth();
   const toast = useToast();
   const now = useNow(30000);
   const { data, error, loading, lastUpdated, connection, refresh } = useQueue(servicePointId);
@@ -78,7 +80,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
   const waiting = (data && Array.isArray(data.waiting) && data.waiting) || [];
   const skipped = (data && Array.isArray(data.skipped) && data.skipped) || [];
   const recentlyCompleted = (data && Array.isArray(data.recentlyCompleted) && data.recentlyCompleted) || [];
-  const linkedAllowed = canIssueLinkedTokens(servicePoint.type);
+  const linkedAllowed = canIssueLinkedTokens(servicePoint.type, user);
   const summary = (data && data.summary) || null;
   const doctorName = pointInfo && pointInfo.doctorName;
 
@@ -244,7 +246,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
               <div className="queue-main">
                 <NowServingCard
                   token={nowServing}
-                  servicePointType={servicePoint.type}
+                  canIssueLinked={linkedAllowed}
                   waitingCount={waiting.length}
                   busy={busy}
                   now={now}
@@ -253,7 +255,6 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   onComplete={() => complete(nowServing)}
                   onSkip={() => setDialog({ kind: 'skip', token: nowServing })}
                   onTransfer={() => setDialog({ kind: 'transfer', token: nowServing })}
-                  onPriority={() => setDialog({ kind: 'priority', token: nowServing })}
                   onIssueLinked={() => setDialog({ kind: 'linked', token: nowServing })}
                 />
                 <WaitingList
@@ -266,7 +267,13 @@ function QueueScreen({ servicePointId, pointInfo }) {
               </div>
               <aside className="queue-side" aria-label="Summary and skipped tokens">
                 <SummaryTiles summary={summary} servicePointType={servicePoint.type} />
-                <SkippedList tokens={skipped} busy={busy} hasOpenToken={Boolean(nowServing)} onRecall={recall} />
+                <SkippedList
+                  tokens={skipped}
+                  busy={busy}
+                  hasOpenToken={Boolean(nowServing)}
+                  onRecall={recall}
+                  onPriority={(t) => setDialog({ kind: 'priority', token: t })}
+                />
                 <RecentlyCompletedList
                   tokens={recentlyCompleted}
                   servicePointType={servicePoint.type}

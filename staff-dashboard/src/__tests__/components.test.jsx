@@ -6,6 +6,7 @@ import WaitingList from '../components/WaitingList.jsx';
 import SkippedList from '../components/SkippedList.jsx';
 import SummaryTiles from '../components/SummaryTiles.jsx';
 import RecentlyCompletedList from '../components/RecentlyCompletedList.jsx';
+import { REASON_MAX_LENGTH } from '../components/PriorityModal.jsx';
 
 const noop = () => {};
 const handlers = {
@@ -14,7 +15,6 @@ const handlers = {
   onComplete: noop,
   onSkip: noop,
   onTransfer: noop,
-  onPriority: noop,
   onIssueLinked: noop,
 };
 
@@ -54,7 +54,7 @@ describe('NowServingCard', () => {
 
   it('disables "Call next" while a token is open and shows the emergency styling', () => {
     const html = render(
-      <NowServingCard token={calledToken} servicePointType="OPD" waitingCount={2} busy={null} {...handlers} />,
+      <NowServingCard token={calledToken} canIssueLinked waitingCount={2} busy={null} {...handlers} />,
     );
     expect(isDisabled(html, 'Call next patient')).toBe(true);
     expect(html).toContain('serving--emergency');
@@ -65,9 +65,9 @@ describe('NowServingCard', () => {
     expect(html).toContain('Issue linked token');
   });
 
-  it('hides "Issue linked token" outside OPD rooms (FR-04)', () => {
+  it('hides "Issue linked token" unless a doctor works in an OPD room (FR-04)', () => {
     const html = render(
-      <NowServingCard token={calledToken} servicePointType="LAB" waitingCount={0} busy={null} {...handlers} />,
+      <NowServingCard token={calledToken} canIssueLinked={false} waitingCount={0} busy={null} {...handlers} />,
     );
     expect(html).not.toContain('Issue linked token');
   });
@@ -94,7 +94,23 @@ describe('NowServingCard', () => {
     );
     expect(html).toContain('Starting…');
     expect(isDisabled(html, 'Mark OPD-007 as completed')).toBe(true);
-    expect(isDisabled(html, 'Change priority of OPD-007')).toBe(true);
+    expect(isDisabled(html, 'Skip OPD-007 (patient did not respond)')).toBe(true);
+  });
+
+  it('offers no Priority action for CALLED / IN_SERVICE tokens (backend allows WAITING or SKIPPED only)', () => {
+    for (const status of ['CALLED', 'IN_SERVICE']) {
+      const html = render(
+        <NowServingCard token={{ ...calledToken, status }} servicePointType="OPD" waitingCount={0} busy={null} {...handlers} />,
+      );
+      expect(html).not.toContain('Change priority of OPD-007');
+      expect(html).not.toContain('>Priority<');
+    }
+  });
+});
+
+describe('PriorityModal', () => {
+  it('limits the reason to the backend maximum (200 characters)', () => {
+    expect(REASON_MAX_LENGTH).toBe(200);
   });
 });
 
@@ -137,6 +153,14 @@ describe('SkippedList', () => {
     expect(isDisabled(html, 'Recall OPD-007')).toBe(true);
     const free = render(<SkippedList tokens={tokens} busy={null} hasOpenToken={false} onRecall={noop} />);
     expect(isDisabled(free, 'Recall OPD-007')).toBe(false);
+  });
+
+  it('offers Priority for skipped tokens, disabled only while a request is in progress', () => {
+    const tokens = [{ ...calledToken, status: 'SKIPPED', priorityLevel: 0 }];
+    const html = render(<SkippedList tokens={tokens} busy={null} hasOpenToken onRecall={noop} onPriority={noop} />);
+    expect(isDisabled(html, 'Change priority of OPD-007')).toBe(false);
+    const busy = render(<SkippedList tokens={tokens} busy="call-next" hasOpenToken={false} onRecall={noop} onPriority={noop} />);
+    expect(isDisabled(busy, 'Change priority of OPD-007')).toBe(true);
   });
 });
 

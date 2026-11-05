@@ -33,6 +33,11 @@ class AuthState extends ChangeNotifier {
   AuthStatus _status = AuthStatus.unknown;
   AppUser? _user;
 
+  /// Session generation, bumped when a session starts or is cleared. Profile
+  /// requests drop their result when it changed while they were in flight,
+  /// so a response for the previous patient never overwrites the new one.
+  int _session = 0;
+
   /// Message shown on the login screen after a forced logout.
   String? sessionMessage;
 
@@ -101,14 +106,18 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> refreshProfile() async {
+    final session = _session;
     final user = await _api.me();
+    if (session != _session) return; // logged out / switched user meanwhile
     _user = user;
     await _storage.saveUser(user);
     notifyListeners();
   }
 
   Future<void> updateProfile(Map<String, dynamic> changes) async {
+    final session = _session;
     final user = await _api.updateMe(changes);
+    if (session != _session) return; // logged out / switched user meanwhile
     _user = user;
     await _storage.saveUser(user);
     notifyListeners();
@@ -133,6 +142,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> _startSession(String jwt, AppUser user) async {
+    _session++;
     _client.token = jwt;
     _user = user;
     sessionMessage = null;
@@ -142,6 +152,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> _clearSession() async {
+    _session++;
     _socket.disconnect();
     _client.token = null;
     _user = null;

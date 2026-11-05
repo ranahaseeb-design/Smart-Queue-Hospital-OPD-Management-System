@@ -8,6 +8,8 @@ import {
 import { safeReturnPath } from './navigation.js';
 import { assignableRoles, isAdminRole, permissionsFor } from './roles.js';
 import { fmtShare, improvementVsBaseline } from './models.js';
+import { adminBranchIdPatch, usersRoleQuery } from './users.js';
+import { isReconnect } from '../hooks/useLiveRefresh.js';
 import { buildQuery } from '../api/client.js';
 import { validateFields } from '../components/FormFields.jsx';
 
@@ -196,6 +198,7 @@ describe('roles (Section 3.2)', () => {
     expect(p.manageBranches).toBe(false);
     expect(p.manageSettings).toBe(false);
     expect(p.manageModels).toBe(false);
+    expect(p.runForecasts).toBe(false); // POST /admin/forecasts/run is hospital-admin only
     expect(p.manageMasterData).toBe(true);
     expect(assignableRoles({ role: 'BRANCH_ADMIN' })).toEqual(['STAFF']);
   });
@@ -249,5 +252,57 @@ describe('form validation', () => {
     expect(validateFields(fields, {
       fullName: 'Dr. Sara Ahmed', email: 'sara@opd.test', password: 'secret1', avg: '12', days: [1, 2], start: '09:00',
     })).toEqual({});
+  });
+});
+
+describe('isReconnect (useLiveRefresh catch-up refresh)', () => {
+  it('fires when the socket comes back after a drop', () => {
+    expect(isReconnect('offline', 'live', true)).toBe(true);
+    expect(isReconnect('offline', 'live', false)).toBe(true); // page opened while offline
+    expect(isReconnect('connecting', 'live', true)).toBe(true); // reconnect via a new handshake
+  });
+
+  it('does not fire on the first connection, while live, or when going offline', () => {
+    expect(isReconnect(null, 'live', false)).toBe(false); // mounted while already live
+    expect(isReconnect('connecting', 'live', false)).toBe(false); // page just loaded its data
+    expect(isReconnect('live', 'live', true)).toBe(false);
+    expect(isReconnect('live', 'offline', true)).toBe(false);
+  });
+});
+
+describe('usersRoleQuery (GET /admin/users role filter)', () => {
+  it('asks for staff/admin roles only under "All roles", patients only when chosen', () => {
+    expect(usersRoleQuery(true, '')).toBe('STAFF,BRANCH_ADMIN,HOSPITAL_ADMIN');
+    expect(usersRoleQuery(true, 'PATIENT')).toBe('PATIENT');
+    expect(usersRoleQuery(true, 'BRANCH_ADMIN')).toBe('BRANCH_ADMIN');
+  });
+
+  it('always asks branch admins for STAFF', () => {
+    expect(usersRoleQuery(false, '')).toBe('STAFF');
+    expect(usersRoleQuery(false, 'HOSPITAL_ADMIN')).toBe('STAFF');
+  });
+});
+
+describe('adminBranchIdPatch (user create/update payload)', () => {
+  const staffRow = { id: 7, role: 'STAFF', adminBranchId: 2 };
+
+  it('sends the chosen branch on create for STAFF and BRANCH_ADMIN only', () => {
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '3' }, 'create')).toEqual({ adminBranchId: 3 });
+    expect(adminBranchIdPatch({ role: 'BRANCH_ADMIN', adminBranchId: '1' }, 'create')).toEqual({ adminBranchId: 1 });
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '' }, 'create')).toEqual({});
+    expect(adminBranchIdPatch({ role: 'HOSPITAL_ADMIN', adminBranchId: '1' }, 'create')).toEqual({});
+  });
+
+  it('omits the key on edit when the branch is unchanged (never wipes the home branch)', () => {
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '2' }, 'edit', staffRow)).toEqual({});
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '' }, 'edit', { role: 'STAFF', adminBranchId: null })).toEqual({});
+    expect(adminBranchIdPatch({ role: 'HOSPITAL_ADMIN', adminBranchId: '' }, 'edit', staffRow)).toEqual({});
+  });
+
+  it('sends a changed branch, and null only when explicitly cleared', () => {
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '4' }, 'edit', staffRow)).toEqual({ adminBranchId: 4 });
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '' }, 'edit', staffRow)).toEqual({ adminBranchId: null });
+    expect(adminBranchIdPatch({ role: 'BRANCH_ADMIN', adminBranchId: '5' }, 'edit', { role: 'HOSPITAL_ADMIN', adminBranchId: null }))
+      .toEqual({ adminBranchId: 5 });
   });
 });
