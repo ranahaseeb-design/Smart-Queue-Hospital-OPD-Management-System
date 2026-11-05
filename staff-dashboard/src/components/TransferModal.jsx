@@ -7,7 +7,7 @@ import Spinner from './Spinner.jsx';
 import PriorityBadge from './PriorityBadge.jsx';
 import { api } from '../api.js';
 import { servicePointTypeLabel } from '../utils/format.js';
-import { describeTarget, groupTransferTargets } from '../utils/servicePoints.js';
+import { describeTarget, groupTransferTargets, transferTargetUnavailableReason } from '../utils/servicePoints.js';
 
 const keyOf = (t) => `${t.servicePointId}:${t.doctorId ?? ''}`;
 
@@ -126,8 +126,13 @@ export default function TransferModal({ token, servicePointId, onClose, onDone }
                   {group.items.map((t) => {
                     const k = keyOf(t);
                     const checked = k === selectedKey;
+                    const unavailable = transferTargetUnavailableReason(t);
                     return (
-                      <label key={k} className={`choice choice--target${checked ? ' is-selected' : ''}`}>
+                      <label
+                        key={k}
+                        className={`choice choice--target${checked ? ' is-selected' : ''}${unavailable ? ' is-disabled' : ''}`}
+                        title={unavailable || undefined}
+                      >
                         <input
                           type="radio"
                           name={groupName}
@@ -137,11 +142,12 @@ export default function TransferModal({ token, servicePointId, onClose, onDone }
                             setSelectedKey(k);
                             setError(null);
                           }}
-                          disabled={busy}
-                          aria-label={`${describeTarget(t)}, ${t.waiting ?? 0} waiting`}
+                          disabled={busy || Boolean(unavailable)}
+                          aria-label={`${describeTarget(t)}, ${unavailable ? unavailable : `${t.waiting ?? 0} waiting`}`}
                         />
                         <span className="choice-text">
                           <span className="choice-title">{t.name}</span>
+                          {unavailable && <span className="choice-desc">{unavailable}</span>}
                           {t.doctorName && <span className="choice-desc">{t.doctorName}</span>}
                           {t.specialty && <span className="choice-desc">{t.specialty}</span>}
                         </span>

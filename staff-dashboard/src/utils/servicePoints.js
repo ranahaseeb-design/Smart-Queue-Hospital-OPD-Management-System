@@ -68,6 +68,15 @@ export function groupTransferTargets(targets, query = '') {
     }));
 }
 
+/**
+ * Why a transfer target cannot be chosen, or null when it can. The backend rejects a transfer to
+ * an OPD room without a doctor scheduled today (doctorId null in the targets list).
+ */
+export function transferTargetUnavailableReason(target) {
+  if (target && target.type === 'OPD' && target.doctorId == null) return 'No doctor today';
+  return null;
+}
+
 /** One-line description of a transfer target for lists and toasts. */
 export function describeTarget(target) {
   if (!target) return '';
