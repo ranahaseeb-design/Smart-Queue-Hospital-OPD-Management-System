@@ -157,7 +157,7 @@ Every status change writes a `queue_events` row in the same DB transaction (FR-2
 | GET | `/admin/feedback` | `?branchId=` | `{ summary: { count, average, distribution: { "1": n, ..., "5": n } }, items: [ { id, rating, comment, createdAt, patientName, branchName, visitDate } ] }` |
 | GET/PUT | `/admin/settings` | PUT hospital admin only | `{ recommendationWeights: { wait: 0.6, distance: 0.25, congestion: 0.15 }, congestionThresholds: { high: 0.85, critical: 1.0 }, alternativeSuggestionWaitMinutes: 45, notifyPositionsAhead: 3, slotMinutes: 15 }` |
 | GET | `/admin/models` | – | `[ { version, trainedAt, trainingRows, dataSource, status, isActive, metrics: { mae, rmse, r2, within10, baselineMae, testRows } } ]` |
-| POST | `/admin/models/retrain` | – | hospital admin; proxies AI `/ai/models/retrain` → `{ version, metrics, accepted, activated }`; 503 `AI_UNAVAILABLE` |
+| POST | `/admin/models/retrain` | – | hospital admin; proxies AI `/ai/models/retrain` → `{ version, metrics, accepted, activated }`; 409 `CONFLICT` with the AI's message while a retraining job is already running; 503 `AI_UNAVAILABLE` |
 | POST | `/admin/models/:version/activate` | – | hospital admin; proxies AI |
 
 Congestion (Eq. 6.5): live ratio for a department = waiting tokens ÷ remaining capacity this session (Σ over active doctors of remaining session minutes ÷ avg consult minutes); `NORMAL` < high ≤ `HIGH` < critical ≤ `CRITICAL`. `suggestAlternatives` (FR-09) = estimate ≥ `alternativeSuggestionWaitMinutes` or level HIGH/CRITICAL.
