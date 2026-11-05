@@ -178,8 +178,10 @@ department's live congestion escalates to HIGH/CRITICAL.
   `alert` events for HIGH/CRITICAL forecasts of the coming hour. Also once at start-up when no
   forecast covers the current hour.
 - **Once per day** (checked every minute and at start-up): end-of-day closure — unserved
-  WAITING/CALLED/SKIPPED tokens of past days → NO_SHOW (with events), past BOOKED appointments →
-  NO_SHOW, past OPEN visits → CLOSED — and refresh of `doctors.avg_consult_minutes` (rolling mean of
+  WAITING/CALLED/SKIPPED tokens of past days → NO_SHOW (with events), past IN_SERVICE tokens →
+  COMPLETED (`completed_at` = run time, COMPLETED event noted 'auto-closed at end of day'), past BOOKED
+  appointments → NO_SHOW, past CHECKED_IN appointments → COMPLETED/NO_SHOW following their token,
+  past OPEN visits → CLOSED — and refresh of `doctors.avg_consult_minutes` (rolling mean of
   each doctor's last 30 completed consultations).
 
 ### Real-time channel

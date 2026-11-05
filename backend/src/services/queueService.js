@@ -802,10 +802,12 @@ async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId =
   const at = time.formatDateTime(now);
   const fromDisplay = fb.displayNumber(row.queue_type, row.token_number);
   const newId = await db.transaction(async (tx) => {
-    const r = await tx.run(`UPDATE tokens SET status = 'TRANSFERRED' WHERE token_id = ? AND status = ?`, [
-      tokenId,
-      row.status,
-    ]);
+    // The appointment linkage moves to the new token (tokens.appointment_id is UNIQUE, so it is
+    // cleared on the old one first) so the appointment is COMPLETED / NO_SHOW with the new token.
+    const r = await tx.run(
+      `UPDATE tokens SET status = 'TRANSFERRED', appointment_id = NULL WHERE token_id = ? AND status = ?`,
+      [tokenId, row.status]
+    );
     if (r.changes !== 1) throw conflict('Token status changed, please refresh');
     await insertEvent(tx, {
       tokenId,
@@ -820,7 +822,7 @@ async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId =
       visitId: row.visit_id,
       servicePointId: target.service_point_id,
       doctorId,
-      appointmentId: null,
+      appointmentId: row.appointment_id || null,
       tokenNumber,
       date,
       queueType: target.type,
@@ -970,7 +972,11 @@ async function issueLinkedToken(db, user, visitId, { type, servicePointId = null
 
 /**
  * End-of-day closure: CALLED/SKIPPED/WAITING tokens of past days -> NO_SHOW (with events),
- * BOOKED appointments of past days -> NO_SHOW, OPEN visits of past days -> CLOSED.
+ * IN_SERVICE tokens of past days -> COMPLETED (completed_at = run time, COMPLETED event noted
+ * 'auto-closed at end of day'), their appointments NO_SHOW / COMPLETED accordingly, BOOKED
+ * appointments of past days -> NO_SHOW, CHECKED_IN appointments of past days left behind by an
+ * ended token -> COMPLETED if their token was completed, else NO_SHOW, OPEN visits of past
+ * days -> CLOSED.
  */
 async function endOfDay(db, now = time.clock.now()) {
   const date = time.formatDate(now);
@@ -991,12 +997,49 @@ async function endOfDay(db, now = time.clock.now()) {
         ]);
       }
     }
+    // A consultation left IN_SERVICE (never completed by staff) was served: close it as COMPLETED.
+    const inService = await tx.query(
+      `SELECT token_id, service_point_id, appointment_id FROM tokens WHERE token_date < ? AND status = 'IN_SERVICE'`,
+      [date]
+    );
+    for (const t of inService) {
+      await tx.run(`UPDATE tokens SET status = 'COMPLETED', completed_at = ? WHERE token_id = ?`, [at, t.token_id]);
+      await insertEvent(tx, {
+        tokenId: t.token_id,
+        type: 'COMPLETED',
+        from: t.service_point_id,
+        note: 'auto-closed at end of day',
+        at,
+      });
+      if (t.appointment_id) {
+        await tx.run(`UPDATE appointments SET status = 'COMPLETED', updated_at = ? WHERE appointment_id = ?`, [
+          at,
+          t.appointment_id,
+        ]);
+      }
+    }
     const appts = await tx.run(
       `UPDATE appointments SET status = 'NO_SHOW', updated_at = ? WHERE status = 'BOOKED' AND slot_start < ?`,
       [at, `${date} 00:00:00`]
     );
+    // Safety net: a CHECKED_IN appointment of a past day whose linked token has ended.
+    const doneAppts = await tx.run(
+      `UPDATE appointments SET status = 'COMPLETED', updated_at = ?
+        WHERE status = 'CHECKED_IN' AND slot_start < ?
+          AND EXISTS (SELECT 1 FROM tokens t WHERE t.appointment_id = appointments.appointment_id AND t.status = 'COMPLETED')`,
+      [at, `${date} 00:00:00`]
+    );
+    const missedAppts = await tx.run(
+      `UPDATE appointments SET status = 'NO_SHOW', updated_at = ? WHERE status = 'CHECKED_IN' AND slot_start < ?`,
+      [at, `${date} 00:00:00`]
+    );
     const visits = await tx.run(`UPDATE visits SET status = 'CLOSED' WHERE status = 'OPEN' AND visit_date < ?`, [date]);
-    return { tokens: stale.length, appointments: appts.changes, visits: visits.changes };
+    return {
+      tokens: stale.length,
+      autoCompleted: inService.length,
+      appointments: appts.changes + doneAppts.changes + missedAppts.changes,
+      visits: visits.changes,
+    };
   });
 }
 

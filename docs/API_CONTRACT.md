@@ -129,7 +129,7 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | POST | `/tokens/:id/skip` | – | CALLED → SKIPPED |
 | POST | `/tokens/:id/recall` | – | SKIPPED → CALLED (409 if another token is open) |
 | POST | `/tokens/:id/complete` | – | CALLED/IN_SERVICE → COMPLETED |
-| POST | `/tokens/:id/transfer` | `{ toServicePointId, toDoctorId? }` | `{ from: QueueToken, to: QueueToken }`; WAITING/CALLED → TRANSFERRED, new WAITING token in the target queue, same visit, priority kept |
+| POST | `/tokens/:id/transfer` | `{ toServicePointId, toDoctorId? }` | `{ from: QueueToken, to: QueueToken }`; WAITING/CALLED → TRANSFERRED, new WAITING token in the target queue, same visit, priority kept; an appointment link (`appointment_id`) moves to the new token |
 | POST | `/tokens/:id/priority` | `{ level: 0-2, reason }` | `QueueToken`; logs PRIORITY_SET with note = reason |
 | GET | `/staff/transfer-targets` | `?servicePointId=` | `[ { servicePointId, name, type, doctorId, doctorName, specialty, waiting } ]` active points in the same branch except this one |
 | POST | `/visits/:id/linked-tokens` | `{ type: "LAB"|"PHARMACY", servicePointId? }` | 201 `TokenDetail`; default target = the branch's active point of that type with the shortest queue |
