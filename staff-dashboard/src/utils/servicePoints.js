@@ -20,9 +20,14 @@ export function pickInitialServicePoint(points, rememberedId) {
   return null;
 }
 
-/** Linked tokens (FR-04) can only be issued from OPD consultation rooms. */
-export function canIssueLinkedTokens(servicePointType) {
-  return servicePointType === 'OPD';
+/**
+ * Linked tokens (FR-04) are issued by doctors (roles matrix, Section 3.2) from OPD consultation
+ * rooms only; the backend answers 403 for other staff.
+ * @param {string} servicePointType
+ * @param {{doctorId?: number|null}|null} user  the signed-in user (contract User shape)
+ */
+export function canIssueLinkedTokens(servicePointType, user) {
+  return servicePointType === 'OPD' && Boolean(user && user.doctorId);
 }
 
 /** Linked token types offered by the backend (POST /api/visits/:id/linked-tokens). */

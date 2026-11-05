@@ -54,7 +54,7 @@ describe('NowServingCard', () => {
 
   it('disables "Call next" while a token is open and shows the emergency styling', () => {
     const html = render(
-      <NowServingCard token={calledToken} servicePointType="OPD" waitingCount={2} busy={null} {...handlers} />,
+      <NowServingCard token={calledToken} canIssueLinked waitingCount={2} busy={null} {...handlers} />,
     );
     expect(isDisabled(html, 'Call next patient')).toBe(true);
     expect(html).toContain('serving--emergency');
@@ -65,9 +65,9 @@ describe('NowServingCard', () => {
     expect(html).toContain('Issue linked token');
   });
 
-  it('hides "Issue linked token" outside OPD rooms (FR-04)', () => {
+  it('hides "Issue linked token" unless a doctor works in an OPD room (FR-04)', () => {
     const html = render(
-      <NowServingCard token={calledToken} servicePointType="LAB" waitingCount={0} busy={null} {...handlers} />,
+      <NowServingCard token={calledToken} canIssueLinked={false} waitingCount={0} busy={null} {...handlers} />,
     );
     expect(html).not.toContain('Issue linked token');
   });

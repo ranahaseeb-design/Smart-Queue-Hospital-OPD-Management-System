@@ -4,7 +4,7 @@ import { formatClock, formatMinutes, minutesSince, priorityTone, statusLabel } f
 
 export default function NowServingCard({
   token,
-  servicePointType,
+  canIssueLinked, // doctor in an OPD room (canIssueLinkedTokens)
   waitingCount,
   busy,
   now,
@@ -127,7 +127,7 @@ export default function NowServingCard({
               Transfer
             </button>
             {/* No Priority here: the backend only re-prioritises WAITING or SKIPPED tokens (FR-11). */}
-            {servicePointType === 'OPD' && (
+            {canIssueLinked && (
               <button
                 type="button"
                 className="btn btn--outline btn--lg"
