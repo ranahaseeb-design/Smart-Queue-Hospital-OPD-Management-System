@@ -15,6 +15,7 @@ const { badRequest, conflict, forbidden, notFound } = require('../utils/errors')
 const fb = require('./featureBuilder');
 const access = require('./accessService');
 const scheduleService = require('./scheduleService');
+const userService = require('./userService');
 const predictionService = require('./predictionService');
 const notificationService = require('./notificationService');
 const settingsService = require('./settingsService');
@@ -29,9 +30,32 @@ const lastDepartmentLevel = new Map(); // departmentId -> last live congestion l
 const lastPosition = new Map();
 const LAST_POSITION_LIMIT = 50000;
 
-function priorityFromCategory(category) {
-  return category === 'ELDERLY' || category === 'DIFFERENTLY_ABLED' ? 1 : 0;
+/**
+ * Pre-set priority of a new token (FR-13): 1 for ELDERLY / DIFFERENTLY_ABLED, and for a patient who
+ * has reached userService.ELDERLY_MIN_AGE by dateStr even if the stored category predates that.
+ */
+function priorityFromCategory(category, dateOfBirth = null, dateStr = time.today()) {
+  if (category === 'ELDERLY' || category === 'DIFFERENTLY_ABLED') return 1;
+  return userService.isElderly(dateOfBirth, dateStr) ? 1 : 0;
 }
+
+/**
+ * True while a token's priority 1 rests only on the patient's self-declared DIFFERENTLY_ABLED
+ * category (not on age) and no staff member has confirmed/overridden priority in this visit.
+ */
+function isPriorityDeclared(row) {
+  return (
+    Number(row.priority_level) === 1 &&
+    row.priority_category === 'DIFFERENTLY_ABLED' &&
+    !userService.isElderly(row.patient_dob, time.toApiDate(row.token_date)) &&
+    !Number(row.priority_confirmed)
+  );
+}
+
+// Columns for isPriorityDeclared (t = tokens, pu = the patient's users row).
+const PRIORITY_DECLARED_COLUMNS = `pu.date_of_birth AS patient_dob,
+            (SELECT COUNT(*) FROM queue_events pe JOIN tokens pt ON pt.token_id = pe.token_id
+              WHERE pt.visit_id = t.visit_id AND pe.event_type = 'PRIORITY_SET') AS priority_confirmed`;
 
 function queueKeyOf(row) {
   return {
@@ -51,7 +75,7 @@ async function loadTokenRow(db, tokenId) {
     `SELECT t.*, v.patient_id, v.branch_id, v.status AS visit_status, b.name AS branch_name,
             sp.name AS sp_name, sp.type AS sp_type,
             du.full_name AS doctor_name, dep.specialty, dep.department_id, dep.name AS department_name,
-            pu.full_name AS patient_name, pu.priority_category
+            pu.full_name AS patient_name, pu.priority_category, ${PRIORITY_DECLARED_COLUMNS}
        FROM tokens t
        JOIN visits v ON v.visit_id = t.visit_id
        JOIN branches b ON b.branch_id = v.branch_id
@@ -191,6 +215,7 @@ function toQueueToken(row, estimateMinutes = null) {
     status: row.status,
     priorityLevel: Number(row.priority_level),
     priorityCategory: row.priority_category || 'NONE',
+    priorityDeclared: isPriorityDeclared(row),
     patientName: row.patient_name,
     issuedAt: time.toApi(row.issued_at),
     calledAt: time.toApi(row.called_at),
@@ -378,7 +403,7 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, sess
       tokenNumber,
       date,
       queueType: 'OPD',
-      priorityLevel: priorityFromCategory(patient.priority_category),
+      priorityLevel: priorityFromCategory(patient.priority_category, patient.date_of_birth, date),
       issuedAt,
     });
     await insertEvent(tx, {
@@ -521,7 +546,7 @@ async function servicePointQueue(db, user, servicePointId, now = time.clock.now(
   const sp = await access.assertServicePointAccess(db, user, servicePointId);
   const date = time.formatDate(now);
   const rows = await db.query(
-    `SELECT t.*, pu.full_name AS patient_name, pu.priority_category
+    `SELECT t.*, pu.full_name AS patient_name, pu.priority_category, ${PRIORITY_DECLARED_COLUMNS}
        FROM tokens t JOIN visits v ON v.visit_id = t.visit_id JOIN users pu ON pu.user_id = v.patient_id
       WHERE t.service_point_id = ? AND t.token_date = ?`,
     [servicePointId, date]

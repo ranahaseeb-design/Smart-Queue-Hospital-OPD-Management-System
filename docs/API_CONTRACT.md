@@ -64,7 +64,8 @@ Seed: 3 branches in Lahore, 4–5 departments each (standardised specialties: Ge
 // QueueToken (staff-facing)
 { "id": 42, "tokenNumber": 7, "displayNumber": "OPD-007", "status": "WAITING", "priorityLevel": 1,
   "priorityCategory": "ELDERLY", "patientName": "Ali Khan", "issuedAt": "...", "calledAt": null,
-  "visitId": 17, "doctorId": 2, "estimateMinutes": 30, "fromAppointment": false }
+  "visitId": 17, "doctorId": 2, "estimateMinutes": 30, "fromAppointment": false,
+  "priorityDeclared": false }  // true while priority 1 rests only on a self-declared DIFFERENTLY_ABLED category (no PRIORITY_SET in the visit yet)
 
 // Appointment
 { "id": 5, "doctor": { "id": 2, "fullName": "Dr. Sara Ahmed", "specialty": "Cardiology" },
@@ -82,10 +83,10 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 | Method | Path | Body / query | Response |
 |---|---|---|---|
 | GET | `/health` | – | `{ status: "ok", db: "mysql|sqlite", ai: true|false }` |
-| POST | `/auth/register` | `{ fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }` (≥1 of email/phone, password ≥ 6) | 201 `{ token, user }` — role is always PATIENT |
+| POST | `/auth/register` | `{ fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }` (≥1 of email/phone, password ≥ 6) | 201 `{ token, user }` — role is always PATIENT. `ELDERLY` is derived from `dateOfBirth` (age ≥ 60, set automatically); declaring it without a qualifying `dateOfBirth` → 400. `DIFFERENTLY_ABLED` may be declared (staff confirm per token) |
 | POST | `/auth/login` | `{ identifier, password }` (identifier = email or phone) | `{ token, user }` |
 | GET | `/auth/me` | – | `{ user }` |
-| PUT | `/auth/me` | `{ fullName?, email?, phone?, dateOfBirth?, priorityCategory?, password? }` | `{ user }` |
+| PUT | `/auth/me` | `{ fullName?, email?, phone?, dateOfBirth?, priorityCategory?, password? }` | `{ user }` (same `priorityCategory` rules as register) |
 
 ### Browse (FR-02) — any authenticated role
 | GET | `/branches` | – | `[ { id, name, address, latitude, longitude, status } ]` (ACTIVE only for patients) |

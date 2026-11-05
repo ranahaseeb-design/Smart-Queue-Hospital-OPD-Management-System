@@ -30,7 +30,7 @@ before(async () => {
   room = sps.body.find((s) => s.type === 'OPD');
   assert.ok(room, 'doctor1 has an OPD room');
   P.a = await ctx.newPatient();
-  P.b = await ctx.newPatient({ priorityCategory: 'ELDERLY' });
+  P.b = await ctx.newPatient({ priorityCategory: 'ELDERLY', dateOfBirth: '1950-04-01' });
   P.c = await ctx.newPatient();
 });
 after(async () => {
@@ -105,6 +105,7 @@ test('elderly patient gets priority 1 and is ordered before normal tokens (FR-13
   assert.equal(q.waiting[4].id, P.a.tokenDetail.id);
   for (const w of q.waiting) assert.equal(typeof w.estimateMinutes, 'number');
   assert.equal(q.waiting[1].priorityCategory, 'ELDERLY');
+  assert.equal(q.waiting[1].priorityDeclared, false); // derived from the date of birth
   assert.deepEqual(q.recentlyCompleted, []);
   assertNoSecrets(assert, q);
 
@@ -386,4 +387,17 @@ test('every status change wrote exactly one queue event (FR-21)', async () => {
     assert.equal(r.issued, 1, `token ${r.token_id} has one ISSUED event`);
     assert.ok(r.n >= 1);
   }
+});
+
+test('a self-declared DIFFERENTLY_ABLED priority is flagged until staff confirm it (FR-13)', async () => {
+  const D = await ctx.newPatient({ priorityCategory: 'DIFFERENTLY_ABLED' });
+  const joined = await ctx.api.post('/tokens', D.token, { doctorId: room.doctorId });
+  assert.equal(joined.status, 201);
+  assert.equal(joined.body.priorityLevel, 1);
+  const before = (await queue()).waiting.find((w) => w.id === joined.body.id);
+  assert.equal(before.priorityDeclared, true);
+  const confirmed = await ctx.api.post(`/tokens/${joined.body.id}/priority`, doctorToken, { level: 1, reason: 'Confirmed at counter' });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.priorityDeclared, false);
+  assert.equal((await queue()).waiting.find((w) => w.id === joined.body.id).priorityDeclared, false);
 });

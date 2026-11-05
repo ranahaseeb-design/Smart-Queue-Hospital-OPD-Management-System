@@ -251,7 +251,7 @@ test('seed replay reproduces the live first prediction of every token (features 
 
   const pt = {};
   for (const k of ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'L']) {
-    pt[k] = await ctx.newPatient(k === 'E' || k === 'H' ? { priorityCategory: 'ELDERLY' } : {});
+    pt[k] = await ctx.newPatient(k === 'E' || k === 'H' ? { priorityCategory: 'ELDERLY', dateOfBirth: '1952-06-15' } : {});
   }
   const ok = (res, status = 200) => {
     assert.equal(res.status, status, JSON.stringify(res.body));

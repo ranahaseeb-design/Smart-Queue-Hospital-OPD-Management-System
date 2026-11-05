@@ -287,7 +287,10 @@ function buildMasterData(rng, now, historyDays) {
   for (let i = 1; i <= SYNTHETIC_PATIENTS; i += 1) {
     const r = rng.next();
     const priorityCategory = r < 0.11 ? 'ELDERLY' : r < 0.14 ? 'DIFFERENTLY_ABLED' : 'NONE';
-    const year = priorityCategory === 'ELDERLY' ? rng.int(1938, 1961) : rng.int(1962, 2020);
+    // ELDERLY is derived from the date of birth (userService.ELDERLY_MIN_AGE = 60): keep the stored
+    // categories consistent with it (ELDERLY >= 61, everyone else < 60 years old today).
+    const thisYear = now.getFullYear();
+    const year = priorityCategory === 'ELDERLY' ? rng.int(thisYear - 88, thisYear - 61) : rng.int(thisYear - 59, 2020);
     const u = addUser({
       fullName: `${rng.pick(FIRST_NAMES)} ${rng.pick(LAST_NAMES)}`,
       phone: `0321${String(i).padStart(7, '0')}`,

@@ -85,6 +85,30 @@ test('login with e-mail or phone; wrong password is 401', async () => {
   assert.equal(missing.status, 400);
 });
 
+test('ELDERLY is derived from the date of birth (age >= 60); DIFFERENTLY_ABLED may be declared (FR-13)', async () => {
+  const reg = (extra) => ctx.api.post('/auth/register', null, { fullName: 'Prio Test', password: 'secret1', ...extra });
+  const noDob = await reg({ email: 'prio1@example.com', priorityCategory: 'ELDERLY' });
+  assert.equal(noDob.status, 400);
+  assert.equal(noDob.body.error.code, 'VALIDATION_ERROR');
+  const young = ctx.time.addDaysStr(ctx.time.today(), -(59 * 366));
+  assert.equal((await reg({ email: 'prio2@example.com', priorityCategory: 'ELDERLY', dateOfBirth: young })).status, 400);
+  const derived = await reg({ email: 'prio3@example.com', dateOfBirth: '1955-01-01' });
+  assert.equal(derived.status, 201);
+  assert.equal(derived.body.user.priorityCategory, 'ELDERLY');
+  const declared = await reg({ email: 'prio4@example.com', priorityCategory: 'DIFFERENTLY_ABLED' });
+  assert.equal(declared.status, 201);
+  assert.equal(declared.body.user.priorityCategory, 'DIFFERENTLY_ABLED');
+
+  // PUT /auth/me follows the same rule; a younger corrected DOB drops ELDERLY.
+  const token = derived.body.token;
+  assert.equal((await ctx.api.put('/auth/me', declared.body.token, { priorityCategory: 'ELDERLY' })).status, 400);
+  const corrected = await ctx.api.put('/auth/me', token, { dateOfBirth: young });
+  assert.equal(corrected.status, 200);
+  assert.equal(corrected.body.user.priorityCategory, 'NONE');
+  const older = await ctx.api.put('/auth/me', token, { dateOfBirth: '1940-03-03', priorityCategory: 'ELDERLY' });
+  assert.equal(older.body.user.priorityCategory, 'ELDERLY');
+});
+
 test('GET/PUT /auth/me; staff users carry doctorId and assignments', async () => {
   const { token } = await ctx.newPatient();
   const me = await ctx.api.get('/auth/me', token);

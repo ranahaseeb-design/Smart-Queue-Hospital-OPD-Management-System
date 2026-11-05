@@ -67,6 +67,38 @@ function validateDob(dob) {
   return dob;
 }
 
+/**
+ * Priority categories (FR-13). ELDERLY is derived from date_of_birth (age >= ELDERLY_MIN_AGE): it
+ * cannot be self-declared without a qualifying date of birth, and a qualifying date of birth
+ * sets it automatically. DIFFERENTLY_ABLED is self-declared; it pre-sets priority 1 on new tokens
+ * and staff confirm or override it (QueueToken.priorityDeclared, POST /tokens/:id/priority).
+ */
+const ELDERLY_MIN_AGE = 60;
+
+/** Completed years between a 'YYYY-MM-DD' date of birth and dateStr; null without a DOB. */
+function ageOn(dob, dateStr = time.today()) {
+  const d = dob ? time.toApiDate(dob) : null;
+  if (!d) return null;
+  const [y, m, day] = d.split('-').map(Number);
+  const [Y, M, D] = String(dateStr).slice(0, 10).split('-').map(Number);
+  return Y - y - (M < m || (M === m && D < day) ? 1 : 0);
+}
+
+function isElderly(dob, dateStr = time.today()) {
+  const age = ageOn(dob, dateStr);
+  return age !== null && age >= ELDERLY_MIN_AGE;
+}
+
+/** Category to store for a patient-requested category + date of birth (400 on unqualified ELDERLY). */
+function resolvePriorityCategory(requested, dob) {
+  if (requested === 'DIFFERENTLY_ABLED') return requested;
+  const elderly = isElderly(dob);
+  if (requested === 'ELDERLY' && !elderly) {
+    throw badRequest(`priorityCategory ELDERLY requires a dateOfBirth showing an age of ${ELDERLY_MIN_AGE} or over`);
+  }
+  return elderly ? 'ELDERLY' : 'NONE';
+}
+
 /** POST /auth/register — always creates a PATIENT. */
 async function register(db, body) {
   const fullName = v.str(body.fullName, 'fullName', { required: true, min: 2, max: 100 });
@@ -75,7 +107,10 @@ async function register(db, body) {
   if (!email && !phone) throw badRequest('Provide at least an e-mail address or a phone number');
   const password = v.password(body.password, 'password', { required: true });
   const dateOfBirth = validateDob(v.date(body.dateOfBirth, 'dateOfBirth'));
-  const priorityCategory = v.oneOf(body.priorityCategory, 'priorityCategory', PRIORITY_CATEGORIES) || 'NONE';
+  const priorityCategory = resolvePriorityCategory(
+    v.oneOf(body.priorityCategory, 'priorityCategory', PRIORITY_CATEGORIES) || 'NONE',
+    dateOfBirth
+  );
   await assertUnique(db, { email, phone });
   const hash = await hashPassword(password);
   const { insertId } = await db.run(
@@ -126,13 +161,23 @@ async function updateMe(db, user, body) {
   }
   if (!email && !phone) throw badRequest('An account needs an e-mail address or a phone number');
   await assertUnique(db, { email: body.email !== undefined ? email : null, phone: body.phone !== undefined ? phone : null }, user.user_id);
+  let dob = user.date_of_birth;
   if (body.dateOfBirth !== undefined) {
+    dob = validateDob(v.date(body.dateOfBirth, 'dateOfBirth'));
     fields.push('date_of_birth = ?');
-    params.push(validateDob(v.date(body.dateOfBirth, 'dateOfBirth')));
+    params.push(dob);
   }
-  if (body.priorityCategory !== undefined) {
+  if (body.priorityCategory !== undefined || body.dateOfBirth !== undefined) {
+    // Re-derive: an explicit category is validated against the (new) date of birth; a DOB change
+    // alone re-derives ELDERLY (kept DIFFERENTLY_ABLED stays).
+    const requested =
+      body.priorityCategory !== undefined
+        ? v.oneOf(body.priorityCategory, 'priorityCategory', PRIORITY_CATEGORIES, { required: true })
+        : user.priority_category === 'DIFFERENTLY_ABLED'
+          ? 'DIFFERENTLY_ABLED'
+          : 'NONE';
     fields.push('priority_category = ?');
-    params.push(v.oneOf(body.priorityCategory, 'priorityCategory', PRIORITY_CATEGORIES, { required: true }));
+    params.push(resolvePriorityCategory(requested, dob));
   }
   if (body.password !== undefined) {
     fields.push('password_hash = ?');
@@ -144,4 +189,17 @@ async function updateMe(db, user, body) {
   return getUserRow(db, user.user_id);
 }
 
-module.exports = { PRIORITY_CATEGORIES, hashPassword, serializeUser, getUserRow, assertUnique, register, login, updateMe };
+module.exports = {
+  PRIORITY_CATEGORIES,
+  ELDERLY_MIN_AGE,
+  ageOn,
+  isElderly,
+  resolvePriorityCategory,
+  hashPassword,
+  serializeUser,
+  getUserRow,
+  assertUnique,
+  register,
+  login,
+  updateMe,
+};

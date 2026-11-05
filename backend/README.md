@@ -219,6 +219,15 @@ timeout a 15-second circuit breaker skips further AI calls so requests never wai
 
 ## Design notes
 
+- **Priority categories (FR-13).** `ELDERLY` is derived from `date_of_birth`
+  (`userService.ELDERLY_MIN_AGE` = 60): registering or `PUT /auth/me` with `priorityCategory: ELDERLY`
+  without a date of birth showing age >= 60 is a 400, and a qualifying date of birth sets `ELDERLY`
+  automatically (a later, younger corrected DOB drops it). `DIFFERENTLY_ABLED` may be self-declared:
+  it pre-sets priority 1 on new tokens ("pre-set by the patient's registered priority category and
+  confirmed by staff"), and `QueueToken.priorityDeclared` is `true` while that priority rests only on
+  the declaration — until a staff member confirms or overrides it with `POST /tokens/:id/priority`
+  (any `PRIORITY_SET` in the visit clears the flag).
+
 - **Errors** always have the contract shape `{ "error": { "code", "message" } }` with
   `VALIDATION_ERROR` 400, `UNAUTHORIZED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409,
   `AI_UNAVAILABLE` 503 (unexpected failures: 500 `INTERNAL_ERROR`). All input is validated server-side
