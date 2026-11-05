@@ -169,6 +169,8 @@ test('skip and recall: recall is 409 while another token is open (FR-12)', async
   assert.equal(seen.body.position, null);
   assert.equal(seen.body.estimate, null);
   assert.equal(seen.body.nowServing.tokenId, P.b.tokenDetail.id);
+  const firstCalledAt = seen.body.calledAt;
+  assert.ok(firstCalledAt);
 
   ctx.advance(2);
   const skipped = await ctx.api.post(`/tokens/${P.b.tokenDetail.id}/skip`, doctorToken);
@@ -190,6 +192,10 @@ test('skip and recall: recall is 409 while another token is open (FR-12)', async
   const recalled = await ctx.api.post(`/tokens/${P.b.tokenDetail.id}/recall`, doctorToken);
   assert.equal(recalled.status, 200);
   assert.equal(recalled.body.status, 'CALLED');
+  // A recall keeps the FIRST call time (the wait label for analytics and model training).
+  assert.equal(recalled.body.calledAt, firstCalledAt);
+  const stored = await ctx.db.get('SELECT called_at FROM tokens WHERE token_id = ?', [P.b.tokenDetail.id]);
+  assert.equal(ctx.time.toApi(stored.called_at), firstCalledAt);
   ctx.advance(7);
   assert.equal((await ctx.api.post(`/tokens/${P.b.tokenDetail.id}/complete`, doctorToken)).status, 200);
 

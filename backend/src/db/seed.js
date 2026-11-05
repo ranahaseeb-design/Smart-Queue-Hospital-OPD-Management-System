@@ -148,10 +148,10 @@ const meanOrNull = (arr) => (arr.length >= MIN_SAMPLES ? time.round(arr.reduce((
 function lastStatus(tok) {
   return tok.changes[tok.changes.length - 1].status;
 }
-function lastCalledAt(tok) {
-  let at = null;
-  for (const c of tok.changes) if (c.status === 'CALLED') at = c.at;
-  return at;
+/** First call time: a recall does not overwrite tokens.called_at (live recallToken behaviour). */
+function firstCalledAt(tok) {
+  const c = tok.changes.find((x) => x.status === 'CALLED');
+  return c ? c.at : null;
 }
 function completedAt(tok) {
   const c = tok.changes.find((x) => x.status === 'COMPLETED');
@@ -752,7 +752,7 @@ class Simulator {
         finalPriority(tok),
         lastStatus(tok),
         fmt(tok.issuedAt),
-        fmt(lastCalledAt(tok)),
+        fmt(firstCalledAt(tok)),
         fmt(completedAt(tok)),
         1,
       ]);
@@ -792,7 +792,7 @@ class Simulator {
     const nowMs = this.now.getTime();
     for (const tok of opdTokens) {
       if (tok.noFeedback || lastStatus(tok) !== 'COMPLETED' || !rng.chance(P.feedback)) continue;
-      const wait = (lastCalledAt(tok) - tok.issuedAt) / 60000;
+      const wait = (firstCalledAt(tok) - tok.issuedAt) / 60000;
       const dist =
         wait < 20
           ? [[5, 0.55], [4, 0.35], [3, 0.1]]
@@ -822,7 +822,7 @@ function durationsOf(tokens) {
   return tokens
     .filter((t) => lastStatus(t) === 'COMPLETED')
     .sort((a, b) => completedAt(a) - completedAt(b) || a.id - b.id)
-    .map((t) => (completedAt(t) - lastCalledAt(t)) / 60000)
+    .map((t) => (completedAt(t) - firstCalledAt(t)) / 60000)
     .filter((d) => d >= 0);
 }
 

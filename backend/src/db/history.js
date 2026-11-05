@@ -33,7 +33,7 @@ function stateAt(tok, t) {
   for (const c of tok.changes) {
     if (c.at.getTime() > tm) break;
     status = c.status;
-    if (c.status === 'CALLED') calledAt = c.at;
+    if (c.status === 'CALLED' && !calledAt) calledAt = c.at; // first call; a recall keeps it
     else if (c.status === 'COMPLETED') completedAt = c.at;
   }
   let priorityLevel = tok.initialPriority;

@@ -678,7 +678,9 @@ async function staffTransition(db, user, tokenId, { from, to, event, setCalled =
     const sets = ['status = ?'];
     const params = [to];
     if (setCalled) {
-      sets.push('called_at = ?');
+      // called_at is the FIRST call time (label of the waiting-time model and of the wait
+      // analytics); a recall is recorded only as a RECALLED queue_event and keeps it.
+      sets.push('called_at = COALESCE(called_at, ?)');
       params.push(at);
     }
     if (setCompleted) {

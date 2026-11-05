@@ -2,7 +2,8 @@
 
 Training set: the FIRST ``wait_predictions`` row of every token (its ``features_json`` is
 the feature vector known when the token was issued) joined with the token's actual wait
-``called_at - issued_at`` in minutes (Section 6.1). All queue types are used.
+``called_at - issued_at`` in minutes (Section 6.1). ``called_at`` is the FIRST call: the backend
+never overwrites it on a recall (a recall is only a RECALLED queue_event). All queue types are used.
 
 Procedure:
 1. Chronological 80/20 split by ``issued_at`` (Section 6.7.1 — a random split would leak the future).
