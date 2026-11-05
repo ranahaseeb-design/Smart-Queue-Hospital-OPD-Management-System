@@ -6,6 +6,7 @@ import WaitingList from '../components/WaitingList.jsx';
 import SkippedList from '../components/SkippedList.jsx';
 import SummaryTiles from '../components/SummaryTiles.jsx';
 import RecentlyCompletedList from '../components/RecentlyCompletedList.jsx';
+import { REASON_MAX_LENGTH } from '../components/PriorityModal.jsx';
 
 const noop = () => {};
 const handlers = {
@@ -104,6 +105,12 @@ describe('NowServingCard', () => {
       expect(html).not.toContain('Change priority of OPD-007');
       expect(html).not.toContain('>Priority<');
     }
+  });
+});
+
+describe('PriorityModal', () => {
+  it('limits the reason to the backend maximum (200 characters)', () => {
+    expect(REASON_MAX_LENGTH).toBe(200);
   });
 });
 
