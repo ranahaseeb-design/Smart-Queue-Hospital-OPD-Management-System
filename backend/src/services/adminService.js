@@ -772,16 +772,18 @@ async function serializeOne(db, row) {
 const users = {
   async list(db, user, query) {
     const scope = listScope(user, query);
-    let role = v.oneOf(query.role, 'role', ALL_ROLES);
+    // ?role= takes one role or a comma-separated list (e.g. STAFF,BRANCH_ADMIN,HOSPITAL_ADMIN).
+    let roles = [...new Set(String(query.role ?? '').split(',').map((r) => r.trim()).filter(Boolean)
+      .map((r) => v.oneOf(r, 'role', ALL_ROLES, { required: true })))];
     if (!isHospitalAdmin(user)) {
-      if (role && role !== 'STAFF') throw forbidden('Branch administrators can only list staff accounts');
-      role = 'STAFF';
+      if (roles.some((r) => r !== 'STAFF')) throw forbidden('Branch administrators can only list staff accounts');
+      roles = ['STAFF'];
     }
     const where = [];
     const params = [];
-    if (role) {
-      where.push('u.role = ?');
-      params.push(role);
+    if (roles.length) {
+      where.push(`u.role IN (${roles.map(() => '?').join(', ')})`);
+      params.push(...roles);
     }
     if (scope) {
       where.push(`(u.admin_branch_id = ?

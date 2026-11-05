@@ -260,6 +260,18 @@ test('users: hospital admin manages all roles; branch admin only staff of own br
   assert.equal((await ctx.api.del(`/admin/users/${me.id}`, admin)).status, 409);
   const patients = await ctx.api.get('/admin/users?role=PATIENT', admin);
   assert.ok(patients.body.length > 100);
+
+  // ?role= accepts a comma-separated list, so "all staff roles" excludes the patient accounts.
+  const staffRoles = await ctx.api.get('/admin/users?role=STAFF,BRANCH_ADMIN,HOSPITAL_ADMIN', admin);
+  assert.equal(staffRoles.status, 200);
+  assert.ok(staffRoles.body.length > 0 && staffRoles.body.length < 100);
+  assert.ok(staffRoles.body.every((u) => u.role !== 'PATIENT'));
+  for (const r of ['STAFF', 'BRANCH_ADMIN', 'HOSPITAL_ADMIN']) assert.ok(staffRoles.body.some((u) => u.role === r), r);
+  assert.equal((await ctx.api.get('/admin/users?role=STAFF,NOPE', admin)).status, 400);
+  assert.equal((await ctx.api.get('/admin/users?role=STAFF,BRANCH_ADMIN', branchAdmin)).status, 403);
+  const branchStaff = await ctx.api.get('/admin/users?role=STAFF,STAFF', branchAdmin);
+  assert.equal(branchStaff.status, 200);
+  assert.ok(branchStaff.body.every((u) => u.role === 'STAFF'));
 });
 
 test('assignments: create, duplicate 409, scoping, delete; staff then sees the counter', async () => {

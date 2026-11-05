@@ -19,3 +19,17 @@ export function adminBranchIdPatch(values, mode, row) {
   const current = row?.adminBranchId ? Number(row.adminBranchId) : null;
   return next === current ? {} : { adminBranchId: next };
 }
+
+/** Staff and administrator roles shown under "All roles" on the Staff & Users screen. */
+export const MANAGED_ROLES = [ROLES.STAFF, ROLES.BRANCH_ADMIN, ROLES.HOSPITAL_ADMIN];
+
+/**
+ * `role` query for GET /admin/users. Patients register themselves in the mobile app and are not
+ * managed here, so "All roles" asks for the staff/administrator roles only (comma-separated list)
+ * instead of downloading every patient account; PATIENT is requested only when chosen explicitly.
+ * Branch administrators may list STAFF accounts only.
+ */
+export function usersRoleQuery(hospital, roleFilter) {
+  if (!hospital) return ROLES.STAFF;
+  return roleFilter || MANAGED_ROLES.join(',');
+}

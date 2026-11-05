@@ -10,17 +10,10 @@ import { useScope } from '../context/ScopeContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { useBranchField, useServicePoints } from '../hooks/useLookups.js';
 import { ROLE_LABELS, ROLES, assignableRoles } from '../utils/roles.js';
-import { adminBranchIdPatch } from '../utils/users.js';
+import { MANAGED_ROLES, adminBranchIdPatch, usersRoleQuery } from '../utils/users.js';
 import { ServicePointType } from './ServicePointsPage.jsx';
 
 const ROLE_TONE = { HOSPITAL_ADMIN: 'violet', BRANCH_ADMIN: 'info', STAFF: 'teal', PATIENT: 'neutral' };
-
-/**
- * This screen manages staff and administrator accounts (FR-14). Patients register themselves in
- * the mobile app; the backend may still list them without a role filter, so they are hidden here
- * (otherwise ~1,500 synthetic patient rows bury the staff accounts).
- */
-const withoutPatients = (rows) => rows.filter((r) => r.role !== ROLES.PATIENT);
 
 function spLabel(sp, withBranch) {
   return `${sp.name} (${sp.type})${withBranch && sp.branchName ? ` — ${sp.branchName}` : ''}`;
@@ -35,11 +28,10 @@ function UsersTab({ tabs }) {
   const hospital = permissions.manageAdminAccounts;
   const roles = assignableRoles(me);
 
-  // The admin users API manages STAFF, BRANCH_ADMIN and HOSPITAL_ADMIN accounts (API contract);
-  // patients register themselves in the mobile app, so patient rows (if listed) are read-only.
-  const roleFilterOptions = hospital
-    ? [ROLES.STAFF, ROLES.BRANCH_ADMIN, ROLES.HOSPITAL_ADMIN]
-    : [ROLES.STAFF];
+  // The admin users API manages STAFF, BRANCH_ADMIN and HOSPITAL_ADMIN accounts (API contract).
+  // Patients register themselves in the mobile app: "All roles" does not fetch them (see
+  // usersRoleQuery); hospital admins can still list them explicitly, read-only.
+  const roleFilterOptions = hospital ? [...MANAGED_ROLES, ROLES.PATIENT] : [ROLES.STAFF];
 
   const manageable = (r) => r.role !== ROLES.PATIENT && (hospital || r.role === ROLES.STAFF);
   const canEditRow = (r) => manageable(r);
@@ -117,11 +109,10 @@ function UsersTab({ tabs }) {
         : 'Staff accounts of your branch. Doctors are created under Doctors.'}
       itemName="user"
       endpoint="/admin/users"
-      query={{ ...scopeQuery, role: hospital ? (roleFilter || undefined) : ROLES.STAFF }}
+      query={{ ...scopeQuery, role: usersRoleQuery(hospital, roleFilter) }}
       columns={columns}
       initialSort={{ key: 'fullName', dir: 'asc' }}
       toolbar={roleToolbar}
-      transformRows={withoutPatients}
       canCreate={permissions.manageUsers}
       canEdit={canEditRow}
       canRemove={canRemoveRow}

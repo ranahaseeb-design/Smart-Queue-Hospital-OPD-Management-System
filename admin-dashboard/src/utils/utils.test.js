@@ -8,7 +8,7 @@ import {
 import { safeReturnPath } from './navigation.js';
 import { assignableRoles, isAdminRole, permissionsFor } from './roles.js';
 import { fmtShare, improvementVsBaseline } from './models.js';
-import { adminBranchIdPatch } from './users.js';
+import { adminBranchIdPatch, usersRoleQuery } from './users.js';
 import { buildQuery } from '../api/client.js';
 import { validateFields } from '../components/FormFields.jsx';
 
@@ -251,6 +251,19 @@ describe('form validation', () => {
     expect(validateFields(fields, {
       fullName: 'Dr. Sara Ahmed', email: 'sara@opd.test', password: 'secret1', avg: '12', days: [1, 2], start: '09:00',
     })).toEqual({});
+  });
+});
+
+describe('usersRoleQuery (GET /admin/users role filter)', () => {
+  it('asks for staff/admin roles only under "All roles", patients only when chosen', () => {
+    expect(usersRoleQuery(true, '')).toBe('STAFF,BRANCH_ADMIN,HOSPITAL_ADMIN');
+    expect(usersRoleQuery(true, 'PATIENT')).toBe('PATIENT');
+    expect(usersRoleQuery(true, 'BRANCH_ADMIN')).toBe('BRANCH_ADMIN');
+  });
+
+  it('always asks branch admins for STAFF', () => {
+    expect(usersRoleQuery(false, '')).toBe('STAFF');
+    expect(usersRoleQuery(false, 'HOSPITAL_ADMIN')).toBe('STAFF');
   });
 });
 
