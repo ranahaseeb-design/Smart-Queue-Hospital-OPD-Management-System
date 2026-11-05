@@ -188,3 +188,12 @@ test('AI service down: baseline predictions, JS ranking, baseline forecast, 503 
   const health = await ctx.api.get('/health');
   assert.equal(health.body.ai, false);
 });
+
+test('Eq. 6.2 baseline does not double-count priority tokens already in patients_ahead', () => {
+  const fb = require('../src/services/featureBuilder');
+  const base = { patients_ahead: 3, priority_ahead: 0, doctor_avg_consult: 10, minutes_to_start: 0 };
+  assert.equal(fb.baselineMinutes(base), 30);
+  // All three patients ahead are priority tokens: still 3 consultations ahead, not 6.
+  assert.equal(fb.baselineMinutes({ ...base, priority_ahead: 3 }), 30);
+  assert.equal(fb.baselineMinutes({ ...base, minutes_to_start: 15 }), 45);
+});
