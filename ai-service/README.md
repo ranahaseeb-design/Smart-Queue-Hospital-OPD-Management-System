@@ -82,6 +82,8 @@ live in each process.
 | `AI_MIN_TRAINING_ROWS` | `200` | Retraining is refused (400) below this many labelled tokens |
 | `AI_FORECAST_LOOKBACK_DAYS` | `182` | History window of the forecast job |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `AI_DEPARTMENT_MIN_ROWS` | `30` | Test rows that make a department "major" for the Section 6.7.3 department rule |
+| `AI_DEPARTMENT_TOLERANCE` | `1.2` | A major department with MAE > tolerance × its baseline MAE rejects the model (min 1.0) |
 | `AI_SERVICE_TOKEN` | empty | **Required** shared secret expected in `X-AI-Service-Token` on `/ai/*` (empty → 503) |
 | `AI_ALLOW_UNAUTHENTICATED` | `false` | Dev only: accept `/ai/*` without a token when `AI_SERVICE_TOKEN` is empty |
 
@@ -215,9 +217,14 @@ plus additions `reason`, `activeModelMae` and `departmentCheck[]`.
 - **Metrics on the test period:** MAE, RMSE and R² (Eq. 6.6–6.8), plus the % of predictions with
   |error| ≤ 10 min. `baselineMae` is Eq. 6.2 computed from the same stored features.
 - **Acceptance (Section 6.7.3):** the model's MAE must be below `baselineMae` **and**, when a model is
-  already active, strictly below that model's MAE on the same test rows. Departments whose MAE is
-  more than 20% worse than the baseline are listed in `departmentCheck` and the `reason`. They are
-  reported but do not reject a model on their own.
+  already active, strictly below that model's MAE on the same test rows, **and** it must not be
+  "systematically worse for any major department": a department with at least
+  `AI_DEPARTMENT_MIN_ROWS` (default 30) test rows whose MAE exceeds `AI_DEPARTMENT_TOLERANCE`
+  (default 1.2) × its own baseline MAE rejects the model (`departmentCheck[].major` / `.rejects`, and
+  the `reason` names the departments). Smaller departments are listed and noted in the `reason` but
+  cannot reject a model on their own.
+- **Manual activation** (`POST /ai/models/{version}/activate`): only versions that passed acceptance
+  (`ACTIVE`, or `RETIRED` for a rollback) can be activated. A `REJECTED` version answers **409**.
 - **Versioning:** the version is named `rf-YYYYMMDD-HHMM`, with `-2`, `-3`… on a collision. The joblib
   bundle holds the model, the feature list, the training and test periods, the chosen hyperparameters,
   the CV MAE, feature importances, metrics, the per-department check and the sklearn version. A

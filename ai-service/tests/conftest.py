@@ -91,7 +91,8 @@ def engine(tmp_path):
     yield eng
     registry.invalidate()
     for name in ("database_url", "models_dir", "search_iter", "n_jobs", "min_training_rows", "forecast_lookback_days",
-                 "ai_service_token", "allow_unauthenticated"):
+                 "ai_service_token", "allow_unauthenticated",
+                 "department_min_rows", "department_tolerance"):
         setattr(settings, name, getattr(original, name))
     db.reset_engine(original.database_url)
 

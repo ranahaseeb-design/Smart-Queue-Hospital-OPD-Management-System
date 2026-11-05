@@ -72,6 +72,9 @@ function startFakeAi() {
       const m = /^\/ai\/models\/([^/]+)\/activate$/.exec(req.url);
       if (req.method === 'POST' && m) {
         if (m[1] === 'missing') return send(404, { detail: 'Unknown model version' });
+        if (m[1] === 'rf-rejected') {
+          return send(409, { detail: 'Model version rf-rejected was REJECTED by the acceptance rules and cannot be activated.' });
+        }
         return send(200, { version: decodeURIComponent(m[1]), activated: true });
       }
       return send(404, { detail: 'Not Found' });
@@ -148,6 +151,15 @@ test('forecast job and model management are proxied to the AI service (FR-17, FR
   const missing = await ctx.api.post('/admin/models/missing/activate', admin);
   assert.equal(missing.status, 404);
   assert.equal((await ctx.api.post('/admin/models/bad%20version/activate', admin)).status, 400);
+});
+
+test('activating a REJECTED model surfaces the AI service refusal (FR-22)', async () => {
+  const admin = await ctx.login('admin');
+  const res = await ctx.api.post('/admin/models/rf-rejected/activate', admin);
+  // The route must not swallow the refusal: a client error carrying the AI service's message
+  // (aiClient maps the AI 409 to 409 CONFLICT; older mapping: 400).
+  assert.ok([400, 409].includes(res.status), `status ${res.status}`);
+  assert.match(res.body.error.message, /REJECTED/);
 });
 
 test('every /ai/* call carries the X-AI-Service-Token shared secret', async () => {

@@ -54,6 +54,8 @@ class Settings:
     log_level: str
     ai_service_token: str = ""  # shared secret expected in the X-AI-Service-Token header
     allow_unauthenticated: bool = False  # dev only: accept /ai/* calls when no token is configured
+    department_min_rows: int = 30  # Section 6.7.3: a "major" department has at least this many test rows
+    department_tolerance: float = 1.2  # ... and is rejected if its MAE > tolerance x its baseline MAE
 
 
 def load_settings() -> Settings:
@@ -68,6 +70,8 @@ def load_settings() -> Settings:
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         ai_service_token=os.getenv("AI_SERVICE_TOKEN", "").strip(),
         allow_unauthenticated=_bool_env("AI_ALLOW_UNAUTHENTICATED", False),
+        department_min_rows=max(1, _int_env("AI_DEPARTMENT_MIN_ROWS", 30)),
+        department_tolerance=max(1.0, _float_env("AI_DEPARTMENT_TOLERANCE", 1.2)),
     )
 
 

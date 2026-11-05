@@ -195,8 +195,8 @@ Baseline (Eq. 6.2): `W = (patients_ahead + priority_ahead) * doctor_avg_consult 
 | POST | `/ai/predict-wait` | `{ items: [ { tokenId, features: {...} } ] }` | `{ modelVersion, predictions: [ { tokenId, predictedMinutes } ] }`; 503 if no active model |
 | POST | `/ai/rank-branches` | `{ weights: { wait, distance, congestion }, candidates: [ { branchId, doctorId, predictedWaitMinutes, distanceKm|null, congestionRatio } ] }` | `{ ranked: [ { branchId, doctorId, score } ] }` ascending |
 | POST | `/ai/jobs/forecast` | `{ days: 7 }` | reads history from DB, writes `forecasts` rows (`source` = model version) → `{ generated, modelVersion }` |
-| POST | `/ai/models/retrain` | – | trains RF on chronological 80/20 split, compares with baseline MAE and the active model; writes `model_versions` → `{ version, metrics, accepted, activated }` |
+| POST | `/ai/models/retrain` | – | trains RF on chronological 80/20 split, compares with baseline MAE and the active model and rejects a model whose MAE exceeds 1.2 × baseline for any major department (≥ 30 test rows; Section 6.7.3); writes `model_versions` → `{ version, metrics, accepted, activated }` |
 | GET | `/ai/models` | – | same shape as `/admin/models` |
-| POST | `/ai/models/{version}/activate` | – | `{ version, activated: true }` |
+| POST | `/ai/models/{version}/activate` | – | `{ version, activated: true }`; 404 unknown version; 409 when the version is `REJECTED` (only accepted versions — `ACTIVE`/`RETIRED` — can be activated) |
 
 Backend → AI calls use a 1.5 s timeout; on failure the backend falls back silently (baseline prediction / JS scoring / baseline forecast).

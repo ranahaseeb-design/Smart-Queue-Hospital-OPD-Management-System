@@ -8,9 +8,12 @@ Procedure:
 1. Chronological 80/20 split by ``issued_at`` (Section 6.7.1 — a random split would leak the future).
 2. RandomizedSearchCV with TimeSeriesSplit over the Section 6.4.2 ranges on the training part.
 3. Test-period metrics (Eq. 6.6-6.8, within +/-10 min) and the Eq. 6.2 baseline MAE.
-4. Acceptance (Section 6.7.3): MAE < baseline MAE and, when a model is active, MAE < the
-   active model's MAE on the same test rows. Departments whose MAE is >20% worse than the
-   baseline are reported (they do not by themselves reject the model).
+4. Acceptance (Section 6.7.3): MAE < baseline MAE, when a model is active MAE < the active
+   model's MAE on the same test rows, AND the model is "not systematically worse for any major
+   department": every department with >= AI_DEPARTMENT_MIN_ROWS (default 30) test rows must have
+   MAE <= AI_DEPARTMENT_TOLERANCE (default 1.2) x its own baseline MAE. Smaller departments are
+   reported but cannot reject the model on their own (too few rows to be meaningful).
+   A REJECTED version can never be activated manually (409).
 5. The model file is saved as ``MODELS_DIR/<version>.joblib`` with its metadata and a
    ``model_versions`` row is written (ACTIVE or REJECTED).
 """
@@ -43,7 +46,8 @@ log = logging.getLogger(__name__)
 RANDOM_STATE = 42
 TEST_FRACTION = 0.2
 MAX_PLAUSIBLE_WAIT_MINUTES = 12 * 60  # data-quality filter: a token called >12 h after issue is not a real wait
-DEPARTMENT_TOLERANCE = 1.20  # "not systematically worse for any major department" (Section 6.7.3)
+# "Not systematically worse for any major department" (Section 6.7.3): thresholds are
+# settings.department_min_rows / settings.department_tolerance (env-overridable).
 
 # Section 6.4.2 candidate ranges, kept small so a retrain finishes in reasonable time.
 PARAM_DISTRIBUTIONS: dict[str, list[Any]] = {
@@ -163,19 +167,31 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray, baseline_mae: float) -> dic
 
 
 def _department_check(test_X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray, y_base: np.ndarray) -> list[dict]:
+    """Per-department MAE vs the Eq. 6.2 baseline (Section 6.7.3).
+
+    ``major``: at least ``settings.department_min_rows`` test rows. ``rejects``: a major department
+    whose MAE exceeds ``settings.department_tolerance`` x its baseline MAE -> the model is rejected.
+    """
     rows = []
+    min_rows = settings.department_min_rows
+    tolerance = settings.department_tolerance
     departments = test_X["department_id"].to_numpy()
     for dept in sorted(set(departments.tolist())):
         mask = departments == dept
         mae_model = float(np.mean(np.abs(y_true[mask] - y_pred[mask])))
         mae_base = float(np.mean(np.abs(y_true[mask] - y_base[mask])))
+        test_rows = int(mask.sum())
+        worse = bool(mae_model > mae_base * tolerance)
+        major = test_rows >= min_rows
         rows.append(
             {
                 "departmentId": int(dept) if dept > 0 else None,  # 0 = LAB/PHARMACY tokens without a department
-                "testRows": int(mask.sum()),
+                "testRows": test_rows,
                 "mae": round(mae_model, 2),
                 "baselineMae": round(mae_base, 2),
-                "worseThanBaseline": bool(mae_model > mae_base * DEPARTMENT_TOLERANCE),
+                "worseThanBaseline": worse,
+                "major": major,
+                "rejects": bool(major and worse),
             }
         )
     return rows
@@ -266,18 +282,34 @@ def _retrain_locked(now: datetime) -> dict:
     # Acceptance (Section 6.7.3) on unrounded values; strictly lower MAE is required.
     beats_baseline = model_mae < baseline_mae
     beats_active = active_mae_raw is None or model_mae < active_mae_raw
-    accepted = bool(beats_baseline and beats_active)
+    failing_departments = [d for d in department_check if d["rejects"]]
+    departments_ok = not failing_departments
+    accepted = bool(beats_baseline and beats_active and departments_ok)
+    pct = round((settings.department_tolerance - 1.0) * 100)
     if not beats_baseline:
         reason = f"Rejected: MAE {metrics['mae']} is not lower than the baseline MAE {metrics['baselineMae']}."
     elif not beats_active:
         reason = f"Rejected: MAE {metrics['mae']} is not lower than the active model {current} (MAE {active_mae})."
+    elif not departments_ok:
+        listed = ", ".join(
+            f"department {d['departmentId'] if d['departmentId'] is not None else 'none (LAB/PHARMACY)'}"
+            f" MAE {d['mae']} vs baseline {d['baselineMae']} ({d['testRows']} test rows)"
+            for d in failing_departments
+        )
+        reason = (
+            f"Rejected: systematically worse than the baseline for {len(failing_departments)} major department(s) "
+            f"(>= {settings.department_min_rows} test rows, MAE more than {pct}% above baseline): {listed}."
+        )
     else:
         reason = f"Accepted: MAE {metrics['mae']} vs baseline {metrics['baselineMae']}" + (
             f" and active model {current} ({active_mae})." if active_mae is not None else "."
         )
-    worse = [d for d in department_check if d["worseThanBaseline"]]
-    if worse:
-        reason += f" Warning: {len(worse)} department(s) more than 20% worse than baseline."
+    minor_worse = [d for d in department_check if d["worseThanBaseline"] and not d["major"]]
+    if minor_worse:
+        reason += (
+            f" Note: {len(minor_worse)} small department(s) (< {settings.department_min_rows} test rows) "
+            f"more than {pct}% worse than baseline."
+        )
 
     bundle["metrics"] = metrics
     bundle["department_check"] = department_check
@@ -361,10 +393,21 @@ class ModelNotFoundError(Exception):
 
 
 def activate(version: str) -> dict:
-    """Make ``version`` the only active model; the previously active one becomes RETIRED."""
-    exists = db.fetch_scalar("SELECT COUNT(*) FROM model_versions WHERE version = :v", {"v": version})
-    if not exists:
+    """Make ``version`` the only active model; the previously active one becomes RETIRED.
+
+    Only versions that passed the Section 6.7.3 acceptance rules (ACTIVE, or RETIRED for a
+    rollback) can be activated; a REJECTED version answers 409 (FR-22).
+    """
+    rows = db.fetch_all("SELECT status FROM model_versions WHERE version = :v", {"v": version})
+    if not rows:
         raise ModelNotFoundError(f"Model version {version} not found.")
+    if str(rows[0]["status"]).upper() == "REJECTED":
+        raise TrainingError(
+            f"Model version {version} was REJECTED by the acceptance rules (Section 6.7.3: it did not beat the "
+            "baseline / active model or was worse for a major department) and cannot be activated. "
+            "Retrain to obtain an accepted version.",
+            status_code=409,
+        )
     try:
         bundle = load_bundle(version)  # refuse to activate a version whose file is missing or unreadable
     except (FileNotFoundError, ValueError) as exc:

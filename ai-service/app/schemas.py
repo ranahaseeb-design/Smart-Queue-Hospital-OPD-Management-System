@@ -131,6 +131,8 @@ class DepartmentCheck(CamelModel):
     mae: float
     baseline_mae: float
     worse_than_baseline: bool
+    major: bool = False  # >= AI_DEPARTMENT_MIN_ROWS test rows
+    rejects: bool = False  # major and worse than baseline -> the model is rejected (Section 6.7.3)
 
 
 class RetrainResponse(CamelModel):
