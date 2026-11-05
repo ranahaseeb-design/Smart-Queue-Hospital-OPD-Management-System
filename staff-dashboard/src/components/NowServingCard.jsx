@@ -13,7 +13,6 @@ export default function NowServingCard({
   onComplete,
   onSkip,
   onTransfer,
-  onPriority,
   onIssueLinked,
 }) {
   const anyBusy = Boolean(busy);
@@ -127,15 +126,7 @@ export default function NowServingCard({
             >
               Transfer
             </button>
-            <button
-              type="button"
-              className="btn btn--outline btn--lg"
-              onClick={onPriority}
-              disabled={anyBusy}
-              aria-label={`Change priority of ${token.displayNumber}`}
-            >
-              Priority
-            </button>
+            {/* No Priority here: the backend only re-prioritises WAITING or SKIPPED tokens (FR-11). */}
             {servicePointType === 'OPD' && (
               <button
                 type="button"

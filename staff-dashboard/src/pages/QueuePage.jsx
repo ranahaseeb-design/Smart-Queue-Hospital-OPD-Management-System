@@ -253,7 +253,6 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   onComplete={() => complete(nowServing)}
                   onSkip={() => setDialog({ kind: 'skip', token: nowServing })}
                   onTransfer={() => setDialog({ kind: 'transfer', token: nowServing })}
-                  onPriority={() => setDialog({ kind: 'priority', token: nowServing })}
                   onIssueLinked={() => setDialog({ kind: 'linked', token: nowServing })}
                 />
                 <WaitingList
@@ -266,7 +265,13 @@ function QueueScreen({ servicePointId, pointInfo }) {
               </div>
               <aside className="queue-side" aria-label="Summary and skipped tokens">
                 <SummaryTiles summary={summary} servicePointType={servicePoint.type} />
-                <SkippedList tokens={skipped} busy={busy} hasOpenToken={Boolean(nowServing)} onRecall={recall} />
+                <SkippedList
+                  tokens={skipped}
+                  busy={busy}
+                  hasOpenToken={Boolean(nowServing)}
+                  onRecall={recall}
+                  onPriority={(t) => setDialog({ kind: 'priority', token: t })}
+                />
                 <RecentlyCompletedList
                   tokens={recentlyCompleted}
                   servicePointType={servicePoint.type}
