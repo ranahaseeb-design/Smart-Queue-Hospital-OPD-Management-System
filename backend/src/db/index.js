@@ -10,6 +10,11 @@
  *   run(sql, params)   -> { insertId, changes }
  *   transaction(async (tx) => ...)
  *   lockRow(table, idColumn, id)   (SELECT ... FOR UPDATE on MySQL, no-op on SQLite)
+ *   getForUpdate(sql, params)      (get() as a locking read: appends FOR UPDATE on MySQL only)
+ *
+ * Lock order (avoids deadlocks under MySQL): service_points (ascending id) -> doctors ->
+ * users (patient) -> tokens. Take the locks as the FIRST statements of a transaction, before
+ * any plain SELECT, because InnoDB REPEATABLE READ fixes the snapshot at the first plain read.
  *
  * All SQL in this code base is portable: '?' placeholders, dates computed in JS,
  * no vendor-specific functions or upserts, booleans as 0/1, JSON stored as strings.

@@ -85,14 +85,42 @@ async function departmentSessions(db, departmentId, dateStr) {
   return rows.map((r) => toSession(r, dateStr));
 }
 
-/** Tokens issued for a doctor today that count towards max_patients. */
-async function issuedCount(db, doctorId, dateStr) {
-  const row = await db.get(
-    `SELECT COUNT(*) AS n FROM tokens
-      WHERE doctor_id = ? AND token_date = ? AND status <> 'CANCELLED' AND status <> 'TRANSFERRED'`,
-    [doctorId, dateStr]
-  );
+/**
+ * Issue-time window of a session, consistent with pickSession(): a token issued at time t
+ * belongs to the first session that has not ended at t. So session i covers
+ * [end of session i-1 (or 00:00), end of session i), and the last session also takes
+ * everything until midnight (DEMO_ALWAYS_OPEN issues after the end).
+ * Returns { from, to } as 'YYYY-MM-DD HH:MM:SS' strings (to is exclusive).
+ */
+function sessionWindow(sessions, session, dateStr) {
+  const ordered = [...sessions].sort((a, b) => a.end - b.end);
+  const idx = ordered.findIndex((s) => s === session || (s.scheduleId === session.scheduleId && s.end - session.end === 0));
+  const dayStart = time.parseDate(dateStr);
+  const from = idx > 0 ? ordered[idx - 1].end : dayStart;
+  const to = idx >= 0 && idx < ordered.length - 1 ? session.end : time.addDays(dayStart, 1);
+  return { from: time.formatDateTime(from), to: time.formatDateTime(to) };
+}
+
+/**
+ * OPD tokens issued for a doctor that count towards max_patients. With a session window only
+ * the tokens issued within that session's window count (max_patients is per session, not per day).
+ */
+async function issuedCount(db, doctorId, dateStr, window = null) {
+  let sql = `SELECT COUNT(*) AS n FROM tokens
+      WHERE doctor_id = ? AND token_date = ? AND queue_type = 'OPD'
+        AND status <> 'CANCELLED' AND status <> 'TRANSFERRED'`;
+  const params = [doctorId, dateStr];
+  if (window) {
+    sql += ' AND issued_at >= ? AND issued_at < ?';
+    params.push(window.from, window.to);
+  }
+  const row = await db.get(sql, params);
   return Number(row.n) || 0;
+}
+
+/** Tokens already issued in `session` (of `sessions` on dateStr) for the doctor. */
+async function sessionIssuedCount(db, doctorId, dateStr, sessions, session) {
+  return issuedCount(db, doctorId, dateStr, sessionWindow(sessions, session, dateStr));
 }
 
 async function waitingCount(db, doctorId, dateStr) {
@@ -115,8 +143,10 @@ async function availability(db, doctor, dateStr, now) {
   let queueLength = 0;
   if (isToday && session && isDoctorBookable(doctor)) {
     const open = config.demoAlwaysOpen || now < session.end;
-    const issued = await issuedCount(db, doctor.doctor_id, dateStr);
-    const belowMax = !session.maxPatients || issued < session.maxPatients;
+    // Same per-session count as issueOpdToken enforces.
+    const belowMax =
+      !session.maxPatients ||
+      (await sessionIssuedCount(db, doctor.doctor_id, dateStr, sessions, session)) < session.maxPatients;
     acceptingNow = open && belowMax;
   }
   if (isToday) queueLength = await waitingCount(db, doctor.doctor_id, dateStr);
@@ -131,6 +161,8 @@ module.exports = {
   pickSession,
   departmentSessions,
   issuedCount,
+  sessionWindow,
+  sessionIssuedCount,
   waitingCount,
   availability,
 };

@@ -116,6 +116,34 @@ test('handshake requires a valid JWT', async () => {
   await assert.rejects(connected(open('garbage')), /Invalid or expired token/);
 });
 
+test('JWT in the query string is not accepted (handshake auth only)', async () => {
+  const socket = connect(baseUrl, {
+    query: { token: tokens.patient.token },
+    transports: ['websocket'],
+    reconnection: false,
+    forceNew: true,
+  });
+  sockets.push(socket);
+  await assert.rejects(connected(socket), /Authentication required/);
+});
+
+test('subscribe re-checks the account: a deactivated user is refused and disconnected', async () => {
+  const reg = await http('POST', '/auth/register', null, {
+    fullName: 'Soon Inactive',
+    email: 'socket.r@example.com',
+    password: 'secret1',
+  });
+  const socket = open(reg.body.token);
+  await connected(socket);
+  const { getDb } = require('../src/db');
+  await getDb().run('UPDATE users SET is_active = 0 WHERE user_id = ?', [reg.body.user.id]);
+  const gone = new Promise((resolve) => socket.once('disconnect', resolve));
+  const ack = await subscribe(socket, 'token:1');
+  assert.equal(ack.ok, false);
+  assert.match(ack.error, /deactivated/);
+  await gone;
+});
+
 test('subscribe authorisation follows the contract rooms', async () => {
   const doctorRoom = tokens.doctor1.user.assignments[0].servicePointId;
   const patient = open(tokens.patient.token);

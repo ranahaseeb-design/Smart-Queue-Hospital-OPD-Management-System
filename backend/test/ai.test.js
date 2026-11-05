@@ -8,9 +8,9 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const { createContext } = require('./helpers');
+const { createContext, AI_TEST_SERVICE_TOKEN } = require('./helpers');
 
-const fake = { slow: false, predictCalls: [], rankCalls: 0 };
+const fake = { slow: false, predictCalls: [], rankCalls: 0, tokenHeaders: [] };
 let server;
 let ctx;
 let doctorId;
@@ -28,6 +28,13 @@ function startFakeAi() {
         res.end(JSON.stringify(data));
       };
       if (req.method === 'GET' && req.url === '/health') return send(200, { status: 'ok', activeModel: 'rf-test', db: true });
+      // Like the real service: every /ai/* call needs the shared secret.
+      if (req.url.startsWith('/ai/')) {
+        fake.tokenHeaders.push(req.headers['x-ai-service-token']);
+        if (req.headers['x-ai-service-token'] !== AI_TEST_SERVICE_TOKEN) {
+          return send(401, { detail: 'Missing or invalid X-AI-Service-Token header' });
+        }
+      }
       if (req.method === 'POST' && req.url === '/ai/predict-wait') {
         fake.predictCalls.push(body);
         const reply = () =>
@@ -65,6 +72,9 @@ function startFakeAi() {
       const m = /^\/ai\/models\/([^/]+)\/activate$/.exec(req.url);
       if (req.method === 'POST' && m) {
         if (m[1] === 'missing') return send(404, { detail: 'Unknown model version' });
+        if (m[1] === 'rf-rejected') {
+          return send(409, { detail: 'Model version rf-rejected was REJECTED by the acceptance rules and cannot be activated.' });
+        }
         return send(200, { version: decodeURIComponent(m[1]), activated: true });
       }
       return send(404, { detail: 'Not Found' });
@@ -141,6 +151,20 @@ test('forecast job and model management are proxied to the AI service (FR-17, FR
   const missing = await ctx.api.post('/admin/models/missing/activate', admin);
   assert.equal(missing.status, 404);
   assert.equal((await ctx.api.post('/admin/models/bad%20version/activate', admin)).status, 400);
+});
+
+test('activating a REJECTED model surfaces the AI service refusal (FR-22)', async () => {
+  const admin = await ctx.login('admin');
+  const res = await ctx.api.post('/admin/models/rf-rejected/activate', admin);
+  // The route must not swallow the refusal: a client error carrying the AI service's message
+  // (aiClient maps the AI 409 to 409 CONFLICT; older mapping: 400).
+  assert.ok([400, 409].includes(res.status), `status ${res.status}`);
+  assert.match(res.body.error.message, /REJECTED/);
+});
+
+test('every /ai/* call carries the X-AI-Service-Token shared secret', async () => {
+  assert.ok(fake.tokenHeaders.length >= 5, 'AI endpoints were called');
+  assert.ok(fake.tokenHeaders.every((h) => h === AI_TEST_SERVICE_TOKEN));
 });
 
 test('a slow AI service is abandoned after the 1.5 s timeout and the baseline is used', async () => {

@@ -25,6 +25,23 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 @dataclass
 class Settings:
     database_url: str
@@ -35,6 +52,10 @@ class Settings:
     forecast_lookback_days: int  # history window used by the forecasting job
     hospital_tz: str  # hospital local time zone (all DB datetimes are naive local time)
     log_level: str
+    ai_service_token: str = ""  # shared secret expected in the X-AI-Service-Token header
+    allow_unauthenticated: bool = False  # dev only: accept /ai/* calls when no token is configured
+    department_min_rows: int = 30  # Section 6.7.3: a "major" department has at least this many test rows
+    department_tolerance: float = 1.2  # ... and is rejected if its MAE > tolerance x its baseline MAE
 
 
 def load_settings() -> Settings:
@@ -47,6 +68,10 @@ def load_settings() -> Settings:
         forecast_lookback_days=max(14, _int_env("AI_FORECAST_LOOKBACK_DAYS", 182)),
         hospital_tz=os.getenv("HOSPITAL_TZ", "Asia/Karachi"),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        ai_service_token=os.getenv("AI_SERVICE_TOKEN", "").strip(),
+        allow_unauthenticated=_bool_env("AI_ALLOW_UNAUTHENTICATED", False),
+        department_min_rows=max(1, _int_env("AI_DEPARTMENT_MIN_ROWS", 30)),
+        department_tolerance=max(1.0, _float_env("AI_DEPARTMENT_TOLERANCE", 1.2)),
     )
 
 

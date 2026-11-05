@@ -36,6 +36,17 @@ function splitStatements(sqlText) {
     .filter(Boolean);
 }
 
+/**
+ * Turn a SELECT into a locking read. Under InnoDB REPEATABLE READ a plain SELECT reads the
+ * transaction's snapshot (fixed by its first consistent read), so a read-modify-write such as
+ * MAX(token_number) + 1 could use stale data. FOR UPDATE reads the latest committed rows and
+ * locks them (and the index gaps), so concurrent writers serialise.
+ */
+function withForUpdate(sql) {
+  const trimmed = String(sql).trim().replace(/;$/, '');
+  return /\bFOR\s+UPDATE$/i.test(trimmed) ? trimmed : `${trimmed} FOR UPDATE`;
+}
+
 class MysqlAdapter {
   constructor(cfg) {
     // Lazy require so SQLite-only installs never load mysql2.
@@ -95,6 +106,10 @@ class MysqlAdapter {
     }
   }
 
+  async getForUpdate(sql, params) {
+    return this.get(withForUpdate(sql), params);
+  }
+
   async lockRow(table, idColumn, id) {
     await this.query(`SELECT ${idColumn} FROM ${table} WHERE ${idColumn} = ? FOR UPDATE`, [id]);
   }
@@ -123,6 +138,7 @@ class MysqlAdapter {
       lockRow: async (table, idColumn, id) => {
         await tx.query(`SELECT ${idColumn} FROM ${table} WHERE ${idColumn} = ? FOR UPDATE`, [id]);
       },
+      getForUpdate: async (sql, params) => tx.get(withForUpdate(sql), params),
     };
     tx.transaction = async (inner) => inner(tx);
     store.tx = tx;
@@ -165,4 +181,4 @@ class MysqlAdapter {
   }
 }
 
-module.exports = { MysqlAdapter, splitStatements };
+module.exports = { MysqlAdapter, splitStatements, withForUpdate };

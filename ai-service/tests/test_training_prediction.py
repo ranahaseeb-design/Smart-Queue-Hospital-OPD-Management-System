@@ -137,7 +137,18 @@ def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, mo
     assert rows[second["version"]]["status"] == "REJECTED"
     assert db.to_bool(rows[version]["is_active"])
 
-    # --- manual activation (FR-22): the previous active version is retired
+    # --- a REJECTED version can never be activated manually (FR-22, Section 6.7.3)
+    response = client.post(f"/ai/models/{second['version']}/activate")
+    assert response.status_code == 409, response.text
+    assert "REJECTED" in response.json()["detail"]
+    rows = _model_rows(engine)
+    assert rows[second["version"]]["status"] == "REJECTED"
+    assert db.to_bool(rows[version]["is_active"])
+
+    # --- manual activation / rollback of a version that passed acceptance (here: marked RETIRED,
+    # as after an earlier rollback): the previous active version is retired
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE model_versions SET status = 'RETIRED' WHERE version = :v"), {"v": second["version"]})
     response = client.post(f"/ai/models/{second['version']}/activate")
     assert response.status_code == 200, response.text
     assert response.json() == {"version": second["version"], "activated": True}
@@ -150,3 +161,61 @@ def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, mo
     monkeypatch.undo()
 
     assert client.post("/ai/models/rf-unknown/activate").status_code == 404
+
+
+def test_department_check_rejects_only_major_departments():
+    import numpy as np
+    import pandas as pd
+
+    from app.training import _department_check
+
+    # dept 1: 40 rows, model MAE 13 vs baseline 10 (> 1.2x) -> major and rejecting
+    # dept 2: 10 rows, model much worse but too few rows -> reported, not rejecting
+    # dept 3: 40 rows, model MAE 11 vs baseline 10 (within 1.2x) -> fine
+    depts = np.array([1] * 40 + [2] * 10 + [3] * 40)
+    frame = pd.DataFrame({"department_id": depts})
+    y_true = np.zeros(len(depts))
+    y_base = np.full(len(depts), 10.0)
+    y_pred = np.where(depts == 1, 13.0, np.where(depts == 2, 30.0, 11.0))
+    check = {d["departmentId"]: d for d in _department_check(frame, y_true, y_pred, y_base)}
+    assert check[1]["major"] and check[1]["worseThanBaseline"] and check[1]["rejects"]
+    assert not check[2]["major"] and check[2]["worseThanBaseline"] and not check[2]["rejects"]
+    assert check[3]["major"] and not check[3]["worseThanBaseline"] and not check[3]["rejects"]
+
+    original = (settings.department_min_rows, settings.department_tolerance)
+    try:
+        settings.department_min_rows, settings.department_tolerance = 5, 1.5  # env-overridable thresholds
+        check = {d["departmentId"]: d for d in _department_check(frame, y_true, y_pred, y_base)}
+        assert not check[1]["rejects"]  # 13 <= 1.5 x 10
+        assert check[2]["major"] and check[2]["rejects"]
+    finally:
+        settings.department_min_rows, settings.department_tolerance = original
+
+
+def test_major_department_regression_rejects_the_model(client, engine, seed_wait_history, monkeypatch):
+    from app import training
+
+    seed_wait_history(days=40)
+    real_check = training._department_check
+
+    def one_department_worse(*args):
+        rows = real_check(*args)
+        target = next(r for r in rows if r["major"])
+        target.update(worseThanBaseline=True, rejects=True)
+        return rows
+
+    monkeypatch.setattr(training, "_department_check", one_department_worse)
+    response = client.post("/ai/models/retrain")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["metrics"]["mae"] < body["metrics"]["baselineMae"]  # overall it beats the baseline ...
+    assert body["accepted"] is False and body["activated"] is False  # ... but a major department regressed
+    assert "major department" in body["reason"]
+    assert any(d["rejects"] for d in body["departmentCheck"])
+    assert _model_rows(engine)[body["version"]]["status"] == "REJECTED"
+    assert client.get("/health").json()["activeModel"] is None
+
+    response = client.post(f"/ai/models/{body['version']}/activate")
+    assert response.status_code == 409
+    assert "REJECTED" in response.json()["detail"]
+    assert client.get("/health").json()["activeModel"] is None

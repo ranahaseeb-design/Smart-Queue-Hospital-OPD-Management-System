@@ -29,9 +29,11 @@ async function request(method, path, body, timeoutMs = config.ai.timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const headers = body !== undefined ? { 'Content-Type': 'application/json' } : {};
+    if (config.ai.serviceToken) headers['X-AI-Service-Token'] = config.ai.serviceToken; // shared secret
     const res = await fetch(`${config.ai.url}${path}`, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });

@@ -17,6 +17,10 @@ COPY scripts ./scripts
 RUN mkdir -p /app/models && useradd --create-home --uid 10001 aiservice && chown -R aiservice /app
 USER aiservice
 
+# Every /ai/* call needs X-AI-Service-Token == AI_SERVICE_TOKEN: pass it at run time
+# (docker run -e AI_SERVICE_TOKEN=...). Without it the /ai/* endpoints answer 503.
+# 0.0.0.0 is the container interface; publish 8000 only on the backend's internal network.
+
 # Model files should survive container restarts: mount a volume on /app/models.
 VOLUME ["/app/models"]
 EXPOSE 8000

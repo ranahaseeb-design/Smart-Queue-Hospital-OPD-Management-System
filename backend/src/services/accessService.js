@@ -4,6 +4,7 @@
  * (Section 3.2 roles matrix, NFR-04).
  */
 const { forbidden, notFound } = require('../utils/errors');
+const time = require('../utils/time');
 
 const ADMIN_ROLES = ['BRANCH_ADMIN', 'HOSPITAL_ADMIN'];
 
@@ -15,17 +16,34 @@ async function getDoctorForUser(db, userId) {
   return db.get('SELECT doctor_id, department_id, is_active FROM doctors WHERE user_id = ?', [userId]);
 }
 
-/** Service points a staff member works at: explicit assignments + rooms where the doctor is scheduled. */
-async function staffServicePointIds(db, userId) {
+/**
+ * Service points a staff member works at: explicit assignments (any day) + rooms where the
+ * doctor is scheduled TODAY (hospital weekday). A schedule on another weekday grants nothing.
+ */
+async function staffServicePointIds(db, userId, now = time.clock.now()) {
   const rows = await db.query(
     `SELECT sa.service_point_id AS id FROM staff_assignments sa WHERE sa.user_id = ?
      UNION
      SELECT ds.service_point_id AS id FROM doctor_schedules ds
        JOIN doctors d ON d.doctor_id = ds.doctor_id
-      WHERE d.user_id = ?`,
-    [userId, userId]
+      WHERE d.user_id = ? AND ds.day_of_week = ?`,
+    [userId, userId, time.isoDow(now)]
   );
   return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * A staff member who is a doctor may only operate OPD tokens of their own doctor_id
+ * (call-next / start / skip / recall / complete / transfer / priority). Lab, pharmacy and other
+ * non-doctor staff, and non-OPD tokens, are unaffected.
+ */
+async function assertOwnsOpdToken(db, user, row) {
+  if (user.role !== 'STAFF' || row.queue_type !== 'OPD') return;
+  const doctor = await getDoctorForUser(db, user.user_id);
+  if (!doctor) return;
+  if (row.doctor_id !== doctor.doctor_id) {
+    throw forbidden("You can only operate your own patients' OPD tokens");
+  }
 }
 
 /** Branches a staff member belongs to (home branch, assignments, doctor's department). */
@@ -113,6 +131,7 @@ module.exports = {
   isAdmin,
   getDoctorForUser,
   staffServicePointIds,
+  assertOwnsOpdToken,
   staffBranchIds,
   canAccessServicePoint,
   assertServicePointAccess,

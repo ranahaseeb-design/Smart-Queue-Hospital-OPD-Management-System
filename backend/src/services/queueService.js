@@ -220,15 +220,28 @@ async function insertEvent(tx, { tokenId, type, by = null, from = null, to = nul
   );
 }
 
+/**
+ * Lock service points in ascending id order. Every transaction that numbers tokens or changes
+ * a queue takes these locks FIRST (before any plain SELECT, which would fix the InnoDB
+ * REPEATABLE READ snapshot) and before any token row lock, so the global lock order is
+ * service_points (ascending) -> doctors -> users -> tokens and transactions cannot deadlock.
+ */
+async function lockServicePoints(tx, ids) {
+  const unique = [...new Set(ids.map(Number))].sort((a, b) => a - b);
+  for (const id of unique) await tx.lockRow('service_points', 'service_point_id', id);
+}
+
+/** Next token number at a service point. Caller must already hold the service point lock. */
 async function nextTokenNumber(tx, servicePointId, date) {
-  await tx.lockRow('service_points', 'service_point_id', servicePointId);
-  const row = await tx.get('SELECT MAX(token_number) AS n FROM tokens WHERE service_point_id = ? AND token_date = ?', [
-    servicePointId,
-    date,
-  ]);
+  // Locking read on MySQL: reads the latest committed MAX even if the snapshot is older.
+  const row = await tx.getForUpdate(
+    'SELECT MAX(token_number) AS n FROM tokens WHERE service_point_id = ? AND token_date = ?',
+    [servicePointId, date]
+  );
   return (Number(row && row.n) || 0) + 1;
 }
 
+/** Caller must hold the patient's users-row lock so two OPEN visits cannot be created. */
 async function getOrCreateVisit(tx, patientId, branchId, date) {
   const existing = await tx.get(
     `SELECT visit_id FROM visits WHERE patient_id = ? AND branch_id = ? AND visit_date = ? AND status = 'OPEN'
@@ -356,7 +369,10 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now 
 
   const issuedAt = time.formatDateTime(now);
   const tokenId = await db.transaction(async (tx) => {
+    // Lock order: service point -> doctor -> patient (see lockServicePoints).
+    await lockServicePoints(tx, [session.servicePointId]);
     await tx.lockRow('doctors', 'doctor_id', doctorId);
+    await tx.lockRow('users', 'user_id', patient.user_id);
     const dup = await tx.get(
       `SELECT t.token_id FROM tokens t JOIN visits v ON v.visit_id = t.visit_id
         WHERE v.patient_id = ? AND t.doctor_id = ? AND t.token_date = ? AND t.status IN ('WAITING', 'CALLED', 'IN_SERVICE')`,
@@ -364,8 +380,9 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now 
     );
     if (dup) throw conflict('You already have an active token for this doctor today');
     if (!appointmentId && session.maxPatients) {
-      const issued = await scheduleService.issuedCount(tx, doctorId, date);
-      if (issued >= session.maxPatients) throw conflict('The doctor is not accepting more patients today');
+      // max_patients is per session: count only tokens issued in this session's window.
+      const issued = await scheduleService.sessionIssuedCount(tx, doctorId, date, sessions, session);
+      if (issued >= session.maxPatients) throw conflict('The doctor is not accepting more patients in this session');
     }
     const visitId = await getOrCreateVisit(tx, patient.user_id, doctor.branch_id, date);
     const tokenNumber = await nextTokenNumber(tx, session.servicePointId, date);
@@ -459,7 +476,7 @@ async function openTokenAt(tx, servicePointId, date, excludeId = 0) {
 
 /** Staff service points list (GET /staff/service-points). */
 async function staffServicePoints(db, user, now = time.clock.now()) {
-  const ids = [...(await access.staffServicePointIds(db, user.user_id))];
+  const ids = [...(await access.staffServicePointIds(db, user.user_id, now))];
   const ownDoctor = await access.getDoctorForUser(db, user.user_id);
   const date = time.formatDate(now);
   const out = [];
@@ -611,22 +628,17 @@ async function callNext(db, user, servicePointId, now = time.clock.now()) {
   const ownDoctor = await access.getDoctorForUser(db, user.user_id);
 
   const called = await db.transaction(async (tx) => {
-    await tx.lockRow('service_points', 'service_point_id', servicePointId);
+    await lockServicePoints(tx, [servicePointId]);
     if (await openTokenAt(tx, servicePointId, date)) {
       throw conflict('Another token is still being served here; complete or skip it first');
     }
     let doctorSql = '';
     const params = [servicePointId, date];
     if (ownDoctor && sp.type === 'OPD') {
-      // A doctor calls their own patients (rooms can be shared between sessions).
-      const mine = await tx.get(
-        `SELECT COUNT(*) AS n FROM tokens WHERE service_point_id = ? AND token_date = ? AND status = 'WAITING' AND doctor_id = ?`,
-        [servicePointId, date, ownDoctor.doctor_id]
-      );
-      if (Number(mine.n) > 0) {
-        doctorSql = 'AND doctor_id = ?';
-        params.push(ownDoctor.doctor_id);
-      }
+      // A doctor only ever calls their own patients (rooms can be shared between sessions):
+      // with none waiting the result is { token: null }, never another doctor's patient.
+      doctorSql = 'AND doctor_id = ?';
+      params.push(ownDoctor.doctor_id);
     }
     const next = await tx.get(
       `SELECT token_id FROM tokens WHERE service_point_id = ? AND token_date = ? AND status = 'WAITING' ${doctorSql}
@@ -664,13 +676,14 @@ async function afterStatusChange(db, row, now, extraKeys = []) {
 async function staffTransition(db, user, tokenId, { from, to, event, setCalled = false, setCompleted = false, checkOpen = false, now }) {
   const row = await requireTokenRow(db, tokenId);
   await access.assertServicePointAccess(db, user, row.service_point_id, { staffOnly: true });
+  await access.assertOwnsOpdToken(db, user, row);
   if (!from.includes(row.status)) {
     throw conflict(`Token is ${row.status}; expected ${from.join(' or ')}`);
   }
   const at = time.formatDateTime(now);
   await db.transaction(async (tx) => {
     if (checkOpen) {
-      await tx.lockRow('service_points', 'service_point_id', row.service_point_id);
+      await lockServicePoints(tx, [row.service_point_id]);
       if (await openTokenAt(tx, row.service_point_id, time.toApiDate(row.token_date), row.token_id)) {
         throw conflict('Another token is still being served here; complete or skip it first');
       }
@@ -748,6 +761,7 @@ async function completeToken(db, user, tokenId, now = time.clock.now()) {
 async function setPriority(db, user, tokenId, level, reason, now = time.clock.now()) {
   const row = await requireTokenRow(db, tokenId);
   await access.assertServicePointAccess(db, user, row.service_point_id, { staffOnly: true });
+  await access.assertOwnsOpdToken(db, user, row);
   if (!['WAITING', 'SKIPPED'].includes(row.status)) throw conflict(`Priority cannot be changed for a ${row.status} token`);
   const at = time.formatDateTime(now);
   await db.transaction(async (tx) => {
@@ -770,6 +784,7 @@ async function setPriority(db, user, tokenId, level, reason, now = time.clock.no
 async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId = null }, now = time.clock.now()) {
   const row = await requireTokenRow(db, tokenId);
   await access.assertServicePointAccess(db, user, row.service_point_id, { staffOnly: true });
+  await access.assertOwnsOpdToken(db, user, row);
   if (!['WAITING', 'CALLED'].includes(row.status)) throw conflict(`A ${row.status} token cannot be transferred`);
   const target = await db.get(
     'SELECT service_point_id, branch_id, type, name, is_active FROM service_points WHERE service_point_id = ?',
@@ -797,6 +812,8 @@ async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId =
   const at = time.formatDateTime(now);
   const fromDisplay = fb.displayNumber(row.queue_type, row.token_number);
   const newId = await db.transaction(async (tx) => {
+    // Service points (ascending id) before the token row, the same order as callNext.
+    await lockServicePoints(tx, [row.service_point_id, target.service_point_id]);
     const r = await tx.run(`UPDATE tokens SET status = 'TRANSFERRED' WHERE token_id = ? AND status = ?`, [
       tokenId,
       row.status,
@@ -925,6 +942,8 @@ async function issueLinkedToken(db, user, visitId, { type, servicePointId = null
 
   const at = time.formatDateTime(now);
   const tokenId = await db.transaction(async (tx) => {
+    // Lock first: the duplicate check below must not fix a stale InnoDB snapshot.
+    await lockServicePoints(tx, [target.service_point_id]);
     const dup = await tx.get(
       `SELECT token_id FROM tokens WHERE visit_id = ? AND service_point_id = ? AND status IN ('WAITING', 'CALLED', 'IN_SERVICE')`,
       [visitId, target.service_point_id]

@@ -113,6 +113,11 @@ class SqliteAdapter {
   /** Row lock for read-modify-write sequences (no-op: SQLite transactions are serialised). */
   async lockRow() {}
 
+  /** Locking read: a plain read on SQLite (BEGIN IMMEDIATE already serialises writers). */
+  async getForUpdate(sql, params) {
+    return this.get(sql, params);
+  }
+
   async transaction(fn) {
     const outer = this.als.getStore();
     if (outer && !outer.done) return fn(outer.tx); // nested: join the outer transaction
@@ -158,6 +163,7 @@ class SqliteAdapter {
       run: async (sql, params) => self._run(sql, params),
       exec: async (sqlText) => self.db.exec(sqlText),
       lockRow: async () => {},
+      getForUpdate: async (sql, params) => self._get(sql, params),
     };
     tx.transaction = async (fn) => fn(tx);
     return tx;

@@ -93,7 +93,7 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 | GET | `/branches/:id/departments` | – | `[ { id, branchId, specialty, name, doctorCount } ]` |
 | GET | `/departments/:id/doctors` | `?date=YYYY-MM-DD` (default today) | `[ { id, fullName, departmentId, specialty, branchId, avgConsultMinutes, servicePointId, servicePointName, session: { startTime, endTime } | null, availableToday, acceptingNow, queueLength, estimatedWaitMinutes } ]` |
 
-`acceptingNow` = scheduled today, session not ended (unless `DEMO_ALWAYS_OPEN=true`, which ignores clock time but still needs a schedule that weekday), and below `max_patients`.
+`acceptingNow` = scheduled today, session not ended (unless `DEMO_ALWAYS_OPEN=true`, which ignores clock time but still needs a schedule that weekday), and below `max_patients` of the current session (counting only the doctor's OPD tokens issued in that session's window: from the previous session's end, or 00:00, to this session's end; the last session runs to midnight).
 
 ### Tokens — patient (FR-03, FR-05, FR-06, FR-07, FR-09)
 | POST | `/tokens` | `{ doctorId }` | 201 `TokenDetail`. 409 `CONFLICT` if patient already has an active (WAITING/CALLED/IN_SERVICE) token for that doctor today; 409 if doctor not accepting. Priority level pre-set from the patient's `priorityCategory` (ELDERLY/DIFFERENTLY_ABLED → 1). Creates/reuses today's OPEN visit at that branch, writes ISSUED event + prediction. |
@@ -181,6 +181,8 @@ Server → client events (clients just re-fetch the relevant REST resource):
 
 ## Internal AI service (FastAPI, port 8000) — backend only (`AI_SERVICE_URL`)
 
+Authentication: every `/ai/*` request carries the header `X-AI-Service-Token: <AI_SERVICE_TOKEN>` (the same shared secret is configured on the backend and the AI service). Missing/wrong token → 401; if the AI service has no `AI_SERVICE_TOKEN` configured it answers 503 (unless `AI_ALLOW_UNAUTHENTICATED=true`, local development only). `GET /health` needs no token.
+
 Feature vector (Section 6.3), keys exactly:
 `patients_ahead, priority_ahead, doctor_avg_consult, doctor_recent_consult, interruptions_last_hour, session_started (0/1), minutes_to_start, hour_of_day, day_of_week (1-7), appointments_ahead, department_load, doctor_id, department_id, branch_id`.
 The backend stores this object as `wait_predictions.features_json` for every prediction; the first prediction of each token joined with its actual wait (`called_at − issued_at`) is the training set.
@@ -193,8 +195,8 @@ Baseline (Eq. 6.2): `W = (patients_ahead + priority_ahead) * doctor_avg_consult 
 | POST | `/ai/predict-wait` | `{ items: [ { tokenId, features: {...} } ] }` | `{ modelVersion, predictions: [ { tokenId, predictedMinutes } ] }`; 503 if no active model |
 | POST | `/ai/rank-branches` | `{ weights: { wait, distance, congestion }, candidates: [ { branchId, doctorId, predictedWaitMinutes, distanceKm|null, congestionRatio } ] }` | `{ ranked: [ { branchId, doctorId, score } ] }` ascending |
 | POST | `/ai/jobs/forecast` | `{ days: 7 }` | reads history from DB, writes `forecasts` rows (`source` = model version) → `{ generated, modelVersion }` |
-| POST | `/ai/models/retrain` | – | trains RF on chronological 80/20 split, compares with baseline MAE and the active model; writes `model_versions` → `{ version, metrics, accepted, activated }` |
+| POST | `/ai/models/retrain` | – | trains RF on chronological 80/20 split, compares with baseline MAE and the active model and rejects a model whose MAE exceeds 1.2 × baseline for any major department (≥ 30 test rows; Section 6.7.3); writes `model_versions` → `{ version, metrics, accepted, activated }` |
 | GET | `/ai/models` | – | same shape as `/admin/models` |
-| POST | `/ai/models/{version}/activate` | – | `{ version, activated: true }` |
+| POST | `/ai/models/{version}/activate` | – | `{ version, activated: true }`; 404 unknown version; 409 when the version is `REJECTED` (only accepted versions — `ACTIVE`/`RETIRED` — can be activated) |
 
 Backend → AI calls use a 1.5 s timeout; on failure the backend falls back silently (baseline prediction / JS scoring / baseline forecast).
