@@ -9,6 +9,7 @@ import { safeReturnPath } from './navigation.js';
 import { assignableRoles, isAdminRole, permissionsFor } from './roles.js';
 import { fmtShare, improvementVsBaseline } from './models.js';
 import { adminBranchIdPatch, usersRoleQuery } from './users.js';
+import { isReconnect } from '../hooks/useLiveRefresh.js';
 import { buildQuery } from '../api/client.js';
 import { validateFields } from '../components/FormFields.jsx';
 
@@ -251,6 +252,21 @@ describe('form validation', () => {
     expect(validateFields(fields, {
       fullName: 'Dr. Sara Ahmed', email: 'sara@opd.test', password: 'secret1', avg: '12', days: [1, 2], start: '09:00',
     })).toEqual({});
+  });
+});
+
+describe('isReconnect (useLiveRefresh catch-up refresh)', () => {
+  it('fires when the socket comes back after a drop', () => {
+    expect(isReconnect('offline', 'live', true)).toBe(true);
+    expect(isReconnect('offline', 'live', false)).toBe(true); // page opened while offline
+    expect(isReconnect('connecting', 'live', true)).toBe(true); // reconnect via a new handshake
+  });
+
+  it('does not fire on the first connection, while live, or when going offline', () => {
+    expect(isReconnect(null, 'live', false)).toBe(false); // mounted while already live
+    expect(isReconnect('connecting', 'live', false)).toBe(false); // page just loaded its data
+    expect(isReconnect('live', 'live', true)).toBe(false);
+    expect(isReconnect('live', 'offline', true)).toBe(false);
   });
 });
 
