@@ -2,7 +2,9 @@
 /**
  * Real-time update channel (Socket.IO) — FR-05, FR-15, NFR-01.
  *
- * Connect with io(url, { auth: { token: "<jwt>" } }). Each socket joins user:<id>.
+ * Connect with io(url, { auth: { token: "<jwt>" } }) — the handshake `auth` payload is the only
+ * accepted place for the JWT (not the query string). Each socket joins user:<id>. Every
+ * `subscribe` re-reads the user: deactivated accounts are refused and disconnected.
  * Clients send `subscribe` / `unsubscribe` with { room } where room is
  *   token:<id>  (token owner, staff of the branch, admins of the branch)
  *   sp:<id>     (staff assigned to the service point, admins of the branch)
@@ -59,10 +61,10 @@ function init(httpServer, db) {
   });
 
   io.use((socket, next) => {
-    const token =
-      (socket.handshake.auth && socket.handshake.auth.token) ||
-      (socket.handshake.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
-      (socket.handshake.query && socket.handshake.query.token);
+    // Contract: io(url, { auth: { token } }) only. Query-string tokens end up in proxy and
+    // access logs, so they are not accepted.
+    const auth = socket.handshake.auth;
+    const token = auth && typeof auth.token === 'string' ? auth.token : null;
     userFromToken(db, token)
       .then((user) => {
         socket.data.user = user;
@@ -79,10 +81,25 @@ function init(httpServer, db) {
     socket.on('subscribe', async (payload, ack) => {
       const room = typeof payload === 'string' ? payload : payload && payload.room;
       let result;
+      let deactivated = false;
       try {
-        result = await authorizeRoom(user, room);
+        // Re-read the user on every subscribe: a deactivated account, or one whose role /
+        // branch / assignments changed since the handshake, must not join new rooms.
+        const fresh = await dbRef.get('SELECT * FROM users WHERE user_id = ?', [user.user_id]);
+        if (!fresh || !fresh.is_active) {
+          deactivated = true;
+          result = { ok: false, error: 'Account is deactivated' };
+        } else {
+          socket.data.user = fresh;
+          result = await authorizeRoom(fresh, room);
+        }
       } catch (err) {
         result = { ok: false, error: err.message };
+      }
+      if (deactivated) {
+        if (typeof ack === 'function') ack({ ok: false, room, error: result.error });
+        socket.disconnect(true);
+        return;
       }
       if (result.ok) {
         result.join.forEach((r) => socket.join(r));

@@ -38,7 +38,7 @@ function configureEnv(name, { aiUrl = AI_DOWN_URL, env = {} } = {}) {
     JOBS_ENABLED: 'false',
     LOG_REQUESTS: 'false',
     BCRYPT_ROUNDS: '4',
-    JWT_SECRET: 'test-only-secret',
+    JWT_SECRET: 'test-suite-jwt-secret-0123456789abcdef0123456789abcdef',
     AI_SERVICE_URL: aiUrl,
     AI_TIMEOUT_MS: '1500',
     SMTP_HOST: '',

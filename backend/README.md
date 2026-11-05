@@ -20,12 +20,18 @@ CommonJS. Tests use `node:test`, supertest and socket.io-client.
 ```bash
 cd backend
 npm install
-cp .env.example .env        # optional: the defaults work without it
+cp .env.example .env        # then set JWT_SECRET (required, see below)
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"   # paste as JWT_SECRET in .env
 npm run seed                # drop + recreate data/smart_opd.db with ~60 days of demo history (~15-30 s)
 npm start                   # http://localhost:4000/api/health
 ```
 
 `npm run dev` starts the same server with `node --watch`.
+
+`JWT_SECRET` is mandatory in **every** environment (development included): the backend refuses to
+start when it is missing, shorter than 32 characters or a published placeholder (for example the
+`.env.example` value). There is no built-in fallback secret, so tokens cannot be forged with a
+value from the repository.
 
 The AI service (`ai-service/`, port 8000) reads the same SQLite file by default
 (`DATABASE_URL=sqlite:///../backend/data/smart_opd.db`). The backend works without it (see
@@ -41,7 +47,7 @@ DB_PORT=3306
 DB_USER=opd_user
 DB_PASSWORD=...
 DB_NAME=smart_opd
-JWT_SECRET=<long random string>        # mandatory when NODE_ENV=production
+JWT_SECRET=<48 random bytes as hex>    # mandatory in every environment (>= 32 chars)
 NODE_ENV=production
 DEMO_ALWAYS_OPEN=false
 ```
@@ -83,7 +89,7 @@ HTTP server inside the test.
 | `PORT` | `4000` | HTTP + Socket.IO port |
 | `TZ` | `Asia/Karachi` | Hospital time zone for every stored/served datetime |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:5174` (+ `127.0.0.1` variants) | Allowed browser origins (`*` = any). Requests without `Origin` (mobile app, curl) are always allowed |
-| `JWT_SECRET` | dev-only fallback | JWT signing secret; **required** with `NODE_ENV=production` |
+| `JWT_SECRET` | none (required) | JWT signing secret; **required in every environment**, at least 32 characters, placeholders rejected. Generate: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
 | `JWT_EXPIRES_IN` | `7d` | Token lifetime |
 | `BCRYPT_ROUNDS` | `10` | Password hashing cost |
 | `DB_CLIENT` | `sqlite` | `sqlite` or `mysql` |

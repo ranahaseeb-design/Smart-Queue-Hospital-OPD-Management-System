@@ -23,13 +23,36 @@ function int(value, fallback) {
 
 const nodeEnv = process.env.NODE_ENV || 'development';
 
-let jwtSecret = process.env.JWT_SECRET;
-if (!jwtSecret) {
-  if (nodeEnv === 'production') {
-    throw new Error('JWT_SECRET must be set in production');
+const JWT_SECRET_MIN_LENGTH = 32;
+// Values that were ever published (docs, .env.example, old fallbacks): anyone could forge tokens.
+const KNOWN_PLACEHOLDER_SECRETS = new Set([
+  'change-me-to-a-long-random-string',
+  'dev-only-insecure-secret',
+  'test-only-secret',
+  'secret',
+  'changeme',
+]);
+const JWT_SECRET_HINT =
+  'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))" ' +
+  'and set JWT_SECRET in backend/.env or the environment.';
+
+/**
+ * JWT signing secret. Required in EVERY environment (no insecure fallback): the server refuses
+ * to start when it is missing, shorter than 32 characters or a known placeholder.
+ */
+function validateJwtSecret(value) {
+  const secret = value === undefined || value === null ? '' : String(value).trim();
+  if (!secret) throw new Error(`JWT_SECRET is not set. ${JWT_SECRET_HINT}`);
+  if (KNOWN_PLACEHOLDER_SECRETS.has(secret.toLowerCase())) {
+    throw new Error(`JWT_SECRET is a published placeholder value. ${JWT_SECRET_HINT}`);
   }
-  jwtSecret = 'dev-only-insecure-secret';
+  if (secret.length < JWT_SECRET_MIN_LENGTH) {
+    throw new Error(`JWT_SECRET must be at least ${JWT_SECRET_MIN_LENGTH} characters. ${JWT_SECRET_HINT}`);
+  }
+  return secret;
 }
+
+const jwtSecret = validateJwtSecret(process.env.JWT_SECRET);
 
 const config = {
   backendRoot: BACKEND_ROOT,
@@ -78,5 +101,7 @@ const config = {
     from: process.env.SMTP_FROM || 'Smart OPD <no-reply@opd.test>',
   },
 };
+
+Object.defineProperty(config, 'validateJwtSecret', { value: validateJwtSecret, enumerable: false });
 
 module.exports = config;
