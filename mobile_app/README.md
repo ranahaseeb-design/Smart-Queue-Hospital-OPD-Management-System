@@ -105,7 +105,7 @@ token number, estimates and ratings, and SnackBars that stay a little longer.
   in `user:<id>`, and the My Token screen also subscribes to `token:<id>`. Events only say
   that something changed; the app then re-fetches the REST resource (`GET /tokens/active`,
   `GET /tokens/:id`, `GET /notifications`). Rooms are re-joined after a reconnect, and the
-  token screen polls every 45 s while the socket is offline.
+  Home screen's token list and the token screen poll every 45 s while the socket is offline.
 * **In-app notifications (FR-11):** the `notification` socket event shows a SnackBar with a
   *VIEW* action that opens the token, and refreshes `GET /api/notifications`, which drives
   the unread badge on the bell. Opening the app from the background also re-fetches tokens

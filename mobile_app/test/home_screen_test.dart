@@ -158,6 +158,8 @@ void main() {
     expect(find.text('See all tokens of this visit'), findsOneWidget);
     // With a token in hand there is no "no active token" prompt.
     expect(find.text('You have no active token'), findsNothing);
+    // Stops the fallback poll timer before the test ends.
+    harness.tokens.clear();
   });
 
   testWidgets('without an active token it offers to join a queue',
@@ -175,6 +177,8 @@ void main() {
     expect(find.text('You have no active token'), findsOneWidget);
     expect(find.text('Join a queue'), findsOneWidget);
     expect(find.text('Find the shortest wait'), findsOneWidget);
+    // Stops the fallback poll timer before the test ends.
+    harness.tokens.clear();
   });
 
   testWidgets('a failed load shows the error with a retry button',
@@ -190,6 +194,8 @@ void main() {
     expect(find.text('No fake route for GET /api/tokens/active'),
         findsOneWidget);
     expect(find.text('Try again'), findsOneWidget);
+    // Stops the fallback poll timer before the test ends.
+    harness.tokens.clear();
   });
 
   test('tokens are grouped by visit and linked tokens are not repeated', () {

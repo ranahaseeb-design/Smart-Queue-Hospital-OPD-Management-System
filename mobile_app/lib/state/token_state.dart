@@ -62,15 +62,22 @@ List<TokenDetail> _otherTokensOfVisit(List<TokenDetail> shown) {
 /// one of the patient's tokens (`token:updated` reaches `user:<id>`), so the
 /// Home screen is live without manual refresh (FR-05, FR-07).
 class TokenState extends ChangeNotifier {
-  TokenState(this._api, SocketService socket) {
+  TokenState(this._api, this._socket, {Duration? pollInterval})
+      : _pollInterval = pollInterval ?? const Duration(seconds: 45) {
     _subscriptions
-      ..add(socket.tokenUpdates.listen((_) => _scheduleRefresh()))
-      ..add(socket.onConnected.listen((_) => _scheduleRefresh()));
+      ..add(_socket.tokenUpdates.listen((_) => _scheduleRefresh()))
+      ..add(_socket.onConnected.listen((_) => _scheduleRefresh()));
   }
 
   final OpdApi _api;
+  final SocketService _socket;
+  final Duration _pollInterval;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Timer? _debounce;
+
+  /// Safety net while the real-time channel is down (NFR-01): the Home
+  /// screen keeps refreshing every [_pollInterval] until the socket is back.
+  Timer? _poll;
   bool _enabled = false;
   bool _refreshing = false;
   bool _refreshAgain = false;
@@ -109,6 +116,10 @@ class TokenState extends ChangeNotifier {
   /// Called when the patient's home shell opens.
   void start() {
     _enabled = true;
+    _poll?.cancel();
+    _poll = Timer.periodic(_pollInterval, (_) {
+      if (!_socket.connected.value) unawaited(refresh());
+    });
     unawaited(refresh());
   }
 
@@ -116,6 +127,8 @@ class TokenState extends ChangeNotifier {
   void clear() {
     _enabled = false;
     _debounce?.cancel();
+    _poll?.cancel();
+    _poll = null;
     _tokens = const [];
     _loaded = false;
     _loading = false;
@@ -185,6 +198,7 @@ class TokenState extends ChangeNotifier {
   @override
   void dispose() {
     _debounce?.cancel();
+    _poll?.cancel();
     for (final s in _subscriptions) {
       s.cancel();
     }
