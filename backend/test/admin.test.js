@@ -285,6 +285,21 @@ test('assignments: create, duplicate 409, scoping, delete; staff then sees the c
   assert.equal(del.status, 200);
   assert.equal((await ctx.api.get(`/admin/assignments/${res.body.id}`, admin)).status, 404);
 
+  // Unaffiliated staff (no home branch, no assignment): hospital admin only.
+  const loose = await ctx.api.post('/admin/users', admin, {
+    fullName: 'Floating Staff', email: 'floating@opd.test', password: 'secret1', role: 'STAFF',
+  });
+  assert.equal(loose.status, 201);
+  assert.equal(loose.body.adminBranchId, null);
+  assert.equal((await ctx.api.get(`/admin/users/${loose.body.id}`, branchAdmin)).status, 403);
+  assert.equal((await ctx.api.put(`/admin/users/${loose.body.id}`, branchAdmin, { fullName: 'Taken Over' })).status, 403);
+  assert.equal((await ctx.api.del(`/admin/users/${loose.body.id}`, branchAdmin)).status, 403);
+  assert.equal((await ctx.api.post('/admin/assignments', branchAdmin, { userId: loose.body.id, servicePointId: lab.id })).status, 403);
+  assert.equal((await ctx.api.get(`/admin/users/${loose.body.id}`, admin)).status, 200);
+  // once the hospital admin assigns them to a branch-1 counter, the branch-1 admin manages them
+  assert.equal((await ctx.api.post('/admin/assignments', admin, { userId: loose.body.id, servicePointId: lab.id })).status, 201);
+  assert.equal((await ctx.api.get(`/admin/users/${loose.body.id}`, branchAdmin)).status, 200);
+
   const deact = await ctx.api.del(`/admin/users/${created.staff.id}`, branchAdmin);
   assert.equal(deact.body.isActive, false);
   assert.equal((await ctx.api.get('/auth/me', login.body.token)).status, 401);

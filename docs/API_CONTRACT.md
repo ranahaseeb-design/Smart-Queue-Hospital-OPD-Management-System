@@ -143,7 +143,7 @@ Every status change writes a `queue_events` row in the same DB transaction (FR-2
 | CRUD | `/admin/doctors` | create: `{ fullName, email, phone?, password, departmentId, avgConsultMinutes? }` (creates STAFF user + doctor) | row: `{ id, userId, fullName, email, phone, departmentId, departmentName, specialty, branchId, branchName, avgConsultMinutes, isActive }` |
 | CRUD | `/admin/schedules` | `{ doctorId, servicePointId, dayOfWeek (1=Mon..7=Sun), startTime "HH:mm", endTime, maxPatients? }` | `?doctorId=&branchId=`; row adds `doctorName`, `servicePointName` |
 | CRUD | `/admin/service-points` | `{ branchId, type, name, isActive }` | |
-| CRUD | `/admin/users` | `{ fullName, email, phone?, password?, role (STAFF|BRANCH_ADMIN|HOSPITAL_ADMIN), adminBranchId?, isActive }` | `?role=`; branch admin may only manage STAFF of own branch |
+| CRUD | `/admin/users` | `{ fullName, email, phone?, password?, role (STAFF|BRANCH_ADMIN|HOSPITAL_ADMIN), adminBranchId?, isActive }` | `?role=`; branch admin may only manage STAFF of own branch (home branch, assignment or doctor department there); staff with no branch at all are managed by the hospital admin only (403 for branch admins, also for `POST /admin/assignments`) |
 | GET/POST/DELETE | `/admin/assignments` | `{ userId, servicePointId }` | row: `{ id, userId, userName, servicePointId, servicePointName, type, branchName }` |
 
 `DELETE` on master data = soft deactivate (`is_active=false` / `status=INACTIVE`), except schedules and assignments which are hard-deleted. Each CRUD resource: `GET /x` list, `GET /x/:id`, `POST /x` → 201, `PUT /x/:id`, `DELETE /x/:id`.

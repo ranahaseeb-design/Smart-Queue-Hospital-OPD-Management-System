@@ -755,14 +755,22 @@ async function requireUser(db, id) {
   return row;
 }
 
-/** Branch admins may only see/manage STAFF accounts affiliated with their branch. */
-async function assertUserManageable(db, user, target, { allowUnaffiliated = false } = {}) {
+/**
+ * Branch admins may only see/manage STAFF accounts affiliated with their branch: home branch
+ * (admin_branch_id), a service-point assignment or a doctor department there. Unaffiliated staff
+ * (no branch at all) are managed by the hospital administrator only, so a branch admin cannot
+ * take them over by assigning them to the own branch.
+ */
+async function assertUserManageable(db, user, target) {
   if (isHospitalAdmin(user)) return;
   if (target.role !== 'STAFF') throw forbidden('Branch administrators can only manage staff accounts');
   const branchesOfTarget = (await userBranchMap(db, [target.user_id])).get(target.user_id);
   if (branchesOfTarget.has(user.admin_branch_id)) return;
-  if (allowUnaffiliated && branchesOfTarget.size === 0) return;
-  throw forbidden('This staff member does not belong to your branch');
+  throw forbidden(
+    branchesOfTarget.size === 0
+      ? 'This staff member has no branch yet; only the hospital administrator can manage them'
+      : 'This staff member does not belong to your branch'
+  );
 }
 
 async function serializeOne(db, row) {
@@ -801,7 +809,7 @@ const users = {
   },
   async get(db, user, id) {
     const row = await requireUser(db, id);
-    await assertUserManageable(db, user, row, { allowUnaffiliated: true });
+    await assertUserManageable(db, user, row);
     return serializeOne(db, row);
   },
   async create(db, user, rawBody) {
@@ -837,7 +845,7 @@ const users = {
   async update(db, user, id, rawBody) {
     const body = bodyOf(rawBody);
     const target = await requireUser(db, id);
-    await assertUserManageable(db, user, target, { allowUnaffiliated: true });
+    await assertUserManageable(db, user, target);
     const isSelf = target.user_id === user.user_id;
 
     const fullName = has(body, 'fullName') ? v.str(body.fullName, 'fullName', { required: true, min: 2, max: 100 }) : undefined;
@@ -883,7 +891,7 @@ const users = {
   },
   async remove(db, user, id) {
     const target = await requireUser(db, id);
-    await assertUserManageable(db, user, target, { allowUnaffiliated: true });
+    await assertUserManageable(db, user, target);
     if (target.user_id === user.user_id) throw conflict('You cannot deactivate your own account');
     await db.run('UPDATE users SET is_active = 0 WHERE user_id = ?', [id]);
     return serializeOne(db, await requireUser(db, id));
@@ -960,7 +968,7 @@ const assignments = {
     if (target.role !== 'STAFF') throw badRequest('Only staff accounts can be assigned to service points');
     const sp = await requireServicePoint(db, servicePointId);
     access.assertBranchAccess(user, sp.branch_id);
-    await assertUserManageable(db, user, target, { allowUnaffiliated: true });
+    await assertUserManageable(db, user, target);
     if (!sp.is_active) throw badRequest('The service point is inactive');
     const dup = await db.get('SELECT assignment_id FROM staff_assignments WHERE user_id = ? AND service_point_id = ?', [
       userId,
