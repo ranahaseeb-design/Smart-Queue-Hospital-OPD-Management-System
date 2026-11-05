@@ -93,7 +93,7 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 | GET | `/branches/:id/departments` | – | `[ { id, branchId, specialty, name, doctorCount } ]` |
 | GET | `/departments/:id/doctors` | `?date=YYYY-MM-DD` (default today) | `[ { id, fullName, departmentId, specialty, branchId, avgConsultMinutes, servicePointId, servicePointName, session: { startTime, endTime } | null, availableToday, acceptingNow, queueLength, estimatedWaitMinutes } ]` |
 
-`acceptingNow` = scheduled today, session not ended (unless `DEMO_ALWAYS_OPEN=true`, which ignores clock time but still needs a schedule that weekday), and below `max_patients`.
+`acceptingNow` = scheduled today, session not ended (unless `DEMO_ALWAYS_OPEN=true`, which ignores clock time but still needs a schedule that weekday), and below `max_patients` of the current session (counting only the doctor's OPD tokens issued in that session's window: from the previous session's end, or 00:00, to this session's end; the last session runs to midnight).
 
 ### Tokens — patient (FR-03, FR-05, FR-06, FR-07, FR-09)
 | POST | `/tokens` | `{ doctorId }` | 201 `TokenDetail`. 409 `CONFLICT` if patient already has an active (WAITING/CALLED/IN_SERVICE) token for that doctor today; 409 if doctor not accepting. Priority level pre-set from the patient's `priorityCategory` (ELDERLY/DIFFERENTLY_ABLED → 1). Creates/reuses today's OPEN visit at that branch, writes ISSUED event + prediction. |

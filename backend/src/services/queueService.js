@@ -380,8 +380,9 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, now 
     );
     if (dup) throw conflict('You already have an active token for this doctor today');
     if (!appointmentId && session.maxPatients) {
-      const issued = await scheduleService.issuedCount(tx, doctorId, date);
-      if (issued >= session.maxPatients) throw conflict('The doctor is not accepting more patients today');
+      // max_patients is per session: count only tokens issued in this session's window.
+      const issued = await scheduleService.sessionIssuedCount(tx, doctorId, date, sessions, session);
+      if (issued >= session.maxPatients) throw conflict('The doctor is not accepting more patients in this session');
     }
     const visitId = await getOrCreateVisit(tx, patient.user_id, doctor.branch_id, date);
     const tokenNumber = await nextTokenNumber(tx, session.servicePointId, date);
