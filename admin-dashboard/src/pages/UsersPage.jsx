@@ -10,6 +10,7 @@ import { useScope } from '../context/ScopeContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { useBranchField, useServicePoints } from '../hooks/useLookups.js';
 import { ROLE_LABELS, ROLES, assignableRoles } from '../utils/roles.js';
+import { adminBranchIdPatch } from '../utils/users.js';
 import { ServicePointType } from './ServicePointsPage.jsx';
 
 const ROLE_TONE = { HOSPITAL_ADMIN: 'violet', BRANCH_ADMIN: 'info', STAFF: 'teal', PATIENT: 'neutral' };
@@ -136,7 +137,8 @@ function UsersTab({ tabs }) {
         phone: r.phone || '',
         password: '',
         role: r.role,
-        adminBranchId: r.adminBranchId ? String(r.adminBranchId) : branchField.defaultBranchId,
+        // The stored branch only: defaulting here would silently move the account on save.
+        adminBranchId: r.adminBranchId ? String(r.adminBranchId) : '',
         servicePointId: '',
         isActive: r.isActive !== false,
       })}
@@ -163,10 +165,20 @@ function UsersTab({ tabs }) {
             minLength: 6,
             help: mode === 'create' ? 'At least 6 characters.' : 'Leave blank to keep the current password.',
           },
-          {
-            name: 'adminBranchId', label: 'Administered branch', type: 'select', required: true,
-            options: branchField.options, hidden: v.role !== ROLES.BRANCH_ADMIN,
-          },
+          v.role === ROLES.STAFF
+            ? {
+              // Staff home branch: hospital admins pick any branch; branch admins are fixed to theirs.
+              name: 'adminBranchId', label: 'Home branch', type: 'select',
+              placeholder: 'No home branch', options: branchField.options,
+              disabled: branchField.locked,
+              help: branchField.locked
+                ? 'Staff accounts belong to your branch.'
+                : 'The branch this staff member belongs to.',
+            }
+            : {
+              name: 'adminBranchId', label: 'Administered branch', type: 'select', required: true,
+              options: branchField.options, hidden: v.role !== ROLES.BRANCH_ADMIN,
+            },
           {
             name: 'servicePointId', label: 'Assign to service point', type: 'select',
             placeholder: 'No assignment yet', options: spOptions,
@@ -176,13 +188,14 @@ function UsersTab({ tabs }) {
           { name: 'isActive', label: 'Active', type: 'checkbox', checkboxLabel: 'Account is active', hidden: mode === 'create' || self },
         ];
       }}
-      toPayload={(v, mode) => {
+      toPayload={(v, mode, row) => {
         const body = {
           fullName: v.fullName.trim(),
           email: v.email.trim(),
           phone: v.phone?.trim() || null,
           role: v.role,
-          adminBranchId: v.role === ROLES.BRANCH_ADMIN ? Number(v.adminBranchId) : null,
+          // Sent only when set or changed: a present null clears the branch on the backend.
+          ...adminBranchIdPatch(v, mode, row),
           isActive: mode === 'create' ? true : Boolean(v.isActive),
         };
         if (v.password) body.password = v.password;

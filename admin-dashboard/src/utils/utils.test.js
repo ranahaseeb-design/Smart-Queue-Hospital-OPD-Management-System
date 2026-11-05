@@ -8,6 +8,7 @@ import {
 import { safeReturnPath } from './navigation.js';
 import { assignableRoles, isAdminRole, permissionsFor } from './roles.js';
 import { fmtShare, improvementVsBaseline } from './models.js';
+import { adminBranchIdPatch } from './users.js';
 import { buildQuery } from '../api/client.js';
 import { validateFields } from '../components/FormFields.jsx';
 
@@ -249,5 +250,29 @@ describe('form validation', () => {
     expect(validateFields(fields, {
       fullName: 'Dr. Sara Ahmed', email: 'sara@opd.test', password: 'secret1', avg: '12', days: [1, 2], start: '09:00',
     })).toEqual({});
+  });
+});
+
+describe('adminBranchIdPatch (user create/update payload)', () => {
+  const staffRow = { id: 7, role: 'STAFF', adminBranchId: 2 };
+
+  it('sends the chosen branch on create for STAFF and BRANCH_ADMIN only', () => {
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '3' }, 'create')).toEqual({ adminBranchId: 3 });
+    expect(adminBranchIdPatch({ role: 'BRANCH_ADMIN', adminBranchId: '1' }, 'create')).toEqual({ adminBranchId: 1 });
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '' }, 'create')).toEqual({});
+    expect(adminBranchIdPatch({ role: 'HOSPITAL_ADMIN', adminBranchId: '1' }, 'create')).toEqual({});
+  });
+
+  it('omits the key on edit when the branch is unchanged (never wipes the home branch)', () => {
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '2' }, 'edit', staffRow)).toEqual({});
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '' }, 'edit', { role: 'STAFF', adminBranchId: null })).toEqual({});
+    expect(adminBranchIdPatch({ role: 'HOSPITAL_ADMIN', adminBranchId: '' }, 'edit', staffRow)).toEqual({});
+  });
+
+  it('sends a changed branch, and null only when explicitly cleared', () => {
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '4' }, 'edit', staffRow)).toEqual({ adminBranchId: 4 });
+    expect(adminBranchIdPatch({ role: 'STAFF', adminBranchId: '' }, 'edit', staffRow)).toEqual({ adminBranchId: null });
+    expect(adminBranchIdPatch({ role: 'BRANCH_ADMIN', adminBranchId: '5' }, 'edit', { role: 'HOSPITAL_ADMIN', adminBranchId: null }))
+      .toEqual({ adminBranchId: 5 });
   });
 });
