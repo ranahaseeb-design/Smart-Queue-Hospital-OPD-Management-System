@@ -41,6 +41,7 @@ export function permissionsFor(user) {
     manageBranches: hospital,
     manageSettings: hospital,
     manageModels: hospital,
+    runForecasts: hospital, // POST /admin/forecasts/run regenerates every branch
     manageMasterData: admin,
     manageUsers: admin,
     manageAdminAccounts: hospital,

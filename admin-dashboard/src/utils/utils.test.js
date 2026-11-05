@@ -197,6 +197,7 @@ describe('roles (Section 3.2)', () => {
     expect(p.manageBranches).toBe(false);
     expect(p.manageSettings).toBe(false);
     expect(p.manageModels).toBe(false);
+    expect(p.runForecasts).toBe(false); // POST /admin/forecasts/run is hospital-admin only
     expect(p.manageMasterData).toBe(true);
     expect(assignableRoles({ role: 'BRANCH_ADMIN' })).toEqual(['STAFF']);
   });

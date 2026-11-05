@@ -343,7 +343,11 @@ test('reports: five types as JSON and CSV (FR-16)', async () => {
 });
 
 test('forecasts: run falls back to the JS seasonal baseline when AI is down; list + alerts (FR-17)', async () => {
-  const run = await ctx.api.post('/admin/forecasts/run', branchAdmin);
+  // Running forecasts regenerates every branch: hospital administrator only.
+  const denied = await ctx.api.post('/admin/forecasts/run', branchAdmin);
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.error.code, 'FORBIDDEN');
+  const run = await ctx.api.post('/admin/forecasts/run', admin);
   assert.equal(run.status, 200);
   assert.equal(run.body.source, 'baseline');
   assert.ok(run.body.generated > 0);
