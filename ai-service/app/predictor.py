@@ -61,12 +61,75 @@ def active_version() -> str | None:
     )
 
 
+START_DELAY_FEATURE = "minutes_to_start"
+
+
+def _max_split_threshold(model: Any, feature: str) -> float | None:
+    """Largest split threshold on ``feature`` in a forest (bare or last step of a Pipeline).
+
+    Beyond it the forest's output no longer depends on the feature. Used for bundles saved
+    before ``feature_max`` was recorded.
+    """
+    if hasattr(model, "steps"):
+        forest = model.steps[-1][1]
+        try:
+            names = [str(n) for n in model[:-1].get_feature_names_out()]
+        except Exception:
+            return None
+        matches = [i for i, n in enumerate(names) if n == feature or n.endswith(f"__{feature}")]
+        if not matches:
+            return None
+        index = matches[0]
+    else:
+        forest = model
+        names = list(getattr(forest, "feature_names_in_", FEATURES))
+        if feature not in names:
+            return None
+        index = names.index(feature)
+    best: float | None = None
+    for tree in getattr(forest, "estimators_", []):
+        thresholds = tree.tree_.threshold[tree.tree_.feature == index]
+        if thresholds.size:
+            value = float(thresholds.max())
+            best = value if best is None else max(best, value)
+    return best
+
+
+def start_delay_cap(bundle: Mapping[str, Any]) -> float | None:
+    """Largest ``minutes_to_start`` the model has learned from (the training maximum).
+
+    A random forest cannot extrapolate: for a session starting later than anything seen in
+    training it would predict as if the session started at the training maximum. Bundles
+    saved by training record ``feature_max``; older bundles fall back to the largest split
+    threshold of the forest.
+    """
+    recorded = (bundle.get("feature_max") or {}).get(START_DELAY_FEATURE)
+    if recorded is not None:
+        return float(recorded)
+    return _max_split_threshold(bundle["model"], START_DELAY_FEATURE)
+
+
 def predict_with_bundle(bundle: Mapping[str, Any], feature_rows: Sequence[Mapping[str, Any]]) -> np.ndarray:
-    """Predict minutes for feature dicts; bounded to be non-negative and rounded to 0.1 (Section 6.4.3 step 4)."""
+    """Predict minutes for feature dicts; bounded to be non-negative and rounded to 0.1 (Section 6.4.3 step 4).
+
+    A start delay beyond the training range (``minutes_to_start`` above :func:`start_delay_cap`,
+    session not started) is fed to the forest at the edge of that range and the excess minutes
+    are added, as in Eq. 6.2 where the start delay is additive. Inside the range the forest
+    alone decides.
+    """
     if not feature_rows:
         return np.zeros(0)
     frame = prepare_frame(feature_rows, bundle.get("features") or FEATURES)
-    raw = np.asarray(bundle["model"].predict(frame), dtype=float)
+    excess = np.zeros(len(frame))
+    cap = start_delay_cap(bundle) if START_DELAY_FEATURE in frame else None
+    if cap is not None and np.isfinite(cap):
+        not_started = frame["session_started"] < 0.5 if "session_started" in frame else True
+        beyond = (frame[START_DELAY_FEATURE] > cap) & not_started
+        if bool(np.any(beyond)):
+            excess = np.where(beyond, frame[START_DELAY_FEATURE] - cap, 0.0)
+            # nextafter keeps the clipped value on the far side of every split threshold <= cap.
+            frame.loc[beyond, START_DELAY_FEATURE] = float(np.nextafter(cap, np.inf))
+    raw = np.asarray(bundle["model"].predict(frame), dtype=float) + excess
     raw = np.where(np.isfinite(raw), raw, 0.0)
     return np.round(np.clip(raw, 0.0, None), 1)
 

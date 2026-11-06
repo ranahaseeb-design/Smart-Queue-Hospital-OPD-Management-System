@@ -297,6 +297,9 @@ def _retrain_locked(now: datetime) -> dict:
             "from": db.fmt_dt(data.issued_at.iloc[split].to_pydatetime()),
             "to": db.fmt_dt(data.issued_at.iloc[-1].to_pydatetime()),
         },
+        # Training range of the start delay: predictions beyond it add the excess minutes
+        # (predictor.predict_with_bundle), since the forest cannot extrapolate.
+        "feature_max": {"minutes_to_start": float(X_train["minutes_to_start"].max())},
         "hyperparameters": best_params,
         "cv_mae": round(cv_mae, 3),
         "feature_importances": feature_importances,

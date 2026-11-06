@@ -273,3 +273,36 @@ def test_old_raw_id_bundle_still_loads_and_predicts(engine):
     assert bundle["feature_encoding"] == RAW_FEATURE_ENCODING
     values = predictor.predict_with_bundle(bundle, [item["features"] for item in PREDICT_BODY["items"]])
     assert len(values) == 2 and all(v >= 0 for v in values)
+
+
+def test_start_delay_beyond_training_range_is_added():
+    """A session starting later than any training row: the forest cannot extrapolate, so the excess
+    minutes_to_start is added (Eq. 6.2 treats the start delay as additive); inside the range the
+    forest alone decides. Works with recorded feature_max and, for older bundles, split thresholds."""
+    import random
+
+    from app.training import build_pipeline
+
+    rng = random.Random(3)
+    rows, waits = [], []
+    for _ in range(400):
+        ahead, mts = rng.randint(0, 10), rng.choice([0, rng.uniform(1, 60)])
+        f = dict(PREDICT_BODY["items"][1]["features"], patients_ahead=ahead, minutes_to_start=mts, session_started=0 if mts else 1)
+        rows.append(f)
+        waits.append(ahead * 10.0 + mts)
+    pipeline = build_pipeline().set_params(forest__n_estimators=20, forest__n_jobs=1).fit(prepare_frame(rows), waits)
+    base = dict(PREDICT_BODY["items"][1]["features"], patients_ahead=2, session_started=0)
+    probe = [dict(base, minutes_to_start=m) for m in (30, 59, 200, 400)]
+    started = dict(base, session_started=1, minutes_to_start=300)  # never emitted by the backend; no adjustment
+
+    legacy = predictor.prepare_for_serving({"model": pipeline}, "rf-old")
+    for bundle, cap in ((dict(legacy, feature_max={"minutes_to_start": 60.0}), 60.0), (legacy, predictor.start_delay_cap(legacy))):
+        assert cap is not None and 55.0 < cap <= 60.0
+        at_30, at_59, at_200, at_400 = predictor.predict_with_bundle(bundle, probe)
+        plain = predictor.predict_with_bundle(bundle, [dict(base, minutes_to_start=m) for m in (30, 59)])
+        assert [at_30, at_59] == list(plain)  # in range: unchanged forest output
+        assert at_200 == pytest.approx(at_59 + (200 - cap), abs=8.0)
+        assert at_400 - at_200 == pytest.approx(200.0, abs=0.2)
+        assert at_200 > 200.0  # the model alone would answer about 60 + 2 consults
+        stuck = predictor.predict_with_bundle(bundle, [started])[0]
+        assert stuck < 150.0
