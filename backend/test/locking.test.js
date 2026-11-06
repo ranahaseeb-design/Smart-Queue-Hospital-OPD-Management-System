@@ -147,9 +147,16 @@ test('transfer locks both service points (ascending) before the token row; same-
   const issued = await ctx.api.post('/tokens', p.token, { doctorId: room.doctorId });
   assert.equal(issued.status, 201);
   ctx.advance(1);
+  // A same-room transfer to another doctor needs that doctor to work in the room today.
+  const { insertId: shared } = await ctx.db.run(
+    `INSERT INTO doctor_schedules (doctor_id, service_point_id, day_of_week, start_time, end_time, max_patients)
+     VALUES (?, ?, ?, '06:00:00', '07:00:00', NULL)`,
+    [doctor2Id, room.id, ctx.time.isoDow(ctx.time.clock.now())]
+  );
   const res = await recordTransactions(() =>
     ctx.api.post(`/tokens/${issued.body.id}/transfer`, doctorToken, { toServicePointId: room.id, toDoctorId: doctor2Id })
   );
+  await ctx.db.run('DELETE FROM doctor_schedules WHERE schedule_id = ?', [shared]);
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const txLog = tokenInsertingTx();
   assertServicePointLocksFirst(txLog, [room.id]);

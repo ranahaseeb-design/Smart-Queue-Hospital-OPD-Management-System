@@ -417,6 +417,19 @@ test('workload and resource-allocation recommendations (FR-18)', async () => {
   }
 });
 
+test('inactive branches are left out of the live dashboard and workload, but stay listed', async () => {
+  const b = await ctx.api.post('/admin/branches', admin, { name: 'Closed Clinic', latitude: 31.5, longitude: 74.3 });
+  assert.equal(b.status, 201);
+  assert.equal((await ctx.api.del(`/admin/branches/${b.body.id}`, admin)).status, 200);
+  const dash = await ctx.api.get('/admin/dashboard', admin);
+  assert.ok(!dash.body.branches.some((x) => x.branchId === b.body.id));
+  const work = await ctx.api.get('/admin/recommendations', admin);
+  assert.ok(!work.body.workload.some((x) => x.branchId === b.body.id));
+  assert.ok(work.body.recommendations.every((r) => r.shortfallPatients === undefined || r.shortfallPatients >= 1));
+  const list = await ctx.api.get('/admin/branches', admin);
+  assert.ok(list.body.some((x) => x.id === b.body.id && x.status === 'INACTIVE'));
+});
+
 test('feedback summary (FR-20)', async () => {
   const res = await ctx.api.get('/admin/feedback', admin);
   assert.equal(res.status, 200);
@@ -443,6 +456,11 @@ test('settings: defaults per contract; only the hospital admin can change them',
   assert.equal((await ctx.api.put('/admin/settings', branchAdmin, { slotMinutes: 20 })).status, 403);
   assert.equal((await ctx.api.put('/admin/settings', admin, { notifyPositionsAhead: -1 })).status, 400);
   assert.equal((await ctx.api.put('/admin/settings', admin, { congestionThresholds: { high: 1.2, critical: 1.0 } })).status, 400);
+  // Weights that do not sum to 1 are a mistake, not a rounding difference: rejected, not rescaled.
+  const badWeights = await ctx.api.put('/admin/settings', admin, { recommendationWeights: { wait: 0.7, distance: 0.25, congestion: 0.15 } });
+  assert.equal(badWeights.status, 400);
+  const rounded = await ctx.api.put('/admin/settings', admin, { recommendationWeights: { wait: 0.333, distance: 0.333, congestion: 0.333 } });
+  assert.equal(rounded.status, 200);
   const upd = await ctx.api.put('/admin/settings', admin, { slotMinutes: 20, recommendationWeights: { wait: 0.5, distance: 0.3, congestion: 0.2 } });
   assert.equal(upd.status, 200);
   assert.equal(upd.body.slotMinutes, 20);

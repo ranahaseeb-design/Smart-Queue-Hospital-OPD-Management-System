@@ -130,10 +130,10 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | POST | `/tokens/:id/skip` | – | CALLED → SKIPPED |
 | POST | `/tokens/:id/recall` | – | SKIPPED → CALLED (409 if another token is open) |
 | POST | `/tokens/:id/complete` | – | CALLED/IN_SERVICE → COMPLETED |
-| POST | `/tokens/:id/transfer` | `{ toServicePointId, toDoctorId? }` | `{ from: QueueToken, to: QueueToken }`; WAITING/CALLED → TRANSFERRED, new WAITING token in the target queue, same visit, priority kept; an appointment link (`appointment_id`) moves to the new token |
-| POST | `/tokens/:id/priority` | `{ level: 0-2, reason }` | `QueueToken`; logs PRIORITY_SET with note = reason |
+| POST | `/tokens/:id/transfer` | `{ toServicePointId, toDoctorId? }` | `{ from: QueueToken, to: QueueToken }`; WAITING/CALLED → TRANSFERRED, new WAITING token in the target queue, same visit, priority kept; an appointment link (`appointment_id`) moves to the new token. A `toDoctorId` must be scheduled in the target room today (400 otherwise) |
+| POST | `/tokens/:id/priority` | `{ level: 0-2, reason }` | `QueueToken`; logs PRIORITY_SET with note = `"Level <n>: <reason>"` (reason ≤ 200 chars) |
 | GET | `/staff/transfer-targets` | `?servicePointId=` | `[ { servicePointId, name, type, doctorId, doctorName, specialty, waiting } ]` active points in the same branch except this one |
-| POST | `/visits/:id/linked-tokens` | `{ type: "LAB"|"PHARMACY", servicePointId? }` | 201 `TokenDetail`; default target = the branch's active point of that type with the shortest queue. Doctors only (roles matrix): 403 `FORBIDDEN` for staff without a doctor profile |
+| POST | `/visits/:id/linked-tokens` | `{ type: "LAB"|"PHARMACY", servicePointId? }` | 201 `TokenDetail`; default target = the branch's active point of that type with the shortest queue. Doctors only (roles matrix): 403 `FORBIDDEN` for staff without a doctor profile, and for a doctor whose own OPD token is not part of that visit |
 
 Every status change writes a `queue_events` row in the same DB transaction (FR-21), then re-predicts the affected queue (FR-07), sends notifications (called patient + those within `notifyPositionsAhead` positions, FR-11) and emits socket events.
 

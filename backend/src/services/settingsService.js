@@ -62,7 +62,8 @@ function validate(current, input) {
     }
     const sum = merged.wait + merged.distance + merged.congestion;
     if (sum <= 0) throw badRequest('recommendationWeights must not all be zero');
-    // Weights sum to 1 (Eq. 6.3); normalise small rounding differences.
+    // Weights sum to 1 (Eq. 6.3): reject a real mistake, normalise only small rounding differences.
+    if (Math.abs(sum - 1) > 0.01) throw badRequest('recommendationWeights must sum to 1');
     if (Math.abs(sum - 1) > 0.001) {
       for (const k of ['wait', 'distance', 'congestion']) merged[k] = Math.round((merged[k] / sum) * 1000) / 1000;
     }

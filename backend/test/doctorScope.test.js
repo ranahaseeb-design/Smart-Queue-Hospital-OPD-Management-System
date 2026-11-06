@@ -117,3 +117,32 @@ test('lab staff are unaffected by doctor scoping', async () => {
   assert.ok(counter);
   assert.equal((await ctx.api.post(`/service-points/${counter.id}/call-next`, lab)).status, 200);
 });
+
+test('transfer to a named doctor requires that doctor to work in the target room today', async () => {
+  const p = await ctx.newPatient();
+  const joined = await ctx.api.post('/tokens', p.token, { doctorId: d1.doctorId });
+  assert.equal(joined.status, 201);
+  // doctor3 does not work in doctor2's room: the token would sit there with nobody to call it.
+  const bad = await ctx.api.post(`/tokens/${joined.body.id}/transfer`, d1.token, {
+    toServicePointId: d2.room.id,
+    toDoctorId: d3.doctorId,
+  });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error.message, /not scheduled in that room|another branch/);
+  const ok = await ctx.api.post(`/tokens/${joined.body.id}/transfer`, d1.token, {
+    toServicePointId: d2.room.id,
+    toDoctorId: d2.doctorId,
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.to.doctorId, d2.doctorId);
+});
+
+test("a doctor cannot issue linked tokens for another doctor's patient", async () => {
+  const p = await ctx.newPatient();
+  const joined = await ctx.api.post('/tokens', p.token, { doctorId: d1.doctorId });
+  assert.equal(joined.status, 201);
+  const other = await ctx.api.post(`/visits/${joined.body.visitId}/linked-tokens`, d2.token, { type: 'PHARMACY' });
+  assert.equal(other.status, 403);
+  const own = await ctx.api.post(`/visits/${joined.body.visitId}/linked-tokens`, d1.token, { type: 'PHARMACY' });
+  assert.equal(own.status, 201);
+});

@@ -26,19 +26,29 @@ function quantile(arr, q) {
 
 const minutes = (a, b) => time.minutesBetween(time.parseDateTime(a), time.parseDateTime(b));
 
-/** Load master data in scope: branches, departments, doctors, service points. */
-async function loadScope(db, branchId) {
-  const bWhere = branchId ? 'WHERE b.branch_id = ?' : '';
-  const bParams = branchId ? [branchId] : [];
-  const branches = await db.query(`SELECT b.* FROM branches b ${bWhere} ORDER BY b.branch_id`, bParams);
+/**
+ * Load master data in scope: branches, departments, doctors, service points.
+ * `activeOnly` drops INACTIVE branches (live dashboard and workload); reports keep them so that
+ * the history of a closed branch stays reportable.
+ */
+async function loadScope(db, branchId, { activeOnly = false } = {}) {
+  const conds = [];
+  const bParams = [];
+  if (branchId) {
+    conds.push('b.branch_id = ?');
+    bParams.push(branchId);
+  }
+  if (activeOnly) conds.push("b.status = 'ACTIVE'");
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const branches = await db.query(`SELECT b.* FROM branches b ${where} ORDER BY b.branch_id`, bParams);
   const departments = await db.query(
     `SELECT dp.*, b.name AS branch_name FROM departments dp JOIN branches b ON b.branch_id = dp.branch_id
-      ${branchId ? 'WHERE dp.branch_id = ?' : ''} ORDER BY dp.branch_id, dp.department_id`,
+      ${where} ORDER BY dp.branch_id, dp.department_id`,
     bParams
   );
   const servicePoints = await db.query(
     `SELECT sp.*, b.name AS branch_name FROM service_points sp JOIN branches b ON b.branch_id = sp.branch_id
-      ${branchId ? 'WHERE sp.branch_id = ?' : ''} ORDER BY sp.branch_id, sp.type, sp.service_point_id`,
+      ${where} ORDER BY sp.branch_id, sp.type, sp.service_point_id`,
     bParams
   );
   return { branches, departments, servicePoints };
@@ -77,7 +87,7 @@ function onDutyDoctors(sessions, now) {
 async function dashboard(db, branchId, now = time.clock.now()) {
   const settings = await settingsService.getSettings(db);
   const date = time.formatDate(now);
-  const { branches, departments, servicePoints } = await loadScope(db, branchId);
+  const { branches, departments, servicePoints } = await loadScope(db, branchId, { activeOnly: true });
   const tokens = await db.query(
     `SELECT t.token_id, t.status, t.queue_type, t.token_number, t.issued_at, t.called_at, t.service_point_id,
             t.doctor_id, d.department_id, v.branch_id
@@ -511,7 +521,7 @@ async function report(db, { type, from, to, branchId }, now = time.clock.now()) 
 async function workloadAndRecommendations(db, branchId, now = time.clock.now()) {
   const todayStr = time.formatDate(now);
   const range = { from: time.addDaysStr(todayStr, -7), to: time.addDaysStr(todayStr, -1) };
-  const scope = await loadScope(db, branchId);
+  const scope = await loadScope(db, branchId, { activeOnly: true });
   const tokens = (await opdTokensInRange(db, range, branchId)).filter((t) => t.queue_type === 'OPD');
   const sched = await scheduledMinutes(db, range, branchId);
 
@@ -558,6 +568,11 @@ async function workloadAndRecommendations(db, branchId, now = time.clock.now()) 
     const avg = mean(avgByDept.get(group.departmentId) || []) || 10;
     const hours = group.hours.length;
     const shortfallPatients = group.hours.reduce((s, h) => s + h.shortfall, 0);
+    // A shortfall of less than one patient is forecast noise, not a reason for an extra session.
+    if (shortfallPatients < 1) {
+      group = null;
+      return;
+    }
     const extraDoctorCapacity = hours * (60 / avg);
     const sessions = Math.max(1, Math.ceil(shortfallPatients / extraDoctorCapacity - 0.15));
     const startD = group.hours[0].at;

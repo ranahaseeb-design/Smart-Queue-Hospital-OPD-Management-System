@@ -609,7 +609,8 @@ async function servicePointQueue(db, user, servicePointId, now = time.clock.now(
     .filter((r) => r.status === 'COMPLETED' && r.called_at && r.completed_at)
     .map((r) => time.minutesBetween(time.parseDateTime(r.called_at), time.parseDateTime(r.completed_at)));
   const skippedEvents = await db.get(
-    `SELECT COUNT(*) AS n FROM queue_events e JOIN tokens t ON t.token_id = e.token_id
+    // Patients skipped today (a token skipped twice counts once).
+    `SELECT COUNT(DISTINCT e.token_id) AS n FROM queue_events e JOIN tokens t ON t.token_id = e.token_id
       WHERE t.service_point_id = ? AND t.token_date = ? AND e.event_type = 'SKIPPED'`,
     [servicePointId, date]
   );
@@ -832,6 +833,11 @@ async function transferToken(db, user, tokenId, { toServicePointId, toDoctorId =
       const d = await scheduleService.getDoctor(db, toDoctorId);
       if (!d || !scheduleService.isDoctorBookable(d)) throw notFound('Target doctor not found or inactive');
       if (d.branch_id !== row.branch_id) throw badRequest('Target doctor works at another branch');
+      // The doctor must actually work in that room today, otherwise nobody could call the token.
+      const sessions = await scheduleService.doctorSessions(db, d.doctor_id, date);
+      if (!sessions.some((s) => s.servicePointId === target.service_point_id)) {
+        throw badRequest('The target doctor is not scheduled in that room today');
+      }
       doctorId = d.doctor_id;
     } else {
       const doc = await roomDoctorToday(db, target.service_point_id, date, now);
@@ -933,9 +939,14 @@ async function issueLinkedToken(db, user, visitId, { type, servicePointId = null
   );
   if (!visit) throw notFound('Visit not found');
   // Roles matrix (Section 3.2): linked LAB/PHARMACY tokens are issued by the consulting doctor.
-  if (user.role !== 'STAFF' || !(await access.getDoctorForUser(db, user.user_id))) {
-    throw forbidden('Only doctors can issue linked tokens');
-  }
+  const issuingDoctor = user.role === 'STAFF' ? await access.getDoctorForUser(db, user.user_id) : null;
+  if (!issuingDoctor) throw forbidden('Only doctors can issue linked tokens');
+  // ...and only for their own patient: the visit must hold an OPD token of this doctor.
+  const ownOpd = await db.get(
+    `SELECT token_id FROM tokens WHERE visit_id = ? AND queue_type = 'OPD' AND doctor_id = ?`,
+    [visitId, issuingDoctor.doctor_id]
+  );
+  if (!ownOpd) throw forbidden('You can only issue linked tokens for your own patients');
   const branches = await access.staffBranchIds(db, user);
   if (!branches.has(visit.branch_id)) throw forbidden('You do not work at this branch');
   const date = time.formatDate(now);
