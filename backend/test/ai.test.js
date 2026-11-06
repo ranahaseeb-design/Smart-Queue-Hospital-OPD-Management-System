@@ -10,7 +10,15 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { createContext, AI_TEST_SERVICE_TOKEN } = require('./helpers');
 
-const fake = { slow: false, predictCalls: [], rankCalls: 0, tokenHeaders: [], retrainBusy: false };
+const fake = {
+  slow: false,
+  predictCalls: [],
+  rankCalls: 0,
+  tokenHeaders: [],
+  retrainBusy: false,
+  forecastBusy: false,
+  rejectToken: false, // simulates an AI_SERVICE_TOKEN mismatch between backend and AI service
+};
 let server;
 let ctx;
 let doctorId;
@@ -31,7 +39,7 @@ function startFakeAi() {
       // Like the real service: every /ai/* call needs the shared secret.
       if (req.url.startsWith('/ai/')) {
         fake.tokenHeaders.push(req.headers['x-ai-service-token']);
-        if (req.headers['x-ai-service-token'] !== AI_TEST_SERVICE_TOKEN) {
+        if (fake.rejectToken || req.headers['x-ai-service-token'] !== AI_TEST_SERVICE_TOKEN) {
           return send(401, { detail: 'Missing or invalid X-AI-Service-Token header' });
         }
       }
@@ -52,7 +60,10 @@ function startFakeAi() {
           .sort((a, b) => a.score - b.score);
         return send(200, { ranked });
       }
-      if (req.method === 'POST' && req.url === '/ai/jobs/forecast') return send(200, { generated: 7, modelVersion: 'rf-test' });
+      if (req.method === 'POST' && req.url === '/ai/jobs/forecast') {
+        if (fake.forecastBusy) return send(409, { detail: 'A forecast job is already running.' });
+        return send(200, { generated: 7, modelVersion: 'rf-test' });
+      }
       if (req.method === 'GET' && req.url === '/ai/models') {
         return send(200, [
           {
@@ -180,6 +191,50 @@ test('every /ai/* call carries the X-AI-Service-Token shared secret', async () =
   assert.ok(fake.tokenHeaders.every((h) => h === AI_TEST_SERVICE_TOKEN));
 });
 
+test('a token mismatch is a 503 (not a client error) and health reports the AI as unavailable', async () => {
+  const ai = require('../src/services/aiClient');
+  const admin = await ctx.login('admin');
+  fake.rejectToken = true;
+  ai.reset();
+  try {
+    for (const [method, path] of [
+      ['get', '/admin/models'],
+      ['post', '/admin/models/retrain'],
+      ['post', '/admin/models/rf-test/activate'],
+    ]) {
+      const res = await ctx.api[method](path, admin);
+      assert.equal(res.status, 503, path);
+      assert.equal(res.body.error.code, 'AI_UNAVAILABLE');
+      assert.match(res.body.error.message, /AI_SERVICE_TOKEN/);
+    }
+    const health = await ctx.api.get('/health');
+    assert.equal(health.body.ai, false, '/health alone would answer, but every /ai/* call is refused');
+  } finally {
+    fake.rejectToken = false;
+    ai.reset();
+  }
+  assert.equal((await ctx.api.get('/health')).body.ai, true);
+});
+
+test('a busy AI forecast job is a 409 and the baseline does not run over it', async () => {
+  const admin = await ctx.login('admin');
+  const before = await ctx.db.get(`SELECT COUNT(*) AS n FROM forecasts WHERE source = 'baseline'`);
+  const stamp = await ctx.db.get('SELECT MAX(generated_at) AS g FROM forecasts');
+  fake.forecastBusy = true;
+  try {
+    const res = await ctx.api.post('/admin/forecasts/run', admin);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error.code, 'CONFLICT');
+  } finally {
+    fake.forecastBusy = false;
+  }
+  const after = await ctx.db.get(`SELECT COUNT(*) AS n FROM forecasts WHERE source = 'baseline'`);
+  assert.equal(Number(after.n), Number(before.n));
+  assert.equal((await ctx.db.get('SELECT MAX(generated_at) AS g FROM forecasts')).g, stamp.g);
+  // The live prediction path is unaffected (no breaker opened by the job call).
+  assert.equal(require('../src/services/aiClient').breakerOpen(), false);
+});
+
 test('a slow AI service is abandoned after the 1.5 s timeout and the baseline is used', async () => {
   const p = await ctx.newPatient();
   fake.slow = true;
@@ -233,4 +288,18 @@ test('Eq. 6.2 baseline does not double-count priority tokens already in patients
   // All three patients ahead are priority tokens: still 3 consultations ahead, not 6.
   assert.equal(fb.baselineMinutes({ ...base, priority_ahead: 3 }), 30);
   assert.equal(fb.baselineMinutes({ ...base, minutes_to_start: 15 }), 45);
+});
+
+test('the JS baseline forecast replaces today from 00:00, like the AI job (no mixed sources today)', async () => {
+  const forecastService = require('../src/services/forecastService');
+  const today = ctx.time.today();
+  await ctx.db.run(`UPDATE forecasts SET source = 'rf-forecast' WHERE forecast_hour >= ?`, [`${today} 00:00:00`]);
+  await forecastService.runBaselineForecast(ctx.db, { now: ctx.time.clock.now() });
+  const mixed = await ctx.db.get(
+    `SELECT COUNT(*) AS n FROM forecasts WHERE forecast_hour >= ? AND source <> 'baseline'`,
+    [`${today} 00:00:00`]
+  );
+  assert.equal(Number(mixed.n), 0);
+  const first = await ctx.db.get('SELECT MIN(forecast_hour) AS h FROM forecasts WHERE forecast_hour >= ?', [`${today} 00:00:00`]);
+  assert.ok(String(first.h).startsWith(today));
 });

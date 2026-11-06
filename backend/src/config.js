@@ -84,7 +84,7 @@ const config = {
     url: (process.env.AI_SERVICE_URL === undefined ? 'http://localhost:8000' : process.env.AI_SERVICE_URL)
       .replace(/\/+$/, ''),
     timeoutMs: int(process.env.AI_TIMEOUT_MS, 1500),
-    jobTimeoutMs: int(process.env.AI_JOB_TIMEOUT_MS, 120000),
+    jobTimeoutMs: int(process.env.AI_JOB_TIMEOUT_MS, 600000),
     // Shared secret sent as X-AI-Service-Token; must equal the AI service's AI_SERVICE_TOKEN.
     serviceToken: (process.env.AI_SERVICE_TOKEN || '').trim(),
   },

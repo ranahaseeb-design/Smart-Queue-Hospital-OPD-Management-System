@@ -115,8 +115,8 @@ of a scheduled weekday, so the demo works outside clinic hours.
 
 | Component | Command | Suite |
 |---|---|---|
-| Backend | `cd backend && npm test` | 96 integration tests (node:test, temporary SQLite DBs) |
-| AI service | `cd ai-service && pytest` | 38 tests |
+| Backend | `cd backend && npm test` | 99 integration tests (node:test, temporary SQLite DBs) |
+| AI service | `cd ai-service && pytest` | 39 tests |
 | Staff Dashboard | `cd staff-dashboard && npx vitest run` | 52 tests |
 | Admin Dashboard | `cd admin-dashboard && npx vitest run` | 32 tests |
 | Patient app | `cd mobile_app && flutter test` | widget and model tests |

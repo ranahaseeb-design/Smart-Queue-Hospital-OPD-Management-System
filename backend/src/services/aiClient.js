@@ -24,7 +24,11 @@ function enabled() {
   return Boolean(config.ai.url);
 }
 
-async function request(method, path, body, timeoutMs = config.ai.timeoutMs) {
+/**
+ * `job: true` marks a long-running job call (forecast, retrain): its timeout means "still busy",
+ * not "down", so it must not open the breaker that the live prediction path relies on.
+ */
+async function request(method, path, body, timeoutMs = config.ai.timeoutMs, { job = false } = {}) {
   if (!enabled()) throw new AiError('AI service not configured', 0);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -51,9 +55,15 @@ async function request(method, path, body, timeoutMs = config.ai.timeoutMs) {
     return data;
   } catch (err) {
     if (err instanceof AiError) throw err;
-    // Network error or timeout: open the breaker.
-    downUntil = Date.now() + BREAKER_MS;
-    throw new AiError(err.name === 'AbortError' ? 'AI service timed out' : `AI service unreachable: ${err.message}`, 0);
+    const timedOut = err.name === 'AbortError';
+    // Network error or timeout of a short call: open the breaker and forget the cached health.
+    if (!(job && timedOut)) {
+      downUntil = Date.now() + BREAKER_MS;
+      healthCache = { at: 0, value: null };
+    }
+    const e = new AiError(timedOut ? 'AI service timed out' : `AI service unreachable: ${err.message}`, 0);
+    e.timedOut = timedOut;
+    throw e;
   } finally {
     clearTimeout(timer);
   }
@@ -69,7 +79,11 @@ function reset() {
   healthCache = { at: 0, value: null };
 }
 
-/** GET /health -> { status, activeModel } or null. Cached for 10 s. */
+/**
+ * GET /health -> { status, activeModel } or null. Cached for 10 s. /health itself needs no token,
+ * so a cheap authenticated call checks the shared AI_SERVICE_TOKEN too: with a mismatched token
+ * every /ai/* call fails, and the service must not be reported as available.
+ */
 async function health() {
   if (!enabled()) return null;
   if (Date.now() - healthCache.at < 10 * 1000) return healthCache.value;
@@ -77,6 +91,7 @@ async function health() {
   if (!breakerOpen()) {
     try {
       value = await request('GET', '/health');
+      await request('GET', '/ai/models');
     } catch (_) {
       value = null;
     }
@@ -117,40 +132,47 @@ async function rankBranches(weights, candidates) {
 }
 
 /**
- * POST /ai/jobs/forecast -> { generated, modelVersion } or null.
+ * POST /ai/jobs/forecast -> { generated, modelVersion }, { pending: true } when a job is already
+ * running (409) or this one outlived the job timeout (it keeps writing rows), or null when the
+ * AI service is unavailable (caller runs the JS baseline).
  * Long-running job: a quick health probe first (1.5 s), then a longer job timeout.
  */
 async function runForecastJob(days) {
   if (!enabled() || breakerOpen()) return null;
   try {
     await request('GET', '/health');
-    const data = await request('POST', '/ai/jobs/forecast', { days }, config.ai.jobTimeoutMs);
+    const data = await request('POST', '/ai/jobs/forecast', { days }, config.ai.jobTimeoutMs, { job: true });
     if (!data || typeof data.generated !== 'number') return null;
     return data;
-  } catch (_) {
+  } catch (err) {
+    if (err.status === 409 || err.timedOut) return { pending: true };
     return null;
   }
 }
 
 /**
  * Model management proxies (FR-22). AI 404 -> 404 NOT_FOUND, 409 (e.g. a retraining job is already
- * running) -> 409 CONFLICT, other 4xx -> 400 VALIDATION_ERROR, all with the AI's message;
+ * running) -> 409 CONFLICT, 401/403 (AI_SERVICE_TOKEN mismatch: a server misconfiguration, not a
+ * client error) -> 503 AI_UNAVAILABLE, other 4xx -> 400 VALIDATION_ERROR, all with the AI's message;
  * anything else (5xx, timeout, unreachable) -> 503 AI_UNAVAILABLE.
  */
-async function proxy(method, path, timeoutMs) {
+async function proxy(method, path, timeoutMs, options) {
   if (!enabled()) throw aiUnavailable('The AI service is not configured');
   try {
-    return await request(method, path, method === 'POST' ? {} : undefined, timeoutMs);
+    return await request(method, path, method === 'POST' ? {} : undefined, timeoutMs, options);
   } catch (err) {
     if (err.status === 404) throw notFound(err.message);
     if (err.status === 409) throw conflict(err.message);
+    if (err.status === 401 || err.status === 403) {
+      throw aiUnavailable('The AI service rejected the backend (check that AI_SERVICE_TOKEN matches on both sides)');
+    }
     if (err.status && err.status >= 400 && err.status < 500) throw badRequest(err.message);
     throw aiUnavailable(`The AI service is unavailable (${err.message})`);
   }
 }
 
 const listModels = () => proxy('GET', '/ai/models');
-const retrain = () => proxy('POST', '/ai/models/retrain', config.ai.jobTimeoutMs);
+const retrain = () => proxy('POST', '/ai/models/retrain', config.ai.jobTimeoutMs, { job: true });
 const activate = (version) => proxy('POST', `/ai/models/${encodeURIComponent(version)}/activate`);
 
 module.exports = {

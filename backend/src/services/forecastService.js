@@ -15,6 +15,7 @@ const time = require('../utils/time');
 const { insertMany } = require('../db');
 const fb = require('./featureBuilder');
 const ai = require('./aiClient');
+const { conflict } = require('../utils/errors');
 const settingsService = require('./settingsService');
 
 const HISTORY_WEEKS = 4;
@@ -101,7 +102,9 @@ async function runBaselineForecast(db, { now = time.clock.now(), days = 7 } = {}
   }
 
   const capacity = await loadCapacity(db);
-  const start = time.startOfHour(now);
+  // Same horizon as the AI job (from today 00:00), so a fallback run replaces all of today's rows
+  // instead of leaving earlier AI rows mixed in.
+  const start = time.parseDate(todayStr);
   const end = new Date(start.getTime() + days * time.DAY);
   const generatedAt = time.formatDateTime(now);
   const rows = [];
@@ -151,6 +154,11 @@ async function runBaselineForecast(db, { now = time.clock.now(), days = 7 } = {}
 async function runForecasts(db, { now = time.clock.now(), days = 7, preferAi = true } = {}) {
   if (preferAi) {
     const result = await ai.runForecastJob(days);
+    if (result && result.pending) {
+      // The AI job is busy or still running and will write its own rows: running the baseline now
+      // would race with it on the same forecast hours.
+      throw conflict('An AI forecast job is still running; try again in a few minutes');
+    }
     if (result) return { generated: Number(result.generated) || 0, source: 'ai' };
   }
   const generated = await runBaselineForecast(db, { now, days });
