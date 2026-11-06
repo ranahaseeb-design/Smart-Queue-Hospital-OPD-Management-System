@@ -616,6 +616,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--f
   .filter-actions { margin-left: 0; }
   .inline-field { flex-wrap: wrap; }
   .inline-field select, .inline-field input { min-width: 0; }
+  /* Card header actions (e.g. the Reports chart metric select) wrap below the title instead of
+     pushing the page wider than the viewport. */
+  .card-head { flex-wrap: wrap; }
+  .card-actions { flex-shrink: 1; min-width: 0; max-width: 100%; flex-wrap: wrap; }
+  .card-actions .inline-field, .card-actions select { max-width: 100%; }
   .week-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-chip { padding: 3px 8px; }
 }

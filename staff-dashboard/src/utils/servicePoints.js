@@ -30,6 +30,20 @@ export function canIssueLinkedTokens(servicePointType, user) {
   return servicePointType === 'OPD' && Boolean(user && user.doctorId);
 }
 
+/**
+ * Doctors may only operate their own patients' OPD tokens (the backend answers 403 otherwise).
+ * A room can hold another doctor's tokens (e.g. a room shared between morning and evening sessions),
+ * so those rows are shown read-only instead of offering actions that are bound to fail.
+ * @param {{doctorId?: number|null}} token  QueueToken
+ * @param {string} servicePointType
+ * @param {{doctorId?: number|null}|null} user
+ */
+export function canOperateToken(token, servicePointType, user) {
+  if (servicePointType !== 'OPD' || !user || !user.doctorId) return true;
+  if (!token || token.doctorId == null) return true;
+  return Number(token.doctorId) === Number(user.doctorId);
+}
+
 /** Linked token types offered by the backend (POST /api/visits/:id/linked-tokens). */
 export const LINKED_TOKEN_TYPES = [
   { type: 'LAB', label: 'Laboratory', description: 'Diagnostic tests in the branch laboratory' },

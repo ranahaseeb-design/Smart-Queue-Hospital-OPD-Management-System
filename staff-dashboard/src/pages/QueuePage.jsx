@@ -23,7 +23,7 @@ import { useNow } from '../hooks/useNow.js';
 import { useQueue } from '../hooks/useQueue.js';
 import { api } from '../api.js';
 import { PRIORITY_LEVELS, formatInstantClock, servicePointTypeLabel } from '../utils/format.js';
-import { canIssueLinkedTokens } from '../utils/servicePoints.js';
+import { canIssueLinkedTokens, canOperateToken } from '../utils/servicePoints.js';
 
 export default function QueuePage() {
   const { servicePointId } = useParams();
@@ -81,6 +81,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
   const skipped = (data && Array.isArray(data.skipped) && data.skipped) || [];
   const recentlyCompleted = (data && Array.isArray(data.recentlyCompleted) && data.recentlyCompleted) || [];
   const linkedAllowed = canIssueLinkedTokens(servicePoint.type, user);
+  const canOperate = (t) => canOperateToken(t, servicePoint.type, user);
   const summary = (data && data.summary) || null;
   const doctorName = pointInfo && pointInfo.doctorName;
 
@@ -130,7 +131,9 @@ function QueueScreen({ servicePointId, pointInfo }) {
     });
 
   const start = (t) =>
-    run('start', () => api.start(t.id), { success: `Consultation started for ${t.displayNumber}.` });
+    run('start', () => api.start(t.id), {
+      success: `${servicePoint.type === 'OPD' ? 'Consultation' : 'Service'} started for ${t.displayNumber}.`,
+    });
 
   const complete = (t) => run('complete', () => api.complete(t.id), { success: `${t.displayNumber} completed.` });
 
@@ -247,6 +250,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
                 <NowServingCard
                   token={nowServing}
                   canIssueLinked={linkedAllowed}
+                  servicePointType={servicePoint.type}
                   waitingCount={waiting.length}
                   busy={busy}
                   now={now}
@@ -263,6 +267,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   now={now}
                   onPriority={(t) => setDialog({ kind: 'priority', token: t })}
                   onTransfer={(t) => setDialog({ kind: 'transfer', token: t })}
+                  canOperate={canOperate}
                 />
               </div>
               <aside className="queue-side" aria-label="Summary and skipped tokens">
@@ -272,6 +277,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   busy={busy}
                   hasOpenToken={Boolean(nowServing)}
                   onRecall={recall}
+                  canOperate={canOperate}
                   onPriority={(t) => setDialog({ kind: 'priority', token: t })}
                 />
                 <RecentlyCompletedList

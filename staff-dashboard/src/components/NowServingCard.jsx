@@ -14,7 +14,9 @@ export default function NowServingCard({
   onSkip,
   onTransfer,
   onIssueLinked,
+  servicePointType = 'OPD',
 }) {
+  const serviceWord = servicePointType === 'OPD' ? 'consultation' : 'service';
   const anyBusy = Boolean(busy);
   const hasOpenToken = Boolean(token);
   const isCalled = token && token.status === 'CALLED';
@@ -69,7 +71,7 @@ export default function NowServingCard({
               <p className="serving-name">{token.patientName || 'Unnamed patient'}</p>
               <div className="serving-meta">
                 <span className={`status status--${String(token.status).toLowerCase()}`}>
-                  {isInService ? 'In consultation' : statusLabel(token.status)}
+                  {isInService ? `In ${serviceWord}` : statusLabel(token.status)}
                 </span>
                 <PriorityBadge level={token.priorityLevel} category={token.priorityCategory} large />
                 {token.fromAppointment && <span className="chip">Appointment</span>}
@@ -92,7 +94,7 @@ export default function NowServingCard({
                 className="btn btn--primary btn--lg"
                 onClick={onStart}
                 disabled={anyBusy}
-                aria-label={`Start consultation for ${token.displayNumber}`}
+                aria-label={`Start ${serviceWord} for ${token.displayNumber}`}
               >
                 {busy === 'start' ? 'Starting…' : 'Start'}
               </button>
@@ -121,7 +123,7 @@ export default function NowServingCard({
               className="btn btn--outline btn--lg"
               onClick={onTransfer}
               disabled={anyBusy || !isCalled}
-              title={isCalled ? undefined : 'A token in consultation cannot be transferred'}
+              title={isCalled ? undefined : `A token in ${serviceWord} cannot be transferred`}
               aria-label={`Transfer ${token.displayNumber} to another doctor or service point`}
             >
               Transfer

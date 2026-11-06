@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canIssueLinkedTokens,
+  canOperateToken,
   describeTarget,
   groupTransferTargets,
   pickInitialServicePoint,
@@ -88,5 +89,18 @@ describe('transfer / linked-token targets', () => {
   it('describes a target in one line', () => {
     expect(describeTarget(targets[1])).toBe('Room 2 · Dr. Sara Ahmed · Cardiology');
     expect(describeTarget(targets[2])).toBe('Pharmacy');
+  });
+});
+
+describe('canOperateToken', () => {
+  const doctor = { doctorId: 1 };
+  it('lets a doctor operate only their own OPD tokens', () => {
+    expect(canOperateToken({ doctorId: 1 }, 'OPD', doctor)).toBe(true);
+    expect(canOperateToken({ doctorId: 3 }, 'OPD', doctor)).toBe(false);
+  });
+  it('does not restrict non-doctor staff, LAB/PHARMACY points or tokens without a doctor', () => {
+    expect(canOperateToken({ doctorId: 3 }, 'OPD', { doctorId: null })).toBe(true);
+    expect(canOperateToken({ doctorId: null }, 'LAB', doctor)).toBe(true);
+    expect(canOperateToken({ doctorId: null }, 'OPD', doctor)).toBe(true);
   });
 });

@@ -2,7 +2,7 @@
 import PriorityBadge from './PriorityBadge.jsx';
 import { formatClock, formatMinutes, minutesSince, priorityTone } from '../utils/format.js';
 
-export default function WaitingList({ tokens, busy, now, onPriority, onTransfer }) {
+export default function WaitingList({ tokens, busy, now, onPriority, onTransfer, canOperate = () => true }) {
   const list = Array.isArray(tokens) ? tokens : [];
   return (
     <section className="card" aria-labelledby="waiting-heading">
@@ -22,6 +22,7 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer 
           {list.map((t, index) => {
             const tone = priorityTone(t.priorityLevel);
             const waited = minutesSince(t.issuedAt, now);
+            const operable = canOperate(t);
             return (
               <li key={t.id} className={`token-row token-row--${tone}`}>
                 <span className="token-pos" aria-label={`Position ${index + 1}`}>
@@ -35,6 +36,7 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer 
                   <div className="token-sub">
                     <PriorityBadge level={t.priorityLevel} category={t.priorityCategory} />
                     {t.fromAppointment && <span className="chip">Appointment</span>}
+                    {!operable && <span className="chip">Another doctor’s patient</span>}
                     <span className="muted">
                       Issued {formatClock(t.issuedAt)} · waiting {formatMinutes(waited)}
                       {t.estimateMinutes != null && <> · est. {formatMinutes(t.estimateMinutes)}</>}
@@ -46,7 +48,7 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer 
                     type="button"
                     className="btn btn--outline btn--sm"
                     onClick={() => onPriority(t)}
-                    disabled={Boolean(busy)}
+                    disabled={Boolean(busy) || !operable}
                     aria-label={`Change priority of ${t.displayNumber}`}
                   >
                     Priority
@@ -55,7 +57,7 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer 
                     type="button"
                     className="btn btn--outline btn--sm"
                     onClick={() => onTransfer(t)}
-                    disabled={Boolean(busy)}
+                    disabled={Boolean(busy) || !operable}
                     aria-label={`Transfer ${t.displayNumber}`}
                   >
                     Transfer
