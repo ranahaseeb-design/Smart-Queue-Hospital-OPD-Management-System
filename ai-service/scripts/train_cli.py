@@ -8,7 +8,7 @@ Run from the ai-service folder:
     python scripts/train_cli.py activate rf-20261030-0915
     python scripts/train_cli.py forecast --days 7     # same as POST /ai/jobs/forecast
 
-DATABASE_URL / MODELS_DIR come from the environment or .env unless given as options.
+MONGODB_URI / MONGODB_DB / MODELS_DIR come from the environment or .env unless given as options.
 Exit code 0 on success, 1 when the job was refused (e.g. fewer than 200 labelled tokens).
 """
 
@@ -29,7 +29,8 @@ from app.config import settings  # noqa: E402
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smart OPD AI service jobs")
-    parser.add_argument("--database-url", help="override DATABASE_URL")
+    parser.add_argument("--mongodb-uri", help="override MONGODB_URI")
+    parser.add_argument("--mongodb-db", help="override MONGODB_DB (database name)")
     parser.add_argument("--models-dir", help="override MODELS_DIR")
     sub = parser.add_subparsers(dest="command")
 
@@ -59,8 +60,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.models_dir:
         settings.models_dir = Path(args.models_dir)
-    if args.database_url:
-        db.reset_engine(args.database_url)
+    if args.mongodb_db:
+        settings.mongodb_db = args.mongodb_db
+    if args.mongodb_uri or args.mongodb_db:
+        db.reset_client(args.mongodb_uri)  # connects lazily on the first query
 
     # Imported after the settings overrides so every module sees the same configuration.
     from app.forecasting import ForecastBusyError, run_forecast

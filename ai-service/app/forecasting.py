@@ -15,18 +15,22 @@ Steps of the ``/ai/jobs/forecast`` job:
    doctor's ``avg_consult_minutes`` (Eq. 6.5: C_h = sum over doctors on duty of 60 / c_j,
    pro-rated when a doctor is on duty for only part of the hour).
 4. Congestion ratio rho = expected / capacity; level NORMAL < high <= HIGH < critical <=
-   CRITICAL with the thresholds from the ``settings`` row ``congestionThresholds``.
+   CRITICAL with the thresholds from the ``settings`` document ``congestionThresholds``
+   (``{_id: 'congestionThresholds', value: {high, critical}}``).
    ``is_peak`` = expected arrivals above the 80th percentile of that branch-department's
    historical hourly arrivals (operating hours only).
-5. Every existing ``forecasts`` row from today 00:00 onwards is deleted and the new rows are
-   inserted, so a run replaces all future forecasts, including rows beyond its horizon written by
-   the backend's JS fallback (now .. now + 7 days) or by an earlier, longer run; sources never mix.
-   Only hours in which at least one doctor of the department is scheduled are written. Capacity
-   counts only doctors who can take patients (active doctor, user account and room), like the
-   backend's live Eq. 6.5 congestion ratio.
+5. Every existing ``forecasts`` document from today 00:00 onwards is deleted and the new ones are
+   inserted (in one transaction on a replica set; integer ``_id`` values reserved from
+   ``counters``), so a run replaces all future forecasts, including documents beyond its horizon
+   written by the backend's JS fallback (now .. now + 7 days) or by an earlier, longer run; sources
+   never mix. Only hours in which at least one doctor of the department is scheduled are written.
+   Capacity counts only doctors who can take patients (active doctor, user account and room), like
+   the backend's live Eq. 6.5 congestion ratio.
 
 The horizon covers whole days starting today 00:00 (hospital local time), so the admin
-dashboard can show a complete day; it uses no data from today itself.
+dashboard can show a complete day; it uses no data from today itself. MongoDB stores UTC: token
+``issued_at`` values are converted to ``HOSPITAL_TZ`` before they are bucketed into hours, and
+``forecast_hour`` / ``generated_at`` are converted back to UTC when written.
 """
 
 from __future__ import annotations
@@ -40,7 +44,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-from sqlalchemy import text
 
 from . import db
 from .config import local_now, settings
@@ -60,45 +63,10 @@ LAG_COLUMNS = [f"lag_{k}w" for k in range(1, LAG_WEEKS + 1)]
 FORECAST_FEATURES = ["day_of_week", "hour", *LAG_COLUMNS, "lag_mean"]
 RANDOM_STATE = 42
 
-ARRIVALS_SQL = """
-SELECT t.issued_at AS issued_at,
-       dep.branch_id AS branch_id,
-       dep.department_id AS department_id
-FROM tokens t
-JOIN doctors d ON d.doctor_id = t.doctor_id
-JOIN departments dep ON dep.department_id = d.department_id
-WHERE t.queue_type = 'OPD'
-  AND t.issued_at >= :since
-  AND t.issued_at < :until
-"""
-
-SCHEDULES_SQL = """
-SELECT ds.doctor_id AS doctor_id,
-       ds.day_of_week AS day_of_week,
-       ds.start_time AS start_time,
-       ds.end_time AS end_time,
-       d.avg_consult_minutes AS avg_consult_minutes,
-       dep.department_id AS department_id,
-       dep.branch_id AS branch_id
-FROM doctor_schedules ds
-JOIN doctors d ON d.doctor_id = ds.doctor_id
-JOIN users u ON u.user_id = d.user_id
-JOIN service_points sp ON sp.service_point_id = ds.service_point_id
-JOIN departments dep ON dep.department_id = d.department_id
-JOIN branches b ON b.branch_id = dep.branch_id
-WHERE d.is_active = 1
-  AND u.is_active = 1
-  AND sp.is_active = 1
-  AND dep.is_active = 1
-  AND b.status = 'ACTIVE'
-"""
-
-INSERT_SQL = """
-INSERT INTO forecasts (branch_id, department_id, forecast_hour, expected_arrivals, capacity,
-                       congestion_level, is_peak, source, generated_at)
-VALUES (:branch_id, :department_id, :forecast_hour, :expected_arrivals, :capacity,
-        :congestion_level, :is_peak, :source, :generated_at)
-"""
+SCHEDULE_COLUMNS = [
+    "doctor_id", "day_of_week", "start_time", "end_time", "avg_consult_minutes", "department_id", "branch_id",
+]
+ARRIVAL_COLUMNS = ["hour", "branch_id", "department_id", "arrivals"]
 
 Key = tuple[int, int]  # (branch_id, department_id)
 
@@ -144,13 +112,12 @@ class ForecastGrid:
 
 
 def load_congestion_thresholds() -> dict[str, float]:
-    """``settings.congestionThresholds`` ({high, critical}); defaults 0.85 / 1.0 (Section 6.6.2)."""
+    """``settings`` ``{_id: 'congestionThresholds', value: {high, critical}}``; defaults 0.85 / 1.0 (Section 6.6.2)."""
     try:
-        raw = db.fetch_scalar(
-            "SELECT setting_value FROM settings WHERE setting_key = :k", {"k": "congestionThresholds"}
-        )
+        doc = db.get_db()["settings"].find_one({"_id": "congestionThresholds"})
+        raw = doc.get("value") if doc else None
         value = db.parse_json(raw) if raw is not None else None
-    except Exception as exc:  # missing table / bad JSON: keep the documented defaults
+    except Exception as exc:  # unreadable document / bad JSON: keep the documented defaults
         log.warning("Could not read congestionThresholds, using defaults: %s", exc)
         value = None
     thresholds = dict(DEFAULT_THRESHOLDS)
@@ -207,16 +174,85 @@ def build_capacity(schedules: pd.DataFrame) -> dict[Key, np.ndarray]:
     return capacity
 
 
+def _by_id(collection: str, fields: list[str], query: dict | None = None) -> dict[Any, dict]:
+    """Small lookup collections (doctors, departments, ...) as ``{_id: document}``."""
+    projection = {name: 1 for name in fields}
+    return {doc["_id"]: doc for doc in db.get_db()[collection].find(query or {}, projection=projection)}
+
+
+def load_schedules() -> pd.DataFrame:
+    """Current schedules of doctors who can take patients, with their department and branch.
+
+    The joins of the former SQL query (doctor_schedules -> doctors -> users, service_points,
+    departments -> branches) are done in Python over the small lookup collections: only active
+    doctors, user accounts, rooms and departments of ACTIVE branches count.
+    """
+    branches = _by_id("branches", ["status"], {"status": "ACTIVE"})
+    departments = {
+        k: d for k, d in _by_id("departments", ["branch_id"], {"is_active": True}).items() if d.get("branch_id") in branches
+    }
+    doctors = {
+        k: d
+        for k, d in _by_id("doctors", ["user_id", "department_id", "avg_consult_minutes"], {"is_active": True}).items()
+        if d.get("department_id") in departments
+    }
+    active_users = set(_by_id("users", ["_id"], {"is_active": True}))
+    active_points = set(_by_id("service_points", ["_id"], {"is_active": True}))
+
+    rows = []
+    for schedule in db.get_db()["doctor_schedules"].find(
+        {}, projection={"doctor_id": 1, "service_point_id": 1, "day_of_week": 1, "start_time": 1, "end_time": 1}
+    ):
+        doctor = doctors.get(schedule.get("doctor_id"))
+        if doctor is None or doctor.get("user_id") not in active_users:
+            continue
+        if schedule.get("service_point_id") not in active_points:
+            continue
+        department_id = doctor["department_id"]
+        rows.append(
+            {
+                "doctor_id": schedule["doctor_id"],
+                "day_of_week": schedule.get("day_of_week"),
+                "start_time": schedule.get("start_time"),
+                "end_time": schedule.get("end_time"),
+                "avg_consult_minutes": doctor.get("avg_consult_minutes"),
+                "department_id": department_id,
+                "branch_id": departments[department_id]["branch_id"],
+            }
+        )
+    return pd.DataFrame(rows, columns=SCHEDULE_COLUMNS)
+
+
 def load_arrivals(since: datetime, until: datetime) -> pd.DataFrame:
-    """Hourly OPD arrivals per (branch, department) with columns hour, branch_id, department_id, arrivals."""
-    raw = db.fetch_df(ARRIVALS_SQL, {"since": db.fmt_dt(since), "until": db.fmt_dt(until)})
+    """Hourly OPD arrivals per (branch, department) with columns hour, branch_id, department_id, arrivals.
+
+    ``since`` / ``until`` are hospital-local; tokens are selected on UTC bounds and their
+    ``issued_at`` converted to local time before flooring to the hour. The department comes from
+    the token's doctor (tokens -> doctors -> departments), as in the former SQL join.
+    """
+    cursor = db.get_db()["tokens"].find(
+        {
+            "queue_type": "OPD",
+            "doctor_id": {"$ne": None},
+            "issued_at": {"$gte": db.to_utc(since), "$lt": db.to_utc(until)},
+        },
+        projection={"_id": 0, "issued_at": 1, "doctor_id": 1},
+    )
+    raw = pd.DataFrame(list(cursor), columns=["issued_at", "doctor_id"])
     if raw.empty:
-        return pd.DataFrame(columns=["hour", "branch_id", "department_id", "arrivals"])
-    raw["issued_at"] = db.to_datetime_series(raw["issued_at"])
+        return pd.DataFrame(columns=ARRIVAL_COLUMNS)
+    doctors = _by_id("doctors", ["department_id"])
+    departments = _by_id("departments", ["branch_id"])
+    department_of = {k: d.get("department_id") for k, d in doctors.items()}
+    branch_of = {k: d.get("branch_id") for k, d in departments.items()}
+    raw["department_id"] = raw["doctor_id"].map(department_of)
+    raw = raw[raw["department_id"].isin(list(branch_of))].copy()  # inner join: unknown departments drop out
+    raw["branch_id"] = raw["department_id"].map(branch_of)
+    raw["issued_at"] = db.utc_series_to_local(raw["issued_at"])
     raw = raw.dropna(subset=["issued_at", "branch_id", "department_id"])
     raw = raw[(raw["issued_at"] >= pd.Timestamp(since)) & (raw["issued_at"] < pd.Timestamp(until))].copy()
     if raw.empty:
-        return pd.DataFrame(columns=["hour", "branch_id", "department_id", "arrivals"])
+        return pd.DataFrame(columns=ARRIVAL_COLUMNS)
     raw["hour"] = raw["issued_at"].dt.floor("h")
     raw["branch_id"] = raw["branch_id"].astype(int)
     raw["department_id"] = raw["department_id"].astype(int)
@@ -393,7 +429,7 @@ def _run_forecast_locked(days: int, now: datetime) -> dict:
     horizon_end = today + timedelta(days=days)
     history_from = today - timedelta(days=settings.forecast_lookback_days)
 
-    capacity = build_capacity(db.fetch_df(SCHEDULES_SQL))
+    capacity = build_capacity(load_schedules())
     thresholds = load_congestion_thresholds()
     arrivals = load_arrivals(history_from, today)
 
@@ -407,7 +443,7 @@ def _run_forecast_locked(days: int, now: datetime) -> dict:
     peaks = peak_thresholds(grid, capacity)
     predict_horizon(grid, model)
 
-    generated_at = db.fmt_dt(now)
+    generated_at = db.to_utc(now)  # BSON Date in UTC (MONGODB_DESIGN.md)
     rows: list[dict[str, Any]] = []
     dow = grid.day_of_week
     hours = grid.hour
@@ -418,32 +454,40 @@ def _run_forecast_locked(days: int, now: datetime) -> dict:
             hourly_capacity = float(cap[dow[pos], hours[pos]])
             if hourly_capacity <= 0:
                 continue  # no doctor scheduled in this hour
-            # The level is derived from the values actually stored (DECIMAL(6,1)), so anyone who
-            # recomputes rho = expected_arrivals / capacity from the row (the backend does, for
-            # /api/admin/forecasts congestionRatio) gets the same level.
+            # The level is derived from the values actually stored (rounded to 0.1), so anyone who
+            # recomputes rho = expected_arrivals / capacity from the document (the backend does,
+            # for /api/admin/forecasts congestionRatio) gets the same level.
             expected = round(float(values[pos]), 1)
             stored_capacity = max(0.1, round(hourly_capacity, 1))
             ratio = expected / stored_capacity
             rows.append(
                 {
-                    "branch_id": key[0],
-                    "department_id": key[1],
-                    "forecast_hour": db.fmt_dt(grid.index[pos].to_pydatetime()),
+                    "branch_id": int(key[0]),
+                    "department_id": int(key[1]),
+                    # The grid is hospital-local; MongoDB stores the hour as a UTC Date.
+                    "forecast_hour": db.to_utc(grid.index[pos].to_pydatetime()),
                     "expected_arrivals": expected,
                     "capacity": stored_capacity,
                     "congestion_level": congestion_level(ratio, thresholds),
-                    "is_peak": 1 if peak_threshold is not None and expected > peak_threshold else 0,
+                    "is_peak": bool(peak_threshold is not None and expected > peak_threshold),
                     "source": source,
                     "generated_at": generated_at,
                 }
             )
 
-    with db.get_engine().begin() as conn:
+    # Integer _id values: one atomic $inc on counters {_id: 'forecasts'} reserves the whole block.
+    for doc, new_id in zip(rows, db.next_ids("forecasts", len(rows))):
+        doc["_id"] = new_id
+    forecasts = db.get_db()["forecasts"]
+
+    def replace_future(session) -> None:
         # Replace every future forecast, not only the horizon: the backend's JS fallback writes
-        # now .. now + 7 days, so its rows past today + days would otherwise linger beside ours.
-        conn.execute(text("DELETE FROM forecasts WHERE forecast_hour >= :start"), {"start": db.fmt_dt(today)})
+        # now .. now + 7 days, so its documents past today + days would otherwise linger beside ours.
+        forecasts.delete_many({"forecast_hour": {"$gte": db.to_utc(today)}}, session=session)
         for chunk in db.chunked(rows, 1000):
-            conn.execute(text(INSERT_SQL), chunk)
+            forecasts.insert_many([dict(doc) for doc in chunk], ordered=True, session=session)
+
+    db.run_transaction(replace_future)
 
     log.info(
         "Forecast %s: %d rows for %s .. %s (rf MAE %s, baseline MAE %s)",

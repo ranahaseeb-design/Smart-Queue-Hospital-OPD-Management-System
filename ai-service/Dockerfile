@@ -5,7 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MODELS_DIR=/app/models \
-    HOSPITAL_TZ=Asia/Karachi
+    HOSPITAL_TZ=Asia/Karachi \
+    MONGODB_URI=mongodb://host.docker.internal:27017/smart_opd?replicaSet=rs0 \
+    MONGODB_TIMEOUT_MS=3000
 
 WORKDIR /app
 
@@ -17,6 +19,10 @@ COPY scripts ./scripts
 RUN mkdir -p /app/models && useradd --create-home --uid 10001 aiservice && chown -R aiservice /app
 USER aiservice
 
+# Override MONGODB_URI at run time (docker run -e MONGODB_URI=...). A replica-set URI makes the
+# driver connect to the member host names stored in the replica-set config: if rs0 was initiated
+# as 127.0.0.1:27017 on the host, that name is wrong inside the container, so either initiate rs0
+# with a reachable host name or add &directConnection=true for a single-node set.
 # Every /ai/* call needs X-AI-Service-Token == AI_SERVICE_TOKEN: pass it at run time
 # (docker run -e AI_SERVICE_TOKEN=...). Without it the /ai/* endpoints answer 503.
 # 0.0.0.0 is the container interface; publish 8000 only on the backend's internal network.

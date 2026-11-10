@@ -1,6 +1,7 @@
 """Online waiting-time prediction with the ACTIVE model (Section 6.4.3) — FR-06, FR-07.
 
-The active version is the ``model_versions`` row with ``is_active = 1``; its file is
+The active version is the ``model_versions`` document with ``is_active: true`` (its ``_id`` is the
+version string); its file is
 ``MODELS_DIR/<version>.joblib``. The loaded bundle is cached in memory and reloaded
 whenever a different version becomes active (activation endpoint, retraining or the CLI).
 """
@@ -56,9 +57,11 @@ def load_bundle(version: str) -> dict:
 
 
 def active_version() -> str | None:
-    return db.fetch_scalar(
-        "SELECT version FROM model_versions WHERE is_active = 1 ORDER BY trained_at DESC LIMIT 1"
+    """``_id`` (= version string) of the ``model_versions`` document with ``is_active: true``."""
+    doc = db.get_db()["model_versions"].find_one(
+        {"is_active": True}, projection={"_id": 1}, sort=[("trained_at", -1), ("_id", -1)]
     )
+    return str(doc["_id"]) if doc else None
 
 
 START_DELAY_FEATURE = "minutes_to_start"
