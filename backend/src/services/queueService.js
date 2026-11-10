@@ -331,9 +331,7 @@ async function propagate(db, keys, { now = time.clock.now(), skipApproaching = [
           if (diff >= Math.max(10, 0.25 * r.previousRemaining)) {
             await notificationService.notify(db, r.patientId, {
               tokenId: r.tokenId,
-              message: `Updated estimate for ${display}: about ${Math.round(r.minutes)} min (previously about ${Math.round(
-                r.previousRemaining
-              )} min).`,
+              message: `Updated estimate for ${display}: ${time.waitText(r.minutes)} (previously ${time.waitText(r.previousRemaining)}).`,
             });
           }
         }
@@ -449,7 +447,7 @@ async function issueOpdToken(db, patient, doctorId, { appointmentId = null, sess
     tokenId,
     message: `Token ${detail.displayNumber} issued for ${doctor.full_name} at ${detail.servicePoint.name}, ${
       doctor.branch_name
-    }. Position ${detail.position || '-'}, estimated wait about ${detail.estimate ? detail.estimate.minutes : 0} min.`,
+    }. Position ${detail.position || '-'}, estimated wait ${time.waitText(detail.estimate ? detail.estimate.minutes : 0)}.`,
     email: true,
     subject: `Your OPD token ${detail.displayNumber}`,
   });
@@ -1021,9 +1019,9 @@ async function issueLinkedToken(db, user, visitId, { type, servicePointId = null
   const detail = await getTokenDetail(db, tokenId, { now });
   await notificationService.notify(db, visit.patient_id, {
     tokenId,
-    message: `Linked ${type} token ${detail.displayNumber} issued at ${target.name}. Estimated wait about ${
+    message: `Linked ${type} token ${detail.displayNumber} issued at ${target.name}. Estimated wait ${time.waitText(
       detail.estimate ? detail.estimate.minutes : 0
-    } min.`,
+    )}.`,
   });
   return detail;
 }

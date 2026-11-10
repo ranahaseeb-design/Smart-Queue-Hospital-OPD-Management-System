@@ -25,7 +25,7 @@ function meanDuration(rows) {
     .map((r) => time.minutesBetween(time.parseDateTime(r.called_at), time.parseDateTime(r.completed_at)))
     .filter((d) => Number.isFinite(d) && d >= 0);
   if (durations.length < MIN_SAMPLES) return null;
-  return time.round(durations.reduce((s, d) => s + d, 0) / durations.length, 2);
+  return time.meanMinutes(durations);
 }
 
 const spAverageCache = new Map();
@@ -275,7 +275,7 @@ async function refreshDoctorAverages(db) {
     const rows = await db.query(
       `SELECT called_at, completed_at FROM tokens
         WHERE doctor_id = ? AND queue_type = 'OPD' AND status = 'COMPLETED' AND called_at IS NOT NULL
-        ORDER BY completed_at DESC LIMIT ${ROLLING_WINDOW}`,
+        ORDER BY completed_at DESC, token_id DESC LIMIT ${ROLLING_WINDOW}`,
       [d.doctor_id]
     );
     const avg = meanDuration(rows);

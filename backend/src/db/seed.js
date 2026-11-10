@@ -143,7 +143,8 @@ function atSec(dateStr, sec) {
 
 const fmt = (d) => (d ? time.formatDateTime(d) : null);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-const meanOrNull = (arr) => (arr.length >= MIN_SAMPLES ? time.round(arr.reduce((s, x) => s + x, 0) / arr.length, 2) : null);
+// Same averaging as predictionService.meanDuration (order-independent, see time.meanMinutes).
+const meanOrNull = (arr) => (arr.length >= MIN_SAMPLES ? time.meanMinutes(arr) : null);
 
 function lastStatus(tok) {
   return tok.changes[tok.changes.length - 1].status;
@@ -821,11 +822,18 @@ function rollingDoctorAverage(doctor) {
 function counterAverage(counter) {
   return meanOrNull(counter.durations.slice(-ROLLING_WINDOW)) || predictionService.DEFAULT_SERVICE_MINUTES[counter.type] || 5;
 }
+/** Milliseconds truncated to whole seconds, as the DATETIME columns store them (fmt drops ms). */
+const storedMs = (d) => Math.floor(d.getTime() / 1000) * 1000;
+/**
+ * Consultation / service durations in the order the nightly job reads them (completed_at, then
+ * token id), computed from the stored second-precision times so that the seeded averages equal
+ * what predictionService.refreshDoctorAverages recomputes from the database.
+ */
 function durationsOf(tokens) {
   return tokens
     .filter((t) => lastStatus(t) === 'COMPLETED')
-    .sort((a, b) => completedAt(a) - completedAt(b) || a.id - b.id)
-    .map((t) => (completedAt(t) - firstCalledAt(t)) / 60000)
+    .sort((a, b) => storedMs(completedAt(a)) - storedMs(completedAt(b)) || a.id - b.id)
+    .map((t) => (storedMs(completedAt(t)) - storedMs(firstCalledAt(t))) / 60000)
     .filter((d) => d >= 0);
 }
 

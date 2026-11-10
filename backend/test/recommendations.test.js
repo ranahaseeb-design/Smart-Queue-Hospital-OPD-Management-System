@@ -116,3 +116,11 @@ test('validation and empty results', async () => {
   const ent = await ctx.api.get('/recommendations?specialty=ENT', patient.token);
   assert.deepEqual(new Set(ent.body.items.map((i) => i.branchName)), new Set(['Model Town', 'DHA']));
 });
+
+test('patient-facing wait wording matches the app: under 5 minutes reads "less than 5 min"', () => {
+  const { waitText } = require('../src/utils/time');
+  assert.equal(waitText(0), 'less than 5 min');
+  assert.equal(waitText(4.4), 'less than 5 min');
+  assert.equal(waitText(12.6), 'about 13 min');
+  assert.equal(waitText(null), 'less than 5 min');
+});

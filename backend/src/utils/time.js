@@ -163,8 +163,28 @@ function round(value, decimals = 0) {
   return Math.round(value * f) / f;
 }
 
+/**
+ * Mean of durations given in minutes, rounded to 2 decimals. Durations come from second-precision
+ * timestamps, so they are summed as whole seconds: the integer sum is exact and the result does
+ * not depend on summation order (adding fractional minutes newest-first vs oldest-first can round
+ * a mean of exactly x.xx5 differently).
+ */
+function meanMinutes(minutes) {
+  if (!minutes.length) return null;
+  const seconds = minutes.reduce((s, m) => s + Math.round(m * 60), 0);
+  return round(seconds / minutes.length / 60, 2);
+}
+
+/** Patient-facing wait wording: "less than 5 min" under 5 minutes, otherwise "about N min". */
+function waitText(minutes) {
+  const m = Math.round(Number(minutes) || 0);
+  return m < 5 ? 'less than 5 min' : `about ${m} min`;
+}
+
 module.exports = {
   clock,
+  meanMinutes,
+  waitText,
   MINUTE,
   HOUR,
   DAY,

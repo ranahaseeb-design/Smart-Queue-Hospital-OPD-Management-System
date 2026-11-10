@@ -55,11 +55,11 @@ function buildReason(c, all, reference) {
     const diff = Math.round(reference - c.predictedWaitMinutes);
     if (diff >= 5) parts.push(`about ${diff} min shorter wait`);
     else if (diff <= -5) parts.push(`about ${-diff} min longer wait`);
-    else parts.push(`similar wait (about ${Math.round(c.predictedWaitMinutes)} min)`);
+    else parts.push(`similar wait (${time.waitText(c.predictedWaitMinutes)})`);
   } else if (c.predictedWaitMinutes === minWait && all.length > 1) {
-    parts.push(`shortest predicted wait (about ${Math.round(c.predictedWaitMinutes)} min)`);
+    parts.push(`shortest predicted wait (${time.waitText(c.predictedWaitMinutes)})`);
   } else {
-    parts.push(`about ${Math.round(c.predictedWaitMinutes)} min wait`);
+    parts.push(`${time.waitText(c.predictedWaitMinutes)} wait`);
   }
   if (c.distanceKm !== null) {
     const minDist = Math.min(...all.map((x) => x.distanceKm));

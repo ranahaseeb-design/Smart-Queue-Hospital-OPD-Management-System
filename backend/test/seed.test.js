@@ -356,3 +356,12 @@ test('seed replay reproduces the live first prediction of every token (features 
   }
   assert.ok(interesting >= 5, 'scenario exercised interruptions, appointments and priorities');
 });
+
+test('rolling averages do not depend on summation order (a mean of exactly x.xx5 rounds the same way)', () => {
+  const { meanMinutes } = require('../src/utils/time');
+  // 727 s and 728 s average 727.5 s = 12.125 min exactly.
+  const durations = [727 / 60, 728 / 60, 727 / 60, 728 / 60];
+  assert.equal(meanMinutes(durations), 12.13);
+  assert.equal(meanMinutes([...durations].reverse()), 12.13);
+  assert.equal(meanMinutes([]), null);
+});
