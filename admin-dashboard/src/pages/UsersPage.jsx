@@ -13,7 +13,7 @@ import { ROLE_LABELS, ROLES, assignableRoles } from '../utils/roles.js';
 import { MANAGED_ROLES, adminBranchIdPatch, usersRoleQuery } from '../utils/users.js';
 import { ServicePointType } from './ServicePointsPage.jsx';
 
-const ROLE_TONE = { HOSPITAL_ADMIN: 'violet', BRANCH_ADMIN: 'info', STAFF: 'teal', PATIENT: 'neutral' };
+const ROLE_TONE = { HOSPITAL_ADMIN: 'primary', BRANCH_ADMIN: 'info', STAFF: 'success', PATIENT: 'neutral' };
 
 function spLabel(sp, withBranch) {
   return `${sp.name} (${sp.type})${withBranch && sp.branchName ? ` — ${sp.branchName}` : ''}`;

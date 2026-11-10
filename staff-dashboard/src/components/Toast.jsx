@@ -1,4 +1,5 @@
 // Toast notifications for action success / failure feedback.
+import Icon from './Icon.jsx';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 const ToastContext = createContext(null);
@@ -50,11 +51,11 @@ export function ToastProvider({ children }) {
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast--${t.type}`} role={t.type === 'error' ? 'alert' : 'status'}>
             <span className="toast-icon" aria-hidden="true">
-              {t.type === 'success' ? '✓' : t.type === 'error' ? '!' : 'i'}
+              <Icon name={t.type === 'success' ? 'checkCircle' : t.type === 'error' ? 'alert' : 'info'} />
             </span>
             <span className="toast-message">{t.message}</span>
             <button type="button" className="toast-close" onClick={() => dismiss(t.id)} aria-label="Dismiss message">
-              ×
+              <Icon name="x" />
             </button>
           </div>
         ))}

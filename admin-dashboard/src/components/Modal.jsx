@@ -56,7 +56,7 @@ export function Modal({ open, title, onClose, children, footer, size = 'md', bus
       >
         <header className="modal-head">
           <h2 id={titleId}>{title}</h2>
-          <button type="button" className="icon-btn" onClick={onClose} disabled={busy} aria-label="Close dialog">
+          <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={onClose} disabled={busy} aria-label="Close dialog">
             <Icon name="close" />
           </button>
         </header>
@@ -81,7 +81,7 @@ export function ConfirmDialog({
       footer={(
         <>
           <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button type="button" className={`btn btn-${tone}`} onClick={onConfirm} disabled={busy}>
+          <button type="button" className={`btn btn-${tone}`} onClick={onConfirm} disabled={busy} aria-busy={busy || undefined}>
             {busy && <Spinner size="xs" />} {confirmLabel}
           </button>
         </>

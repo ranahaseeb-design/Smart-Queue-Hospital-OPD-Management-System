@@ -5,7 +5,17 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Smart OPD Admin Dashboard - live monitoring, master data, reports, forecasts and model management" />
+    <meta name="color-scheme" content="light dark" />
     <title>Smart OPD Admin</title>
+    <script>
+      // Apply the saved theme before React renders (no flash of the wrong theme).
+      (function () {
+        try {
+          var t = localStorage.getItem('smartopd.theme');
+          if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+        } catch (e) { /* storage blocked: follow the OS */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

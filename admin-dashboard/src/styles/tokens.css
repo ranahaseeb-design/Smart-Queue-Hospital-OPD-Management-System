@@ -1,0 +1,305 @@
+/*
+ * Smart OPD design tokens — "Clinical Calm" (canonical copy).
+ * Both web apps copy this file verbatim to src/styles/tokens.css; keep the copies identical.
+ * Components use the semantic tokens (--color-*, --text-*, --space-*, ...), never the raw
+ * palette (--teal-*, --n-*), so light and dark themes come from one set of styles.
+ *
+ * Theme: light by default; dark follows the OS (prefers-color-scheme) unless the user picked a
+ * theme, which sets <html data-theme="light|dark">.
+ */
+
+:root {
+  /* ---- Raw palette (do not use in components) ---- */
+  --n-0: #ffffff;
+  --n-25: #f9fbfb;
+  --n-50: #f3f7f7;
+  --n-100: #e8eeef;
+  --n-200: #d6dfe0;
+  --n-300: #b7c4c6;
+  --n-400: #8b9ea1;
+  --n-500: #64777a;
+  --n-600: #4b5d60;
+  --n-700: #364649;
+  --n-800: #233133;
+  --n-900: #141e20;
+  --n-950: #0b1214;
+
+  --teal-50: #e8f4f3;
+  --teal-100: #c9e6e3;
+  --teal-200: #9dd1cc;
+  --teal-300: #67b5ae;
+  --teal-400: #3a968f;
+  --teal-500: #1c7d77;
+  --teal-600: #0e6b6b;
+  --teal-700: #0b5757;
+  --teal-800: #0a4646;
+  --teal-900: #083737;
+
+  /* ---- Typography ---- */
+  --font-sans: 'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, monospace;
+
+  --text-xs: 0.75rem;      /* 12px — captions, table meta */
+  --text-sm: 0.8125rem;    /* 13px — secondary text, badges */
+  --text-base: 0.875rem;   /* 14px — body and tables (dashboard density) */
+  --text-md: 1rem;         /* 16px — inputs, emphasised body */
+  --text-lg: 1.125rem;     /* 18px — card titles */
+  --text-xl: 1.375rem;     /* 22px — page titles */
+  --text-2xl: 1.75rem;     /* 28px — KPI values */
+  --text-3xl: 2.25rem;     /* 36px — hero numbers */
+  --text-display: 3.5rem;  /* 56px — now-serving token number */
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.55;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.015em;
+  --tracking-caps: 0.06em;  /* small uppercase labels */
+
+  /* ---- Spacing (4px grid) ---- */
+  --space-0: 0;
+  --space-1: 0.25rem;  /* 4 */
+  --space-2: 0.5rem;   /* 8 */
+  --space-3: 0.75rem;  /* 12 */
+  --space-4: 1rem;     /* 16 */
+  --space-5: 1.25rem;  /* 20 */
+  --space-6: 1.5rem;   /* 24 */
+  --space-8: 2rem;     /* 32 */
+  --space-10: 2.5rem;  /* 40 */
+  --space-12: 3rem;    /* 48 */
+  --space-16: 4rem;    /* 64 */
+
+  /* ---- Shape ---- */
+  --radius-sm: 6px;    /* badges, small inputs */
+  --radius-md: 10px;   /* buttons, inputs */
+  --radius-lg: 14px;   /* cards, modals */
+  --radius-xl: 20px;   /* hero cards */
+  --radius-full: 999px;
+
+  --border-width: 1px;
+
+  /* ---- Motion ---- */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.3, 0, 0, 1.2);
+
+  /* ---- Layout ---- */
+  --sidebar-width: 248px;
+  --topbar-height: 60px;
+  --content-max: 1440px;
+  --control-height-sm: 32px;
+  --control-height: 40px;
+  --control-height-lg: 48px;
+
+  /* ---- Z layers ---- */
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-overlay: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+
+  /* ================= Light theme (default) ================= */
+  color-scheme: light;
+
+  --color-bg: var(--n-50);
+  --color-surface: var(--n-0);
+  --color-surface-raised: var(--n-0);
+  --color-surface-sunken: var(--n-25);
+  --color-surface-hover: var(--n-50);
+  --color-overlay: rgba(11, 18, 20, 0.45);
+
+  --color-border: var(--n-100);
+  --color-border-strong: var(--n-200);
+  --color-divider: var(--n-100);
+
+  --color-text: var(--n-900);
+  --color-text-muted: var(--n-600);
+  --color-text-subtle: var(--n-500);
+  --color-text-disabled: var(--n-400);
+  --color-text-inverse: var(--n-0);
+
+  --color-primary: var(--teal-600);
+  --color-primary-hover: var(--teal-700);
+  --color-primary-active: var(--teal-800);
+  --color-on-primary: #ffffff;
+  --color-primary-soft: var(--teal-50);
+  --color-primary-soft-hover: var(--teal-100);
+  --color-primary-soft-text: var(--teal-700);
+  --color-focus-ring: rgba(14, 107, 107, 0.35);
+
+  --color-success: #157f3c;
+  --color-success-soft: #e6f5ec;
+  --color-success-text: #0f6630;
+  --color-warning: #c26a06;
+  --color-warning-soft: #fdf2e0;
+  --color-warning-text: #8a4b04;
+  --color-danger: #c0262d;
+  --color-danger-hover: #a11f25;
+  --color-danger-soft: #fdecec;
+  --color-danger-text: #9b1c22;
+  --color-info: #1d5fbf;
+  --color-info-soft: #e8f0fc;
+  --color-info-text: #174c99;
+
+  /* Domain aliases (queue priority, congestion) */
+  --color-priority-emergency: var(--color-danger);
+  --color-priority-emergency-soft: var(--color-danger-soft);
+  --color-priority-elevated: var(--color-warning);
+  --color-priority-elevated-soft: var(--color-warning-soft);
+  --color-congestion-normal: var(--color-success);
+  --color-congestion-high: var(--color-warning);
+  --color-congestion-critical: var(--color-danger);
+
+  /* Charts (categorical series, then reference lines) */
+  --chart-1: #0e6b6b;
+  --chart-2: #3a7fd5;
+  --chart-3: #d4892a;
+  --chart-4: #8a5cc2;
+  --chart-5: #c8506a;
+  --chart-6: #4f9b5e;
+  --chart-grid: var(--n-100);
+  --chart-axis: var(--n-500);
+  --chart-reference: var(--n-700);
+
+  --shadow-xs: 0 1px 2px rgba(20, 30, 32, 0.05);
+  --shadow-sm: 0 1px 3px rgba(20, 30, 32, 0.07), 0 1px 2px rgba(20, 30, 32, 0.04);
+  --shadow-md: 0 4px 12px -2px rgba(20, 30, 32, 0.08), 0 2px 4px -2px rgba(20, 30, 32, 0.05);
+  --shadow-lg: 0 16px 32px -8px rgba(20, 30, 32, 0.16), 0 4px 8px -4px rgba(20, 30, 32, 0.06);
+}
+
+/* ================= Dark theme ================= */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --color-bg: #0d1517;
+    --color-surface: #141e20;
+    --color-surface-raised: #1a2628;
+    --color-surface-sunken: #0a1113;
+    --color-surface-hover: #1d2a2c;
+    --color-overlay: rgba(0, 0, 0, 0.6);
+
+    --color-border: #233235;
+    --color-border-strong: #314448;
+    --color-divider: #1f2d30;
+
+    --color-text: #e5eded;
+    --color-text-muted: #a2b3b5;
+    --color-text-subtle: #7d9093;
+    --color-text-disabled: #566a6d;
+    --color-text-inverse: #0b1214;
+
+    --color-primary: #3eb2a7;
+    --color-primary-hover: #5bc3b8;
+    --color-primary-active: #7dd3c9;
+    --color-on-primary: #052422;
+    --color-primary-soft: rgba(62, 178, 167, 0.14);
+    --color-primary-soft-hover: rgba(62, 178, 167, 0.22);
+    --color-primary-soft-text: #7fd6cc;
+    --color-focus-ring: rgba(62, 178, 167, 0.45);
+
+    --color-success: #4cc27a;
+    --color-success-soft: rgba(76, 194, 122, 0.14);
+    --color-success-text: #7fdca3;
+    --color-warning: #f0a53a;
+    --color-warning-soft: rgba(240, 165, 58, 0.14);
+    --color-warning-text: #f6c27a;
+    --color-danger: #f0646a;
+    --color-danger-hover: #f4858a;
+    --color-danger-soft: rgba(240, 100, 106, 0.14);
+    --color-danger-text: #f7a0a4;
+    --color-info: #6aa2f0;
+    --color-info-soft: rgba(106, 162, 240, 0.14);
+    --color-info-text: #a3c6f7;
+
+    --chart-1: #3eb2a7;
+    --chart-2: #6aa2f0;
+    --chart-3: #f0a53a;
+    --chart-4: #b48ae6;
+    --chart-5: #ef7d96;
+    --chart-6: #74c486;
+    --chart-grid: #223134;
+    --chart-axis: #7d9093;
+    --chart-reference: #c9d6d7;
+
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 18px 36px -8px rgba(0, 0, 0, 0.6), 0 4px 8px -4px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* Explicit dark choice (same values as the media query above — keep in sync). */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-bg: #0d1517;
+  --color-surface: #141e20;
+  --color-surface-raised: #1a2628;
+  --color-surface-sunken: #0a1113;
+  --color-surface-hover: #1d2a2c;
+  --color-overlay: rgba(0, 0, 0, 0.6);
+
+  --color-border: #233235;
+  --color-border-strong: #314448;
+  --color-divider: #1f2d30;
+
+  --color-text: #e5eded;
+  --color-text-muted: #a2b3b5;
+  --color-text-subtle: #7d9093;
+  --color-text-disabled: #566a6d;
+  --color-text-inverse: #0b1214;
+
+  --color-primary: #3eb2a7;
+  --color-primary-hover: #5bc3b8;
+  --color-primary-active: #7dd3c9;
+  --color-on-primary: #052422;
+  --color-primary-soft: rgba(62, 178, 167, 0.14);
+  --color-primary-soft-hover: rgba(62, 178, 167, 0.22);
+  --color-primary-soft-text: #7fd6cc;
+  --color-focus-ring: rgba(62, 178, 167, 0.45);
+
+  --color-success: #4cc27a;
+  --color-success-soft: rgba(76, 194, 122, 0.14);
+  --color-success-text: #7fdca3;
+  --color-warning: #f0a53a;
+  --color-warning-soft: rgba(240, 165, 58, 0.14);
+  --color-warning-text: #f6c27a;
+  --color-danger: #f0646a;
+  --color-danger-hover: #f4858a;
+  --color-danger-soft: rgba(240, 100, 106, 0.14);
+  --color-danger-text: #f7a0a4;
+  --color-info: #6aa2f0;
+  --color-info-soft: rgba(106, 162, 240, 0.14);
+  --color-info-text: #a3c6f7;
+
+  --chart-1: #3eb2a7;
+  --chart-2: #6aa2f0;
+  --chart-3: #f0a53a;
+  --chart-4: #b48ae6;
+  --chart-5: #ef7d96;
+  --chart-6: #74c486;
+  --chart-grid: #223134;
+  --chart-axis: #7d9093;
+  --chart-reference: #c9d6d7;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 18px 36px -8px rgba(0, 0, 0, 0.6), 0 4px 8px -4px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+}

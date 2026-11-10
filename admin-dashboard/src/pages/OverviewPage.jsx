@@ -7,13 +7,14 @@ import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
 import {
-  Badge, Card, CongestionBadge, EmptyState, ErrorBanner, KpiTile, LastUpdated, Loading, PageHeader,
+  Badge, Card, CongestionBadge, EmptyState, ErrorBanner, KpiTile, LastUpdated, Loading, PageHeader, PageSkeleton,
 } from '../components/ui.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { useLiveRefresh } from '../hooks/useLiveRefresh.js';
 import { fmtMinutes, fmtNum, fmtPercent, formatDateTime, timeAgo } from '../utils/format.js';
-import { AXIS_TICK, CHART, congestionColor } from '../utils/chartTheme.js';
+import { congestionColor } from '../utils/chartTheme.js';
+import { useChartTheme } from '../hooks/useChartTheme.js';
 import { ServicePointType } from './ServicePointsPage.jsx';
 
 const LEVEL_RANK = { CRITICAL: 2, HIGH: 1, NORMAL: 0 };
@@ -26,7 +27,7 @@ function nowServingText(v) {
 }
 
 function AlertList({ alerts, loading }) {
-  if (loading && !alerts.length) return <Loading text="Loading alerts…" />;
+  if (loading && !alerts.length) return <Loading text="Loading alerts…" lines={3} />;
   if (!alerts.length) {
     return (
       <EmptyState icon="check" title="No active congestion alerts">
@@ -40,7 +41,7 @@ function AlertList({ alerts, loading }) {
         <li key={a.id ?? `${a.departmentId}-${a.at}-${a.level}`} className={`alert-item alert-${String(a.level).toLowerCase()}`}>
           <div className="alert-item-head">
             <CongestionBadge level={a.level} />
-            <Badge tone={a.source === 'FORECAST' ? 'violet' : 'info'}>{a.source === 'FORECAST' ? 'Forecast' : 'Live'}</Badge>
+            <Badge tone={a.source === 'FORECAST' ? 'primary' : 'info'}>{a.source === 'FORECAST' ? 'Forecast' : 'Live'}</Badge>
             <span className="muted small" title={formatDateTime(a.at)}>{timeAgo(a.at)}</span>
           </div>
           <p className="alert-msg">{a.message}</p>
@@ -56,6 +57,7 @@ export default function OverviewPage() {
   const dash = useResource('/admin/dashboard', scopeQuery);
   const alerts = useResource('/admin/alerts', scopeQuery);
   const [deptFilter, setDeptFilter] = useState('');
+  const chart = useChartTheme();
 
   const refresh = useCallback(() => {
     dash.reload({ silent: true });
@@ -122,7 +124,9 @@ export default function OverviewPage() {
       key: 'congestionRatio', label: 'Load', align: 'right',
       render: (r) => (
         <span className="ratio-cell" title="Waiting patients ÷ remaining capacity this session (Eq. 6.5)">
-          <span className="ratio-bar"><span style={{ width: `${Math.min(100, (Number(r.congestionRatio) || 0) * 100)}%`, background: congestionColor(r.congestionLevel) }} /></span>
+          <span className={`ratio-bar ratio-${String(r.congestionLevel || 'NORMAL').toLowerCase()}`}>
+            <span style={{ width: `${Math.min(100, (Number(r.congestionRatio) || 0) * 100)}%` }} />
+          </span>
           {fmtPercent(r.congestionRatio)}
         </span>
       ),
@@ -174,7 +178,7 @@ export default function OverviewPage() {
                 {deptOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
-            <button type="button" className="btn btn-secondary" onClick={refresh} title="Refresh now">
+            <button type="button" className="btn btn-secondary btn-icon" onClick={refresh} title="Refresh now" aria-label="Refresh now">
               <Icon name="refresh" size={16} />
             </button>
           </>
@@ -183,7 +187,7 @@ export default function OverviewPage() {
 
       <ErrorBanner error={dash.error} onRetry={() => dash.reload()} />
 
-      {dash.loading && !dash.data ? <Loading text="Loading live overview…" /> : (
+      {dash.loading && !dash.data ? <PageSkeleton text="Loading live overview…" kpis={7} cards={2} /> : (
         <>
           <div className="kpi-grid">
             {selectedDept ? (
@@ -191,7 +195,7 @@ export default function OverviewPage() {
                 <KpiTile label="Waiting" value={fmtNum(selectedDept.waiting)} icon="users" tone="primary" hint={selectedDept.name || selectedDept.specialty} />
                 <KpiTile label="Avg current wait" value={fmtNum(selectedDept.avgWaitMinutes)} unit="min" icon="schedules" />
                 <KpiTile label="Max current wait" value={fmtNum(selectedDept.maxWaitMinutes)} unit="min" icon="alert"
-                  tone={selectedDept.congestionLevel === 'CRITICAL' ? 'critical' : selectedDept.congestionLevel === 'HIGH' ? 'warning' : 'default'} />
+                  tone={selectedDept.congestionLevel === 'CRITICAL' ? 'danger' : selectedDept.congestionLevel === 'HIGH' ? 'warning' : 'default'} />
                 <KpiTile label="Active doctors" value={fmtNum(selectedDept.activeDoctors)} icon="doctors" />
                 <KpiTile label="Load (Eq. 6.5)" value={fmtPercent(selectedDept.congestionRatio)} icon="workload"
                   hint={<CongestionBadge level={selectedDept.congestionLevel} />} />
@@ -200,7 +204,7 @@ export default function OverviewPage() {
               <>
                 <KpiTile label="Waiting now" value={fmtNum(kpis.waiting)} icon="users" tone="primary" />
                 <KpiTile label="In service" value={fmtNum(kpis.inService)} icon="doctors" />
-                <KpiTile label="Completed today" value={fmtNum(kpis.completedToday)} icon="check" tone="good" />
+                <KpiTile label="Completed today" value={fmtNum(kpis.completedToday)} icon="check" tone="success" />
                 <KpiTile label="Avg current wait" value={fmtNum(kpis.avgWaitMinutes)} unit="min" icon="schedules" />
                 <KpiTile label="Max current wait" value={fmtNum(kpis.maxWaitMinutes)} unit="min" icon="alert"
                   tone={Number(kpis.maxWaitMinutes) >= 60 ? 'warning' : 'default'} />
@@ -245,11 +249,11 @@ export default function OverviewPage() {
                 <div className="chart-box" style={{ height: Math.max(220, chartRows.length * 34 + 40) }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={chartRows} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 8 }}>
-                      <CartesianGrid horizontal={false} stroke={CHART.grid} />
-                      <XAxis type="number" allowDecimals={false} tick={AXIS_TICK} stroke={CHART.axis} />
-                      <YAxis type="category" dataKey="name" width={150} tick={AXIS_TICK} stroke={CHART.axis} />
+                      <CartesianGrid horizontal={false} stroke={chart.grid} />
+                      <XAxis type="number" allowDecimals={false} tick={chart.tick} stroke={chart.grid} tickLine={false} />
+                      <YAxis type="category" dataKey="name" width={150} tick={chart.tick} stroke={chart.grid} tickLine={false} />
                       <Tooltip
-                        cursor={{ fill: 'rgba(15, 110, 116, 0.06)' }}
+                        cursor={{ fill: chart.cursor }}
                         content={(
                           <ChartTooltip
                             extra={(row) => (
@@ -258,17 +262,17 @@ export default function OverviewPage() {
                           />
                         )}
                       />
-                      <Bar dataKey="waiting" name="Waiting" radius={[0, 4, 4, 0]} maxBarSize={22} fill={CHART.series1}>
-                        {chartRows.map((r) => <Cell key={r.name} fill={congestionColor(r.level)} />)}
+                      <Bar dataKey="waiting" name="Waiting" radius={[0, 4, 4, 0]} maxBarSize={22} fill={chart.series1}>
+                        {chartRows.map((r) => <Cell key={r.name} fill={congestionColor(chart, r.level)} />)}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               )}
               <div className="legend-row" aria-label="Legend">
-                <span><i className="legend-swatch" style={{ background: congestionColor('NORMAL') }} /> Normal</span>
-                <span><i className="legend-swatch" style={{ background: congestionColor('HIGH') }} /> High</span>
-                <span><i className="legend-swatch" style={{ background: congestionColor('CRITICAL') }} /> Critical</span>
+                <span><i className="legend-swatch swatch-normal" /> Normal</span>
+                <span><i className="legend-swatch swatch-high" /> High</span>
+                <span><i className="legend-swatch swatch-critical" /> Critical</span>
               </div>
             </Card>
 

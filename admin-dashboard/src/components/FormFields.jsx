@@ -3,6 +3,7 @@
 //          disabled?, full?: boolean (span both columns), autoComplete?, suggestions?: string[] }
 // Types: text | email | password | tel | number | select | checkbox | time | date | textarea | suggest | days
 import { useId } from 'react';
+import Icon from './Icon.jsx';
 import { DAYS_OF_WEEK } from '../utils/format.js';
 
 export function isEmptyValue(v) {
@@ -128,7 +129,7 @@ export function FormField({ field, value, onChange, error }) {
       )}
       <Control field={field} value={value} onChange={onChange} id={id} error={error} />
       {error ? (
-        <span className="field-error" id={`${id}-err`}>{error}</span>
+        <span className="field-error" id={`${id}-err`}><Icon name="alert" size={14} />{error}</span>
       ) : field.help ? (
         <span className="field-help" id={`${id}-help`}>{field.help}</span>
       ) : null}

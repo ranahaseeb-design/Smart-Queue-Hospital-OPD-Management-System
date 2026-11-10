@@ -3,7 +3,7 @@
 // alternativeSuggestionWaitMinutes -> FR-09, notifyPositionsAhead -> FR-11, slotMinutes -> FR-10.
 import { useEffect, useMemo, useState } from 'react';
 import Icon from '../components/Icon.jsx';
-import { Banner, Card, ErrorBanner, Loading, PageHeader, Spinner } from '../components/ui.jsx';
+import { Banner, Card, ErrorBanner, PageHeader, PageSkeleton, Spinner } from '../components/ui.jsx';
 import { api, errorMessage } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -39,7 +39,7 @@ function NumberField({ label, help, value, onChange, error, step = 'any', min, m
           aria-invalid={error ? 'true' : undefined} onChange={(e) => onChange(e.target.value)} />
         {suffix && <span>{suffix}</span>}
       </div>
-      {error ? <span className="field-error">{error}</span> : help && <span className="field-help">{help}</span>}
+      {error ? <span className="field-error"><Icon name="alert" size={14} />{error}</span> : help && <span className="field-help">{help}</span>}
     </div>
   );
 }
@@ -129,7 +129,7 @@ export default function SettingsPage() {
       {!canEdit && <Banner kind="info">System settings are managed by the Hospital Administrator. You have read-only access.</Banner>}
       <ErrorBanner error={res.error} onRetry={() => res.reload()} />
 
-      {res.loading && !values ? <Loading /> : values && (
+      {res.loading && !values ? <PageSkeleton text="Loading settings…" cards={3} /> : values && (
         <form onSubmit={save} noValidate>
           <fieldset className="settings-fieldset" disabled={!canEdit || saving}>
             <Card
@@ -165,8 +165,8 @@ export default function SettingsPage() {
                   <button type="button" className="btn btn-sm btn-secondary" onClick={normaliseWeights}>Normalise to 1</button>
                 )}
               </div>
-              {errors.recommendationWeights && <span className="field-error">{errors.recommendationWeights}</span>}
-              <p className="muted small">Without patient location, the distance weight is redistributed proportionally to the other two.</p>
+              {errors.recommendationWeights && <span className="field-error"><Icon name="alert" size={14} />{errors.recommendationWeights}</span>}
+              <p className="field-help">Without patient location, the distance weight is redistributed proportionally to the other two.</p>
             </Card>
 
             <Card
@@ -181,7 +181,7 @@ export default function SettingsPage() {
                   help="e.g. 1.0 = demand equals capacity" error={errors['congestionThresholds.critical']}
                   onChange={(v) => set('congestionThresholds.critical', v)} />
               </div>
-              {errors.congestionThresholds && <span className="field-error">{errors.congestionThresholds}</span>}
+              {errors.congestionThresholds && <span className="field-error"><Icon name="alert" size={14} />{errors.congestionThresholds}</span>}
             </Card>
 
             <Card title="Patient experience" subtitle="Alternative suggestions, early notifications and appointment slots.">
@@ -210,7 +210,7 @@ export default function SettingsPage() {
                 onClick={() => { setValues(toFormValues(res.data)); setErrors({}); setSaveError(null); }}>
                 Reset
               </button>
-              <button type="submit" className="btn btn-primary" disabled={!dirty || saving}>
+              <button type="submit" className="btn btn-primary" disabled={!dirty || saving} aria-busy={saving || undefined}>
                 {saving && <Spinner size="xs" />} Save settings
               </button>
             </div>

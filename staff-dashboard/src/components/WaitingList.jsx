@@ -1,4 +1,6 @@
 // Waiting tokens in the order returned by the backend (priorityLevel DESC, issuedAt ASC — FR-13).
+import EmptyState from './EmptyState.jsx';
+import Icon from './Icon.jsx';
 import PriorityBadge from './PriorityBadge.jsx';
 import { formatClock, formatMinutes, minutesSince, priorityTone } from '../utils/format.js';
 
@@ -7,7 +9,7 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer,
   return (
     <section className="card" aria-labelledby="waiting-heading">
       <div className="card-head">
-        <h2 id="waiting-heading" className="section-title">
+        <h2 id="waiting-heading" className="card-title">
           Waiting
         </h2>
         <span className="count-pill" aria-label={`${list.length} patients waiting`}>
@@ -16,7 +18,9 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer,
       </div>
 
       {list.length === 0 ? (
-        <p className="empty">No patients are waiting.</p>
+        <EmptyState icon="checkCircle" title="Queue is clear">
+          No patients are waiting.
+        </EmptyState>
       ) : (
         <ol className="token-list" aria-label="Waiting patients in queue order">
           {list.map((t, index) => {
@@ -37,7 +41,7 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer,
                     <PriorityBadge level={t.priorityLevel} category={t.priorityCategory} />
                     {t.fromAppointment && <span className="chip">Appointment</span>}
                     {!operable && <span className="chip">Another doctor’s patient</span>}
-                    <span className="muted">
+                    <span className="token-meta">
                       Issued {formatClock(t.issuedAt)} · waiting {formatMinutes(waited)}
                       {t.estimateMinutes != null && <> · est. {formatMinutes(t.estimateMinutes)}</>}
                     </span>
@@ -46,7 +50,7 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer,
                 <div className="token-actions">
                   <button
                     type="button"
-                    className="btn btn--outline btn--sm"
+                    className="btn btn--ghost btn--sm"
                     onClick={() => onPriority(t)}
                     disabled={Boolean(busy) || !operable}
                     aria-label={`Change priority of ${t.displayNumber}`}
@@ -55,11 +59,12 @@ export default function WaitingList({ tokens, busy, now, onPriority, onTransfer,
                   </button>
                   <button
                     type="button"
-                    className="btn btn--outline btn--sm"
+                    className="btn btn--secondary btn--sm"
                     onClick={() => onTransfer(t)}
                     disabled={Boolean(busy) || !operable}
                     aria-label={`Transfer ${t.displayNumber}`}
                   >
+                    <Icon name="transfer" />
                     Transfer
                   </button>
                 </div>

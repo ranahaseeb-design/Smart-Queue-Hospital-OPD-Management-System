@@ -6,18 +6,18 @@ import { Link } from 'react-router-dom';
 import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
-import { Badge, Banner, Card, EmptyState, ErrorBanner, LastUpdated, Loading, PageHeader } from '../components/ui.jsx';
+import { Badge, Banner, Card, EmptyState, ErrorBanner, LastUpdated, PageHeader, PageSkeleton } from '../components/ui.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { fmtMinutes, fmtNum, fmtPercent, formatDate } from '../utils/format.js';
-import { AXIS_TICK, CHART, STATUS_COLORS } from '../utils/chartTheme.js';
+import { useChartTheme } from '../hooks/useChartTheme.js';
 
 function utilTone(u) {
   const n = Number(u);
   if (!Number.isFinite(n)) return 'neutral';
-  if (n >= 1) return 'critical';
+  if (n >= 1) return 'danger';
   if (n >= 0.85) return 'warning';
-  return 'good';
+  return 'success';
 }
 
 function RecommendationCard({ rec }) {
@@ -31,7 +31,7 @@ function RecommendationCard({ rec }) {
           <span className="muted small"> · {rec.branchName}</span>
         </div>
         {Number.isFinite(sessions) && sessions > 0 && (
-          <Badge tone={sessions >= 2 ? 'critical' : 'warning'}>
+          <Badge tone={sessions >= 2 ? 'danger' : 'warning'}>
             +{fmtNum(sessions, sessions % 1 ? 1 : 0)} session{sessions === 1 ? '' : 's'}
           </Badge>
         )}
@@ -51,6 +51,7 @@ function RecommendationCard({ rec }) {
 export default function WorkloadPage() {
   const { scopeQuery, branchName } = useScope();
   const res = useResource('/admin/recommendations', scopeQuery);
+  const chart = useChartTheme();
   const workload = Array.isArray(res.data?.workload) ? res.data.workload : [];
   const recommendations = Array.isArray(res.data?.recommendations) ? res.data.recommendations : [];
 
@@ -86,7 +87,7 @@ export default function WorkloadPage() {
         actions={(
           <>
             <LastUpdated at={res.updatedAt} refreshing={res.refreshing} />
-            <button type="button" className="btn btn-secondary" onClick={() => res.reload({ silent: true })} title="Refresh">
+            <button type="button" className="btn btn-secondary btn-icon" onClick={() => res.reload({ silent: true })} title="Refresh" aria-label="Refresh">
               <Icon name="refresh" size={16} />
             </button>
           </>
@@ -94,7 +95,7 @@ export default function WorkloadPage() {
       />
       <ErrorBanner error={res.error} onRetry={() => res.reload()} />
 
-      {res.loading && !res.data ? <Loading /> : (
+      {res.loading && !res.data ? <PageSkeleton text="Loading workload…" cards={2} /> : (
         <>
           <div className="grid-2">
             <Card title="Workload by branch" subtitle="Utilisation = demand ÷ scheduled capacity.">
@@ -105,13 +106,14 @@ export default function WorkloadPage() {
               {chartData.length === 0 ? <EmptyState title="No workload data" /> : (
                 <div className="chart-box" style={{ height: Math.max(200, chartData.length * 44 + 50) }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 32, bottom: 4, left: 8 }}>
-                      <CartesianGrid horizontal={false} stroke={CHART.grid} />
-                      <XAxis type="number" unit="%" tick={AXIS_TICK} stroke={CHART.axis} domain={[0, axisMax]} ticks={axisTicks} />
-                      <YAxis type="category" dataKey="name" width={130} tick={AXIS_TICK} stroke={CHART.axis} />
-                      <Tooltip cursor={{ fill: 'rgba(15, 110, 116, 0.06)' }} content={<ChartTooltip valueFormatter={(v) => `${fmtNum(v, 1)}%`} />} />
-                      <ReferenceLine x={100} stroke={STATUS_COLORS.CRITICAL} strokeDasharray="5 4" />
-                      <Bar dataKey="utilization" name="Utilisation" fill={CHART.series1} radius={[0, 4, 4, 0]} maxBarSize={24} />
+                    <BarChart data={chartData} layout="vertical" margin={{ top: 22, right: 32, bottom: 4, left: 8 }}>
+                      <CartesianGrid horizontal={false} stroke={chart.grid} />
+                      <XAxis type="number" unit="%" tick={chart.tick} stroke={chart.grid} tickLine={false} domain={[0, axisMax]} ticks={axisTicks} />
+                      <YAxis type="category" dataKey="name" width={130} tick={chart.tick} stroke={chart.grid} tickLine={false} />
+                      <Tooltip cursor={{ fill: chart.cursor }} content={<ChartTooltip valueFormatter={(v) => `${fmtNum(v, 1)}%`} />} />
+                      <ReferenceLine x={100} stroke={chart.reference} strokeDasharray="5 4"
+                        label={{ value: '100%', position: 'top', fill: chart.textMuted, fontSize: chart.fontSize }} />
+                      <Bar dataKey="utilization" name="Utilisation" fill={chart.series1} radius={[0, 4, 4, 0]} maxBarSize={24} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

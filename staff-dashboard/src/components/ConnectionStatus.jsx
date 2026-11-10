@@ -4,7 +4,7 @@ const TEXT = {
   disconnected: 'Offline · refreshing every 15 s',
 };
 
-/** Coloured dot showing the state of the real-time channel (FR-05). */
+/** Dot + word showing the state of the real-time channel (FR-05): Live, Connecting (reconnecting), Offline. */
 export default function ConnectionStatus({ status }) {
   const text = TEXT[status] || TEXT.connecting;
   return (

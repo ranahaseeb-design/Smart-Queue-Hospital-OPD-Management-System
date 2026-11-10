@@ -3,6 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { useServicePoints } from '../auth/ServicePointsContext.jsx';
 import { servicePointTypeLabel } from '../utils/format.js';
+import Icon from './Icon.jsx';
+import { BrandGlyph } from './Spinner.jsx';
+import ThemeToggle from './ThemeToggle.jsx';
 
 export default function AppHeader({ servicePoint = null }) {
   const { user, logout } = useAuth();
@@ -12,10 +15,13 @@ export default function AppHeader({ servicePoint = null }) {
 
   return (
     <header className="app-header">
+      <a href="#main" className="skip-link">
+        Skip to content
+      </a>
       <div className="app-header-inner">
         <Link to="/" className="brand" aria-label="Smart OPD Staff Dashboard home">
           <span className="brand-mark" aria-hidden="true">
-            +
+            <BrandGlyph />
           </span>
           <span className="brand-text">
             Smart OPD <span className="brand-sub">Staff</span>
@@ -36,11 +42,12 @@ export default function AppHeader({ servicePoint = null }) {
           {servicePoint && canSwitch && (
             <button
               type="button"
-              className="btn btn--ghost btn--sm"
+              className="btn btn--secondary btn--sm"
               onClick={() => navigate('/select')}
               aria-label="Switch to another service point"
             >
-              Switch point
+              <Icon name="swap" />
+              <span className="hide-sm">Switch point</span>
             </button>
           )}
           {user && (
@@ -51,8 +58,10 @@ export default function AppHeader({ servicePoint = null }) {
               <span className="header-user-name">{user.fullName}</span>
             </span>
           )}
-          <button type="button" className="btn btn--outline btn--sm" onClick={() => logout()} aria-label="Sign out">
-            Sign out
+          <ThemeToggle />
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => logout()} aria-label="Sign out">
+            <Icon name="logout" />
+            <span className="hide-sm">Sign out</span>
           </button>
         </div>
       </div>

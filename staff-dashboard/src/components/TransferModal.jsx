@@ -3,7 +3,8 @@
 // The backend marks the token TRANSFERRED and creates a new WAITING token (same visit, priority kept).
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import Modal from './Modal.jsx';
-import Spinner from './Spinner.jsx';
+import EmptyState from './EmptyState.jsx';
+import { ListSkeleton } from './Skeleton.jsx';
 import PriorityBadge from './PriorityBadge.jsx';
 import { api } from '../api.js';
 import { servicePointTypeLabel } from '../utils/format.js';
@@ -71,7 +72,7 @@ export default function TransferModal({ token, servicePointId, onClose, onDone }
       size="lg"
       footer={
         <>
-          <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="btn btn--secondary" onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button type="submit" form={formId} className="btn btn--primary" disabled={busy || !selected}>
@@ -88,16 +89,18 @@ export default function TransferModal({ token, servicePointId, onClose, onDone }
         {loadError && (
           <div className="inline-error" role="alert">
             <span>Could not load transfer targets: {loadError.message}</span>
-            <button type="button" className="btn btn--outline btn--sm" onClick={load}>
+            <button type="button" className="btn btn--secondary btn--sm" onClick={load}>
               Retry
             </button>
           </div>
         )}
 
-        {!loadError && targets === null && <Spinner label="Loading service points…" />}
+        {!loadError && targets === null && <ListSkeleton rows={3} label="Loading service points…" />}
 
         {Array.isArray(targets) && targets.length === 0 && (
-          <p className="empty">There are no other active service points in this branch.</p>
+          <EmptyState icon="door" title="Nowhere to transfer" compact>
+            There are no other active service points in this branch.
+          </EmptyState>
         )}
 
         {Array.isArray(targets) && targets.length > 0 && (

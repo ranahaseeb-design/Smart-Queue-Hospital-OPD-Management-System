@@ -4,16 +4,17 @@ import { Bar, BarChart, CartesianGrid, LabelList, ResponsiveContainer, Tooltip, 
 import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
-import { Card, EmptyState, ErrorBanner, KpiTile, LastUpdated, Loading, PageHeader, Stars } from '../components/ui.jsx';
+import { Card, EmptyState, ErrorBanner, KpiTile, LastUpdated, PageHeader, PageSkeleton, Stars } from '../components/ui.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { fmtNum, formatDate, formatDateTime } from '../utils/format.js';
-import { AXIS_TICK, CHART } from '../utils/chartTheme.js';
+import { useChartTheme } from '../hooks/useChartTheme.js';
 
 export default function FeedbackPage() {
   const { scopeQuery, branchName, branchId } = useScope();
   const res = useResource('/admin/feedback', scopeQuery);
   const [ratingFilter, setRatingFilter] = useState('');
+  const chart = useChartTheme();
 
   const summary = res.data?.summary || {};
   const items = useMemo(() => (Array.isArray(res.data?.items) ? res.data.items : []), [res.data]);
@@ -50,7 +51,7 @@ export default function FeedbackPage() {
         actions={(
           <>
             <LastUpdated at={res.updatedAt} refreshing={res.refreshing} />
-            <button type="button" className="btn btn-secondary" onClick={() => res.reload({ silent: true })} title="Refresh">
+            <button type="button" className="btn btn-secondary btn-icon" onClick={() => res.reload({ silent: true })} title="Refresh" aria-label="Refresh">
               <Icon name="refresh" size={16} />
             </button>
           </>
@@ -58,7 +59,7 @@ export default function FeedbackPage() {
       />
       <ErrorBanner error={res.error} onRetry={() => res.reload()} />
 
-      {res.loading && !res.data ? <Loading /> : res.data && (
+      {res.loading && !res.data ? <PageSkeleton text="Loading feedback…" kpis={4} /> : res.data && (
         <>
           <div className="kpi-grid kpi-grid-4">
             <KpiTile
@@ -70,7 +71,7 @@ export default function FeedbackPage() {
               hint={count ? <Stars value={summary.average} /> : 'No feedback yet'}
             />
             <KpiTile label="Responses" value={fmtNum(count)} icon="feedback" hint={`${fmtNum(withComments)} of ${fmtNum(items.length)} listed have a comment`} />
-            <KpiTile label="Positive (4–5★)" value={count ? `${Math.round((positive / count) * 100)}%` : '—'} icon="check" tone="good" hint={`${fmtNum(positive)} responses`} />
+            <KpiTile label="Positive (4–5★)" value={count ? `${Math.round((positive / count) * 100)}%` : '—'} icon="check" tone="success" hint={`${fmtNum(positive)} responses`} />
             <KpiTile label="Negative (1–2★)" value={count ? `${Math.round((negative / count) * 100)}%` : '—'} icon="alert"
               tone={count && negative / count > 0.2 ? 'warning' : 'default'} hint={`${fmtNum(negative)} responses`} />
           </div>
@@ -78,18 +79,18 @@ export default function FeedbackPage() {
           <div className="grid-side-main">
             <Card title="Rating distribution">
               {count === 0 ? <EmptyState title="No ratings yet" /> : (
-                <div className="chart-box" style={{ height: 240 }}>
+                <div className="chart-box chart-h-sm">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 0 }}>
-                      <CartesianGrid horizontal={false} stroke={CHART.grid} />
-                      <XAxis type="number" allowDecimals={false} tick={AXIS_TICK} stroke={CHART.axis} />
-                      <YAxis type="category" dataKey="name" width={40} tick={AXIS_TICK} stroke={CHART.axis} />
+                      <CartesianGrid horizontal={false} stroke={chart.grid} />
+                      <XAxis type="number" allowDecimals={false} tick={chart.tick} stroke={chart.grid} tickLine={false} />
+                      <YAxis type="category" dataKey="name" width={40} tick={chart.tick} stroke={chart.grid} tickLine={false} />
                       <Tooltip
-                        cursor={{ fill: 'rgba(15, 110, 116, 0.06)' }}
+                        cursor={{ fill: chart.cursor }}
                         content={<ChartTooltip valueFormatter={(v, k, row) => `${fmtNum(v)} (${row?.share ?? 0}%)`} />}
                       />
-                      <Bar dataKey="count" name="Responses" fill={CHART.series1} radius={[0, 4, 4, 0]} maxBarSize={26}>
-                        <LabelList dataKey="share" position="right" formatter={(v) => `${v}%`} fill={CHART.inkSecondary} fontSize={12} />
+                      <Bar dataKey="count" name="Responses" fill={chart.series1} radius={[0, 4, 4, 0]} maxBarSize={26}>
+                        <LabelList dataKey="share" position="right" formatter={(v) => `${v}%`} fill={chart.textMuted} fontSize={chart.fontSize} />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>

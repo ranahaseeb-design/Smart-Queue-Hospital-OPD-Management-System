@@ -12,7 +12,9 @@ import NowServingCard from '../components/NowServingCard.jsx';
 import PriorityModal from '../components/PriorityModal.jsx';
 import RecentlyCompletedList from '../components/RecentlyCompletedList.jsx';
 import SkippedList from '../components/SkippedList.jsx';
-import Spinner from '../components/Spinner.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import Icon from '../components/Icon.jsx';
+import { QueueSkeleton } from '../components/Skeleton.jsx';
 import SummaryTiles from '../components/SummaryTiles.jsx';
 import TransferModal from '../components/TransferModal.jsx';
 import WaitingList from '../components/WaitingList.jsx';
@@ -40,7 +42,7 @@ export default function QueuePage() {
     return (
       <div className="app-shell">
         <AppHeader />
-        <main className="page page--narrow">
+        <main id="main" className="page page--narrow">
           <NotAssignedNotice />
         </main>
       </div>
@@ -54,6 +56,9 @@ export default function QueuePage() {
 function NotAssignedNotice() {
   return (
     <div className="card notice-card notice-card--error" role="alert">
+      <span className="empty-state-icon empty-state-icon--danger" aria-hidden="true">
+        <Icon name="alert" />
+      </span>
       <h1 className="page-title">Not your service point</h1>
       <p>You are not assigned to this service point, so its queue cannot be shown.</p>
       <Link to="/select" className="btn btn--primary">
@@ -189,11 +194,11 @@ function QueueScreen({ servicePointId, pointInfo }) {
   return (
     <div className="app-shell">
       <AppHeader servicePoint={servicePoint.name ? servicePoint : null} />
-      <main className="page" aria-busy={loading && !data ? 'true' : undefined}>
-        <div className="queue-toolbar">
+      <main id="main" className="page" aria-busy={loading && !data ? 'true' : undefined}>
+        <div className="page-header queue-toolbar">
           <div className="queue-heading">
             <h1 className="page-title">My queue</h1>
-            <p className="muted">
+            <p className="page-subtitle">
               {[servicePoint.name, doctorName, servicePointTypeLabel(servicePoint.type), servicePoint.branchName]
                 .filter(Boolean)
                 .join(' · ')}
@@ -202,17 +207,18 @@ function QueueScreen({ servicePointId, pointInfo }) {
           <div className="toolbar-right">
             <ConnectionStatus status={connection} />
             {lastUpdated && (
-              <span className="muted small" aria-live="off">
+              <span className="toolbar-updated" aria-live="off">
                 Updated {formatInstantClock(lastUpdated)}
               </span>
             )}
             <button
               type="button"
-              className="btn btn--ghost btn--sm"
+              className="btn btn--secondary btn--sm"
               onClick={() => refresh()}
               disabled={Boolean(busy)}
               aria-label="Refresh queue now"
             >
+              <Icon name="refresh" />
               Refresh
             </button>
           </div>
@@ -223,23 +229,27 @@ function QueueScreen({ servicePointId, pointInfo }) {
         ) : !data ? (
           error ? (
             <div className="card notice-card notice-card--error" role="alert">
-              <h2 className="section-title">Could not load the queue</h2>
+              <span className="empty-state-icon empty-state-icon--danger" aria-hidden="true">
+                <Icon name="alert" />
+              </span>
+              <h2 className="card-title">Could not load the queue</h2>
               <p>{error.message}</p>
               <button type="button" className="btn btn--primary" onClick={() => refresh()}>
                 Try again
               </button>
             </div>
           ) : (
-            <Spinner label="Loading queue…" />
+            <QueueSkeleton />
           )
         ) : (
           <>
             {error && (
               <div className="banner banner--warning" role="alert">
-                <span>
+                <Icon name="alert" />
+                <span className="banner-text">
                   Could not refresh the queue ({error.message}). Showing the last known state.
                 </span>
-                <button type="button" className="btn btn--outline btn--sm" onClick={() => refresh()}>
+                <button type="button" className="btn btn--secondary btn--sm" onClick={() => refresh()}>
                   Retry
                 </button>
               </div>
@@ -251,6 +261,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   token={nowServing}
                   canIssueLinked={linkedAllowed}
                   servicePointType={servicePoint.type}
+                  roomName={servicePoint.name}
                   waitingCount={waiting.length}
                   busy={busy}
                   now={now}
@@ -261,6 +272,9 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   onTransfer={() => setDialog({ kind: 'transfer', token: nowServing })}
                   onIssueLinked={() => setDialog({ kind: 'linked', token: nowServing })}
                 />
+              </div>
+              <div className="queue-side">
+                <SummaryTiles summary={summary} servicePointType={servicePoint.type} />
                 <WaitingList
                   tokens={waiting}
                   busy={busy}
@@ -269,9 +283,6 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   onTransfer={(t) => setDialog({ kind: 'transfer', token: t })}
                   canOperate={canOperate}
                 />
-              </div>
-              <aside className="queue-side" aria-label="Summary and skipped tokens">
-                <SummaryTiles summary={summary} servicePointType={servicePoint.type} />
                 <SkippedList
                   tokens={skipped}
                   busy={busy}
@@ -287,7 +298,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   canIssueLinked={linkedAllowed}
                   onIssueLinked={(t) => setDialog({ kind: 'linked', token: t })}
                 />
-              </aside>
+              </div>
             </div>
           </>
         )}
@@ -298,7 +309,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
           title={`Skip ${dialog.token.displayNumber}?`}
           message={`Mark ${dialog.token.patientName || 'this patient'} as missed. The token moves to the Skipped list and can be recalled later if the patient arrives.`}
           confirmLabel="Skip patient"
-          tone="warning"
+          tone="danger"
           busy={busy === 'skip'}
           onConfirm={() => skip(dialog.token)}
           onCancel={closeDialog}

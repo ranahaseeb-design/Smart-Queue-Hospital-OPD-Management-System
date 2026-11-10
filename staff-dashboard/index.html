@@ -3,9 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f766e" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#0e6b6b" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Smart OPD · Staff Dashboard</title>
+    <script>
+      // Apply the saved theme before React renders (no flash of the wrong theme). Keep in sync with ThemeToggle.jsx.
+      (function () {
+        try {
+          var t = localStorage.getItem('smartopd.theme');
+          if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+        } catch (e) {
+          /* storage unavailable: follow the OS */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

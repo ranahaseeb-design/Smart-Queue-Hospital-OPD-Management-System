@@ -1,10 +1,9 @@
 // Landing route after sign-in: opens the only / remembered service point, otherwise the picker.
 import { Navigate } from 'react-router-dom';
 import AppHeader from '../components/AppHeader.jsx';
-import Spinner from '../components/Spinner.jsx';
 import { useServicePoints } from '../auth/ServicePointsContext.jsx';
 import { pickInitialServicePoint } from '../utils/servicePoints.js';
-import { NoAssignments, PointsLoadError } from './SelectServicePointPage.jsx';
+import { NoAssignments, PointsLoadError, PointsSkeleton } from './SelectServicePointPage.jsx';
 
 export default function StartPage() {
   const { points, loaded, error, reload, rememberedId } = useServicePoints();
@@ -13,8 +12,8 @@ export default function StartPage() {
     return (
       <div className="app-shell">
         <AppHeader />
-        <main className="page page--narrow">
-          {error ? <PointsLoadError error={error} onRetry={reload} /> : <Spinner label="Loading your service points…" />}
+        <main id="main" className="page page--narrow">
+          {error ? <PointsLoadError error={error} onRetry={reload} /> : <PointsSkeleton />}
         </main>
       </div>
     );
@@ -24,7 +23,7 @@ export default function StartPage() {
     return (
       <div className="app-shell">
         <AppHeader />
-        <main className="page page--narrow">
+        <main id="main" className="page page--narrow">
           <NoAssignments onRetry={reload} />
         </main>
       </div>

@@ -9,7 +9,7 @@ import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
 import {
-  Badge, Banner, Card, CongestionBadge, EmptyState, ErrorBanner, KpiTile, LastUpdated, Loading, PageHeader, Spinner,
+  Badge, Banner, Card, CongestionBadge, EmptyState, ErrorBanner, KpiTile, LastUpdated, PageHeader, PageSkeleton, Segmented, Spinner,
 } from '../components/ui.jsx';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -20,7 +20,8 @@ import { useDepartments } from '../hooks/useLookups.js';
 import { addDays, fmtNum, fmtPercent, formatDate, formatHour, today } from '../utils/format.js';
 import { aggregateForecastByHour } from '../utils/forecast.js';
 import { DEFAULT_THRESHOLDS } from '../utils/settings.js';
-import { AXIS_TICK, CHART, congestionColor } from '../utils/chartTheme.js';
+import { congestionColor, peakRanges } from '../utils/chartTheme.js';
+import { useChartTheme } from '../hooks/useChartTheme.js';
 
 function sourceLabel(src) {
   if (!src) return '—';
@@ -36,6 +37,7 @@ export default function ForecastsPage() {
   const [departmentId, setDepartmentId] = useState('');
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState(null);
+  const chart = useChartTheme();
 
   const departments = useDepartments(scopeQuery);
   const settings = useResource('/admin/settings');
@@ -58,6 +60,7 @@ export default function ForecastsPage() {
     : `All departments — ${branchName}`;
 
   const peakHours = points.filter((p) => p.isPeak);
+  const peakBands = useMemo(() => peakRanges(points), [points]);
   const totalArrivals = points.reduce((s, p) => s + p.expectedArrivals, 0);
   const worst = points.reduce((w, p) => (p.congestionRatio !== null && (!w || p.congestionRatio > w.congestionRatio) ? p : w), null);
   const sources = [...new Set(rows.map((r) => r.source).filter(Boolean))];
@@ -92,7 +95,7 @@ export default function ForecastsPage() {
     { key: 'capacity', label: 'Capacity', align: 'right', render: (r) => fmtNum(r.capacity, 1) },
     { key: 'congestionRatio', label: 'Load', align: 'right', render: (r) => fmtPercent(r.congestionRatio) },
     { key: 'congestionLevel', label: 'Congestion', render: (r) => <CongestionBadge level={r.congestionLevel} /> },
-    { key: 'isPeak', label: 'Peak', render: (r) => (r.isPeak ? <Badge tone="critical" icon="alert">Peak</Badge> : <span className="muted">—</span>) },
+    { key: 'isPeak', label: 'Peak', render: (r) => (r.isPeak ? <Badge tone="warning" icon="alert">Peak</Badge> : <span className="muted">—</span>) },
     { key: 'source', label: 'Source', render: (r) => <span className="muted small">{sourceLabel(r.source)}</span> },
   ];
 
@@ -105,7 +108,7 @@ export default function ForecastsPage() {
           <>
             <LastUpdated at={forecasts.updatedAt} refreshing={forecasts.refreshing} />
             {canRun && (
-              <button type="button" className="btn btn-primary" onClick={runForecast} disabled={running}>
+              <button type="button" className="btn btn-primary" onClick={runForecast} disabled={running} aria-busy={running || undefined}>
                 {running ? <Spinner size="xs" /> : <Icon name="play" size={14} />} {running ? 'Running…' : 'Run forecast now'}
               </button>
             )}
@@ -120,10 +123,18 @@ export default function ForecastsPage() {
             <input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
           </label>
           <div className="preset-btns" role="group" aria-label="Date shortcuts">
-            <button type="button" className={`btn btn-sm ${date === today() ? 'btn-secondary' : 'btn-ghost'}`} onClick={() => setDate(today())}>Today</button>
-            <button type="button" className={`btn btn-sm ${date === addDays(today(), 1) ? 'btn-secondary' : 'btn-ghost'}`} onClick={() => setDate(addDays(today(), 1))}>Tomorrow</button>
-            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setDate(addDays(date, -1))} aria-label="Previous day">‹</button>
-            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setDate(addDays(date, 1))} aria-label="Next day">›</button>
+            <button type="button" className="btn btn-secondary btn-icon" onClick={() => setDate(addDays(date, -1))} aria-label="Previous day" title="Previous day">
+              <Icon name="chevronLeft" size={16} />
+            </button>
+            <Segmented
+              label="Date shortcut"
+              value={date === today() ? 'today' : date === addDays(today(), 1) ? 'tomorrow' : ''}
+              onChange={(v) => setDate(v === 'today' ? today() : addDays(today(), 1))}
+              options={[{ value: 'today', label: 'Today' }, { value: 'tomorrow', label: 'Tomorrow' }]}
+            />
+            <button type="button" className="btn btn-secondary btn-icon" onClick={() => setDate(addDays(date, 1))} aria-label="Next day" title="Next day">
+              <Icon name="chevronRight" size={16} />
+            </button>
           </div>
           <label className="inline-field grow">
             <span>Department</span>
@@ -149,7 +160,7 @@ export default function ForecastsPage() {
 
       <ErrorBanner error={forecasts.error} onRetry={() => forecasts.reload()} title="Could not load forecasts" />
 
-      {forecasts.loading && !forecasts.data ? <Loading text="Loading forecasts…" /> : points.length === 0 ? (
+      {forecasts.loading && !forecasts.data ? <PageSkeleton text="Loading forecasts…" kpis={4} chart /> : points.length === 0 ? (
         !forecasts.error && (
           <Card>
             <EmptyState icon="forecast" title={`No forecast for ${formatDate(date)}`}>
@@ -173,7 +184,7 @@ export default function ForecastsPage() {
               label="Highest load"
               value={worst ? fmtPercent(worst.congestionRatio) : '—'}
               icon="workload"
-              tone={worst?.congestionLevel === 'CRITICAL' ? 'critical' : worst?.congestionLevel === 'HIGH' ? 'warning' : 'default'}
+              tone={worst?.congestionLevel === 'CRITICAL' ? 'danger' : worst?.congestionLevel === 'HIGH' ? 'warning' : 'default'}
               hint={worst ? <>at {worst.hour} <CongestionBadge level={worst.congestionLevel} /></> : undefined}
             />
             <KpiTile label="Source" value={sources.length === 1 && sources[0] === 'baseline' ? 'Baseline' : sources.length ? 'AI model' : '—'}
@@ -184,17 +195,28 @@ export default function ForecastsPage() {
             title={`Expected arrivals vs. capacity per hour — ${scopeLabel}`}
             subtitle={`Patients per hour. Bars are coloured by congestion level (HIGH ≥ ${fmtPercent(thresholds.high)}, CRITICAL ≥ ${fmtPercent(thresholds.critical)} of capacity); shaded hours are forecast peaks.`}
           >
-            <div className="chart-box" style={{ height: 340 }}>
+            <div className="chart-box chart-h-lg">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={points} margin={{ top: 12, right: 16, bottom: 4, left: 0 }}>
-                  <CartesianGrid vertical={false} stroke={CHART.grid} />
-                  {peakHours.map((p) => (
-                    <ReferenceArea key={p.hour} x1={p.hour} x2={p.hour} fill={CHART.peakBand} strokeOpacity={0} ifOverflow="extendDomain" />
+                  <CartesianGrid vertical={false} stroke={chart.grid} />
+                  {peakBands.map((b) => (
+                    <ReferenceArea
+                      key={b.x1}
+                      x1={b.x1}
+                      x2={b.x2}
+                      fill={chart.peakBand}
+                      fillOpacity={1}
+                      stroke={chart.high}
+                      strokeOpacity={0.5}
+                      strokeDasharray="3 3"
+                      ifOverflow="extendDomain"
+                      label={{ value: 'Peak', position: 'insideTop', fill: chart.peakText, fontSize: chart.fontSize, fontWeight: 600 }}
+                    />
                   ))}
-                  <XAxis dataKey="hour" tick={AXIS_TICK} stroke={CHART.axis} />
-                  <YAxis tick={AXIS_TICK} stroke={CHART.axis} width={44} allowDecimals={false} />
+                  <XAxis dataKey="hour" tick={chart.tick} stroke={chart.grid} tickLine={false} />
+                  <YAxis tick={chart.tick} stroke={chart.grid} tickLine={false} axisLine={false} width={44} allowDecimals={false} />
                   <Tooltip
-                    cursor={{ fill: 'rgba(15, 110, 116, 0.06)' }}
+                    cursor={{ fill: chart.cursor }}
                     content={(
                       <ChartTooltip
                         valueFormatter={(v) => fmtNum(v, 1)}
@@ -212,25 +234,24 @@ export default function ForecastsPage() {
                     height={28}
                     iconSize={10}
                     payload={[
-                      { value: 'Expected arrivals (colour = congestion)', type: 'square', color: CHART.series1, id: 'a' },
-                      { value: 'Scheduled capacity', type: 'line', color: CHART.ink, id: 'c' },
+                      { value: 'Expected arrivals (colour = congestion)', type: 'square', color: chart.series1, id: 'a' },
+                      { value: 'Scheduled capacity', type: 'line', color: chart.reference, id: 'c' },
                     ]}
-                    wrapperStyle={{ fontSize: 12 }}
-                    formatter={(v) => <span style={{ color: CHART.inkSecondary }}>{v}</span>}
+                    formatter={(v) => <span className="chart-legend-text">{v}</span>}
                   />
-                  <Bar dataKey="expectedArrivals" name="Expected arrivals" radius={[4, 4, 0, 0]} maxBarSize={36} fill={CHART.series1}>
+                  <Bar dataKey="expectedArrivals" name="Expected arrivals" radius={[4, 4, 0, 0]} maxBarSize={36} fill={chart.series1}>
                     {points.map((p) => (
-                      <Cell key={p.hour} fill={congestionColor(p.congestionLevel)} stroke={p.isPeak ? CHART.ink : 'none'} strokeWidth={p.isPeak ? 1.5 : 0} />
+                      <Cell key={p.hour} fill={congestionColor(chart, p.congestionLevel)} />
                     ))}
                   </Bar>
-                  <Line dataKey="capacity" name="Capacity" type="step" stroke={CHART.ink} strokeWidth={2} strokeDasharray="6 4" dot={false} activeDot={{ r: 4 }} />
+                  <Line dataKey="capacity" name="Capacity" type="step" stroke={chart.reference} strokeWidth={2} strokeDasharray="6 4" dot={false} activeDot={{ r: 4, fill: chart.reference, stroke: chart.surface }} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
             <div className="legend-row" aria-label="Congestion legend">
-              <span><i className="legend-swatch" style={{ background: congestionColor('NORMAL') }} /> Normal</span>
-              <span><i className="legend-swatch" style={{ background: congestionColor('HIGH') }} /> High</span>
-              <span><i className="legend-swatch" style={{ background: congestionColor('CRITICAL') }} /> Critical</span>
+              <span><i className="legend-swatch swatch-normal" /> Normal</span>
+              <span><i className="legend-swatch swatch-high" /> High</span>
+              <span><i className="legend-swatch swatch-critical" /> Critical</span>
               <span><i className="legend-swatch legend-peak" /> Peak hour</span>
             </div>
           </Card>

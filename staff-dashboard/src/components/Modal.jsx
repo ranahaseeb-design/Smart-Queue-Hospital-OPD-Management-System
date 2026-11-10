@@ -2,6 +2,7 @@
 // and focus returns to the opener when it closes.
 import { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import Icon from './Icon.jsx';
 
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -68,18 +69,26 @@ export default function Modal({ title, description, onClose, children, footer, b
         tabIndex={-1}
       >
         <header className="modal-header">
-          <h2 id={titleId} className="modal-title">
-            {title}
-          </h2>
-          <button type="button" className="icon-btn" onClick={onClose} disabled={busy} aria-label="Close dialog">
-            ×
+          <div className="modal-heading">
+            <h2 id={titleId} className="modal-title">
+              {title}
+            </h2>
+            {description && (
+              <p id={descId} className="modal-description">
+                {description}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            className="btn btn--ghost btn--icon btn--sm"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Close dialog"
+          >
+            <Icon name="x" />
           </button>
         </header>
-        {description && (
-          <p id={descId} className="modal-description">
-            {description}
-          </p>
-        )}
         <div className="modal-body">{children}</div>
         {footer && <footer className="modal-footer">{footer}</footer>}
       </div>

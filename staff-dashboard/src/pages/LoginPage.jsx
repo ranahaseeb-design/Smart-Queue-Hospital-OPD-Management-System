@@ -3,6 +3,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
+import Icon from '../components/Icon.jsx';
+import { BrandGlyph } from '../components/Spinner.jsx';
+import ThemeToggle from '../components/ThemeToggle.jsx';
 
 export default function LoginPage() {
   const { token, user, login, notice, clearNotice } = useAuth();
@@ -52,10 +55,13 @@ export default function LoginPage() {
 
   return (
     <main className="login-page">
+      <div className="login-theme">
+        <ThemeToggle />
+      </div>
       <div className="login-card">
         <div className="login-brand">
           <span className="brand-mark brand-mark--lg" aria-hidden="true">
-            +
+            <BrandGlyph />
           </span>
           <div>
             <h1 className="login-title">Smart OPD</h1>
@@ -101,11 +107,12 @@ export default function LoginPage() {
               />
               <button
                 type="button"
-                className="btn btn--ghost btn--sm"
+                className="btn btn--ghost btn--sm input-addon"
                 onClick={() => setShowPassword((v) => !v)}
                 aria-pressed={showPassword}
                 aria-label={showPassword ? 'Hide password' : 'Show password'}
               >
+                <Icon name={showPassword ? 'eyeOff' : 'eye'} />
                 {showPassword ? 'Hide' : 'Show'}
               </button>
             </div>
@@ -113,16 +120,18 @@ export default function LoginPage() {
 
           {message && (
             <p id={errorId} className={error ? 'form-error' : 'form-notice'} role={error ? 'alert' : 'status'}>
+              <Icon name={error ? 'alert' : 'info'} />
               {message}
             </p>
           )}
 
           <button type="submit" className="btn btn--primary btn--lg btn--block" disabled={busy}>
+            {busy && <span className="btn-spinner" aria-hidden="true" />}
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
 
-        <p className="login-footnote muted">
+        <p className="login-footnote">
           Administrators use the Admin Dashboard. Patients use the Smart OPD mobile app.
         </p>
       </div>

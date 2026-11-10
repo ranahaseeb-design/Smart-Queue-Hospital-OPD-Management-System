@@ -11,7 +11,7 @@ export const SERVICE_POINT_TYPES = [
   { value: 'PHARMACY', label: 'Pharmacy counter' },
 ];
 
-const TYPE_TONE = { OPD: 'info', LAB: 'violet', PHARMACY: 'teal' };
+const TYPE_TONE = { OPD: 'info', LAB: 'primary', PHARMACY: 'success' };
 
 export function ServicePointType({ type }) {
   return <Badge tone={TYPE_TONE[type] || 'neutral'}>{type}</Badge>;

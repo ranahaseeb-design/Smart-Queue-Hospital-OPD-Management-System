@@ -1,9 +1,10 @@
 // Lightweight toast notifications for success / error / warning feedback.
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { errorMessage } from '../api/client.js';
+import Icon from '../components/Icon.jsx';
 
 const ToastContext = createContext(null);
-const ICONS = { success: '✓', error: '!', warning: '▲', info: 'i' };
+const ICONS = { success: 'check', error: 'alert', warning: 'alert', info: 'info' };
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
@@ -35,12 +36,14 @@ export function ToastProvider({ children }) {
       <div className="toast-stack" role="region" aria-label="Notifications" aria-live="polite">
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast-${t.type}`} role={t.type === 'error' ? 'alert' : 'status'}>
-            <span className="toast-icon" aria-hidden="true">{ICONS[t.type]}</span>
+            <span className="toast-icon" aria-hidden="true"><Icon name={ICONS[t.type]} size={18} /></span>
             <div className="toast-body">
               {t.title && <strong className="toast-title">{t.title}</strong>}
               <span>{t.message}</span>
             </div>
-            <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => dismiss(t.id)}>×</button>
+            <button type="button" className="btn btn-ghost btn-icon btn-sm toast-close" aria-label="Dismiss notification" onClick={() => dismiss(t.id)}>
+              <Icon name="close" size={16} />
+            </button>
           </div>
         ))}
       </div>

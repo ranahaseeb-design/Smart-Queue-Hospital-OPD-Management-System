@@ -19,7 +19,7 @@ export default function ConfirmDialog({
       size="sm"
       footer={
         <>
-          <button type="button" className="btn btn--ghost" onClick={onCancel} disabled={busy}>
+          <button type="button" className="btn btn--secondary" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </button>
           <button type="button" className={`btn btn--${tone}`} onClick={onConfirm} disabled={busy} data-autofocus>

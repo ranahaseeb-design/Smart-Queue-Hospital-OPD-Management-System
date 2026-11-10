@@ -8,15 +8,15 @@ import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
 import { ConfirmDialog } from '../components/Modal.jsx';
-import { Badge, Banner, Card, EmptyState, LastUpdated, Loading, PageHeader, Spinner } from '../components/ui.jsx';
+import { Badge, Banner, Card, EmptyState, LastUpdated, PageHeader, PageSkeleton, Spinner } from '../components/ui.jsx';
 import { api, ApiError, errorMessage } from '../api/client.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { fmtNum, formatDateTime } from '../utils/format.js';
-import { AXIS_TICK, CHART } from '../utils/chartTheme.js';
+import { useChartTheme } from '../hooks/useChartTheme.js';
 import { fmtShare, improvementVsBaseline } from '../utils/models.js';
 
-const STATUS_TONE = { ACTIVE: 'good', CANDIDATE: 'info', REJECTED: 'critical', RETIRED: 'muted' };
+const STATUS_TONE = { ACTIVE: 'success', CANDIDATE: 'info', REJECTED: 'danger', RETIRED: 'neutral' };
 
 /** '32.7% lower' when the model's MAE beats the baseline, '4.0% higher' otherwise. */
 function improvementText(imp) {
@@ -72,6 +72,7 @@ function MetricsList({ metrics }) {
 export default function ModelsPage() {
   const toast = useToast();
   const models = useResource('/admin/models');
+  const chart = useChartTheme();
   const [retraining, setRetraining] = useState(false);
   const [retrainResult, setRetrainResult] = useState(null);
   const [actionError, setActionError] = useState(null);
@@ -130,7 +131,7 @@ export default function ModelsPage() {
       render: (m) => (
         <div className="cell-stack">
           <strong className="mono">{m.version}</strong>
-          {m.isActive && <Badge tone="good" icon="check">Active</Badge>}
+          {m.isActive && <Badge tone="success" icon="check">Active</Badge>}
         </div>
       ),
     },
@@ -176,10 +177,10 @@ export default function ModelsPage() {
         actions={(
           <>
             <LastUpdated at={models.updatedAt} refreshing={models.refreshing} />
-            <button type="button" className="btn btn-secondary" onClick={() => models.reload({ silent: true })} title="Refresh">
+            <button type="button" className="btn btn-secondary btn-icon" onClick={() => models.reload({ silent: true })} title="Refresh" aria-label="Refresh">
               <Icon name="refresh" size={16} />
             </button>
-            <button type="button" className="btn btn-primary" onClick={retrain} disabled={retraining}>
+            <button type="button" className="btn btn-primary" onClick={retrain} disabled={retraining} aria-busy={retraining || undefined}>
               {retraining ? <Spinner size="xs" /> : <Icon name="play" size={14} />} {retraining ? 'Training…' : 'Retrain model'}
             </button>
           </>
@@ -215,10 +216,10 @@ export default function ModelsPage() {
           title={`Training result — ${retrainResult.version || 'new version'}`}
           actions={(
             <span className="badge-row">
-              <Badge tone={retrainResult.accepted ? 'good' : 'critical'} icon={retrainResult.accepted ? 'check' : 'alert'}>
+              <Badge tone={retrainResult.accepted ? 'success' : 'danger'} icon={retrainResult.accepted ? 'check' : 'alert'}>
                 {retrainResult.accepted ? 'Accepted' : 'Rejected'}
               </Badge>
-              {retrainResult.activated && <Badge tone="good">Activated</Badge>}
+              {retrainResult.activated && <Badge tone="success">Activated</Badge>}
             </span>
           )}
         >
@@ -245,7 +246,7 @@ export default function ModelsPage() {
         </Card>
       )}
 
-      {models.loading && !models.data ? <Loading text="Loading model versions…" /> : !models.error && (
+      {models.loading && !models.data ? <PageSkeleton text="Loading model versions…" chart /> : !models.error && (
         <>
           {active ? (
             <Card title={`Active model — ${active.version}`} subtitle={`Trained ${formatDateTime(active.trainedAt)} on ${fmtNum(active.trainingRows)} rows (${active.dataSource}).`}>
@@ -259,17 +260,17 @@ export default function ModelsPage() {
 
           {chartData.length > 0 && (
             <Card title="MAE: model vs. baseline" subtitle="Lower is better. Mean absolute error in minutes on each version's test period.">
-              <div className="chart-box" style={{ height: 260 }}>
+              <div className="chart-box chart-h-md">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 8, right: 16, bottom: 4, left: 0 }} barGap={2}>
-                    <CartesianGrid vertical={false} stroke={CHART.grid} />
-                    <XAxis dataKey="name" tick={AXIS_TICK} stroke={CHART.axis} />
-                    <YAxis tick={AXIS_TICK} stroke={CHART.axis} width={44} unit=" m" />
-                    <Tooltip cursor={{ fill: 'rgba(15, 110, 116, 0.06)' }} content={<ChartTooltip valueFormatter={(v) => `${fmtNum(v, 2)} min`} />} />
-                    <Legend verticalAlign="top" height={28} iconSize={10} wrapperStyle={{ fontSize: 12 }}
-                      formatter={(v) => <span style={{ color: CHART.inkSecondary }}>{v}</span>} />
-                    <Bar dataKey="model" name="Model MAE" fill={CHART.series1} radius={[4, 4, 0, 0]} maxBarSize={28} />
-                    <Bar dataKey="baseline" name="Baseline MAE" fill={CHART.series2} radius={[4, 4, 0, 0]} maxBarSize={28} />
+                    <CartesianGrid vertical={false} stroke={chart.grid} />
+                    <XAxis dataKey="name" tick={chart.tick} stroke={chart.grid} tickLine={false} />
+                    <YAxis tick={chart.tick} stroke={chart.grid} tickLine={false} width={44} unit=" m" />
+                    <Tooltip cursor={{ fill: chart.cursor }} content={<ChartTooltip valueFormatter={(v) => `${fmtNum(v, 2)} min`} />} />
+                    <Legend verticalAlign="top" height={28} iconSize={10}
+                      formatter={(v) => <span className="chart-legend-text">{v}</span>} />
+                    <Bar dataKey="model" name="Model MAE" fill={chart.series1} radius={[4, 4, 0, 0]} maxBarSize={28} />
+                    <Bar dataKey="baseline" name="Baseline MAE" fill={chart.series2} radius={[4, 4, 0, 0]} maxBarSize={28} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

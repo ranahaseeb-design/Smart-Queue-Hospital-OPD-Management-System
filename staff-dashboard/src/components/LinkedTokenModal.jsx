@@ -64,7 +64,7 @@ export default function LinkedTokenModal({ token, servicePointId, onClose, onDon
       busy={busy}
       footer={
         <>
-          <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="btn btn--secondary" onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button type="submit" form={formId} className="btn btn--primary" disabled={busy}>

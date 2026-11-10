@@ -1,8 +1,10 @@
 // Generic table with client-side search, column sorting and paging.
 // Column: { key, label, render?(row), sortValue?(row), searchValue?(row), align?, sortable?, className? }
+// Loading shows skeleton rows and an empty result shows the empty state inside the table, so the
+// header (and the column layout) stays in place.
 import { useEffect, useMemo, useState } from 'react';
 import Icon from './Icon.jsx';
-import { EmptyState, Loading } from './ui.jsx';
+import { EmptyState, Skeleton } from './ui.jsx';
 
 function defaultValue(row, col) {
   if (col.sortValue) return col.sortValue(row);
@@ -10,6 +12,7 @@ function defaultValue(row, col) {
 }
 
 const isBlank = (v) => v === null || v === undefined || v === '';
+const SKELETON_WIDTHS = [80, 60, 40, 100, 60];
 
 /** Compares two present (non-blank) values; blanks are handled by the caller. */
 function compare(a, b) {
@@ -18,6 +21,8 @@ function compare(a, b) {
   if (typeof a === 'boolean' || typeof b === 'boolean') return Number(b) - Number(a);
   return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
 }
+
+const alignClass = (c) => (c.align ? `align-${c.align}` : '');
 
 export default function DataTable({
   columns,
@@ -78,6 +83,44 @@ export default function DataTable({
   };
 
   const hasRows = Array.isArray(rows) && rows.length > 0;
+  const showSkeleton = loading && !hasRows;
+  const colSpan = columns.length + (actions ? 1 : 0);
+
+  let body;
+  if (showSkeleton) {
+    body = Array.from({ length: 5 }, (_, i) => (
+      <tr key={`sk-${i}`} className="row-skeleton" aria-hidden="true">
+        {columns.map((c, j) => (
+          <td key={c.key} className={alignClass(c)}><Skeleton w={SKELETON_WIDTHS[(i + j) % 5]} /></td>
+        ))}
+        {actions && <td className="align-right col-actions"><Skeleton w={60} /></td>}
+      </tr>
+    ));
+  } else if (sorted.length === 0) {
+    body = (
+      <tr className="row-empty">
+        <td colSpan={colSpan}>
+          <EmptyState icon={query ? 'search' : 'inbox'} title={query ? 'No matching records' : emptyTitle}>
+            {query ? `Nothing matches "${query}".` : emptyText}
+          </EmptyState>
+        </td>
+      </tr>
+    );
+  } else {
+    body = visible.map((row, i) => (
+      <tr
+        key={typeof rowKey === 'function' ? rowKey(row, i) : (row?.[rowKey] ?? i)}
+        className={rowClassName ? rowClassName(row) : undefined}
+      >
+        {columns.map((c) => (
+          <td key={c.key} className={`${alignClass(c)} ${c.className || ''}`} data-label={c.label}>
+            {c.render ? c.render(row) : (row?.[c.key] ?? '—')}
+          </td>
+        ))}
+        {actions && <td className="align-right col-actions" data-label="Actions"><div className="row-actions">{actions(row)}</div></td>}
+      </tr>
+    ));
+  }
 
   return (
     <div className="table-wrap">
@@ -99,69 +142,54 @@ export default function DataTable({
         </div>
       )}
 
-      {loading && !hasRows ? (
-        <Loading />
-      ) : sorted.length === 0 ? (
-        <EmptyState title={query ? 'No matching records' : emptyTitle}>
-          {query ? `Nothing matches "${query}".` : emptyText}
-        </EmptyState>
-      ) : (
-        <div className="table-scroll">
-          <table className={`table ${dense ? 'table-dense' : ''}`}>
-            {caption && <caption className="sr-only">{caption}</caption>}
-            <thead>
-              <tr>
-                {columns.map((c) => {
-                  const active = sort?.key === c.key;
-                  const sortable = c.sortable !== false;
-                  return (
-                    <th
-                      key={c.key}
-                      className={`${c.align ? `align-${c.align}` : ''} ${sortable ? 'sortable' : ''}`}
-                      aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
-                      scope="col"
-                    >
-                      {sortable ? (
-                        <button type="button" className="th-btn" onClick={() => toggleSort(c)}>
-                          {c.label}
-                          <span className={`sort-ind ${active ? 'on' : ''}`} aria-hidden="true">
-                            {active ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}
-                          </span>
-                        </button>
-                      ) : c.label}
-                    </th>
-                  );
-                })}
-                {actions && <th className="align-right col-actions" scope="col">Actions</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((row, i) => (
-                <tr
-                  key={typeof rowKey === 'function' ? rowKey(row, i) : (row?.[rowKey] ?? i)}
-                  className={rowClassName ? rowClassName(row) : undefined}
-                >
-                  {columns.map((c) => (
-                    <td key={c.key} className={`${c.align ? `align-${c.align}` : ''} ${c.className || ''}`} data-label={c.label}>
-                      {c.render ? c.render(row) : (row?.[c.key] ?? '—')}
-                    </td>
-                  ))}
-                  {actions && <td className="align-right col-actions" data-label="Actions"><div className="row-actions">{actions(row)}</div></td>}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <div className="table-scroll">
+        <table className={`table ${dense ? 'table-dense' : ''}`} aria-busy={showSkeleton ? 'true' : undefined}>
+          {caption && <caption className="sr-only">{caption}</caption>}
+          <thead>
+            <tr>
+              {columns.map((c) => {
+                const active = sort?.key === c.key;
+                const sortable = c.sortable !== false;
+                return (
+                  <th
+                    key={c.key}
+                    className={`${alignClass(c)} ${sortable ? 'sortable' : ''}`}
+                    aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+                    scope="col"
+                  >
+                    {sortable ? (
+                      <button type="button" className={`th-btn ${active ? 'on' : ''}`} onClick={() => toggleSort(c)}>
+                        {c.label}
+                        <Icon
+                          name={active && sort.dir === 'asc' ? 'chevronUp' : 'chevronDown'}
+                          size={12}
+                          className={`sort-ind ${active ? 'on' : ''}`}
+                        />
+                      </button>
+                    ) : c.label}
+                  </th>
+                );
+              })}
+              {actions && <th className="align-right col-actions" scope="col">Actions</th>}
+            </tr>
+          </thead>
+          <tbody>{body}</tbody>
+        </table>
+      </div>
+      {showSkeleton && <span className="sr-only" role="status">Loading…</span>}
 
       {pageSize && sorted.length > pageSize && (
         <div className="pager">
-          <span className="muted small">
+          <span className="pager-info">
             {page * pageSize + 1}–{Math.min(sorted.length, (page + 1) * pageSize)} of {sorted.length}
           </span>
           <div className="pager-btns">
-            <button type="button" className="btn btn-sm btn-secondary" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Previous</button>
-            <button type="button" className="btn btn-sm btn-secondary" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>Next</button>
+            <button type="button" className="btn btn-sm btn-secondary" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+              <Icon name="chevronLeft" size={14} /> Previous
+            </button>
+            <button type="button" className="btn btn-sm btn-secondary" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>
+              Next <Icon name="chevronRight" size={14} />
+            </button>
           </div>
         </div>
       )}

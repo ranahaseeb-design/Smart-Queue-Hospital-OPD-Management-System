@@ -7,17 +7,25 @@ import {
 import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
-import { Banner, Card, EmptyState, ErrorBanner, Loading, PageHeader, Spinner } from '../components/ui.jsx';
+import { Banner, Card, EmptyState, ErrorBanner, PageHeader, PageSkeleton, Segmented, Spinner } from '../components/ui.jsx';
 import { api } from '../api/client.js';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { addDays, fmtNum, today } from '../utils/format.js';
 import { categoryLabel, chartCategoryColumns, numericColumns, REPORT_TYPES } from '../utils/reports.js';
-import { AXIS_TICK, CHART } from '../utils/chartTheme.js';
+import { useChartTheme } from '../hooks/useChartTheme.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CHART_ROWS = 31;
+// Short labels for the report-type segmented control (full titles stay in REPORT_TYPES).
+const SHORT_LABELS = {
+  'doctor-consult': 'Consultation time',
+  'department-traffic': 'Department traffic',
+  'branch-utilization': 'Branch utilisation',
+  'waiting-times': 'Waiting times',
+  feedback: 'Feedback',
+};
 
 function formatCell(v) {
   if (v === null || v === undefined || v === '') return '—';
@@ -31,6 +39,7 @@ function ReportChart({ report }) {
   // Category axis: first text column, extended (e.g. branch + department) until labels are unique.
   const categoryCols = useMemo(() => chartCategoryColumns(report.columns, report.rows), [report]);
   const [metricKey, setMetricKey] = useState('');
+  const chart = useChartTheme();
   const metric = metrics.find((m) => m.key === metricKey) || metrics[0];
 
   if (!metric || !categoryCols.length || !report.rows?.length) return null;
@@ -71,21 +80,21 @@ function ReportChart({ report }) {
         <ResponsiveContainer width="100%" height="100%">
           {isTimeSeries ? (
             <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
-              <CartesianGrid vertical={false} stroke={CHART.grid} />
-              <XAxis dataKey="name" tick={AXIS_TICK} stroke={CHART.axis} minTickGap={16} />
-              <YAxis tick={AXIS_TICK} stroke={CHART.axis} width={48} />
+              <CartesianGrid vertical={false} stroke={chart.grid} />
+              <XAxis dataKey="name" tick={chart.tick} stroke={chart.grid} tickLine={false} minTickGap={16} />
+              <YAxis tick={chart.tick} stroke={chart.grid} tickLine={false} width={48} />
               <Tooltip content={<ChartTooltip valueFormatter={(v) => fmtNum(v, Number.isInteger(v) ? 0 : 2)} />} />
-              <Line type="monotone" dataKey="value" name={metric.label} stroke={CHART.series1} strokeWidth={2}
-                dot={data.length <= 31 ? { r: 3 } : false} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="value" name={metric.label} stroke={chart.series1} strokeWidth={2}
+                dot={data.length <= 31 ? { r: 3, fill: chart.series1, stroke: chart.surface } : false} activeDot={{ r: 5, stroke: chart.surface }} />
             </LineChart>
           ) : (
             <BarChart data={data} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 8 }}>
-              <CartesianGrid horizontal={false} stroke={CHART.grid} />
-              <XAxis type="number" tick={AXIS_TICK} stroke={CHART.axis} />
-              <YAxis type="category" dataKey="name" interval={0} width={categoryWidth} tick={AXIS_TICK} stroke={CHART.axis} />
-              <Tooltip cursor={{ fill: 'rgba(15, 110, 116, 0.06)' }}
+              <CartesianGrid horizontal={false} stroke={chart.grid} />
+              <XAxis type="number" tick={chart.tick} stroke={chart.grid} tickLine={false} />
+              <YAxis type="category" dataKey="name" interval={0} width={categoryWidth} tick={chart.tick} stroke={chart.grid} tickLine={false} />
+              <Tooltip cursor={{ fill: chart.cursor }}
                 content={<ChartTooltip valueFormatter={(v) => fmtNum(v, Number.isInteger(v) ? 0 : 2)} />} />
-              <Bar dataKey="value" name={metric.label} fill={CHART.series1} radius={[0, 4, 4, 0]} maxBarSize={22} />
+              <Bar dataKey="value" name={metric.label} fill={chart.series1} radius={[0, 4, 4, 0]} maxBarSize={22} />
             </BarChart>
           )}
         </ResponsiveContainer>
@@ -155,16 +164,24 @@ export default function ReportsPage() {
       <PageHeader
         title="Reports"
         subtitle={`Historical analytics — ${branchName}. Export any report as CSV.`}
+        actions={(
+          <button type="button" className="btn btn-secondary" onClick={exportCsv} disabled={exporting} aria-busy={exporting || undefined}>
+            {exporting ? <Spinner size="xs" /> : <Icon name="download" size={16} />} Export CSV
+          </button>
+        )}
       />
 
       <Card>
         <form className="filter-bar" onSubmit={run}>
-          <label className="inline-field grow">
-            <span>Report</span>
-            <select value={draft.type} onChange={(e) => setDraft((d) => ({ ...d, type: e.target.value }))}>
-              {REPORT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-            </select>
-          </label>
+          <div className="inline-field filter-full">
+            <span id="report-type-label">Report type</span>
+            <Segmented
+              label="Report type"
+              value={draft.type}
+              onChange={(v) => setDraft((d) => ({ ...d, type: v }))}
+              options={REPORT_TYPES.map((t) => ({ value: t.value, label: SHORT_LABELS[t.value] || t.label, title: t.label }))}
+            />
+          </div>
           <label className="inline-field">
             <span>From</span>
             <input type="date" value={draft.from} max={draft.to || undefined} onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))} />
@@ -179,11 +196,8 @@ export default function ReportsPage() {
             <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPreset(90)}>90 days</button>
           </div>
           <div className="filter-actions">
-            <button type="submit" className="btn btn-primary" disabled={report.loading}>
+            <button type="submit" className="btn btn-primary" disabled={report.loading} aria-busy={report.loading || undefined}>
               {report.loading ? <Spinner size="xs" /> : <Icon name="play" size={14} />} Generate
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={exportCsv} disabled={exporting}>
-              {exporting ? <Spinner size="xs" /> : <Icon name="download" size={16} />} Export CSV
             </button>
           </div>
         </form>
@@ -192,7 +206,7 @@ export default function ReportsPage() {
 
       <ErrorBanner error={report.error} onRetry={() => report.reload()} title="Could not generate the report" />
 
-      {report.loading && !data ? <Loading text="Generating report…" /> : data && (
+      {report.loading && !data ? <PageSkeleton text="Generating report…" chart /> : data && (
         <>
           <ReportChart key={`${params.type}-${params.from}-${params.to}-${data.rows.length}`} report={data} />
           <Card

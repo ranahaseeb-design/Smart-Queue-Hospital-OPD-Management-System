@@ -5,6 +5,7 @@ import { Banner, Spinner } from '../components/ui.jsx';
 import { errorMessage } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { safeReturnPath } from '../utils/navigation.js';
+import ThemeToggle from '../components/ThemeToggle.jsx';
 
 // Development-only shortcuts using the seed accounts from docs/API_CONTRACT.md.
 // `import.meta.env.DEV` is false in production builds, so these are removed from the bundle.
@@ -47,9 +48,14 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="login-panel">
+      <ThemeToggle className="login-theme" />
+      <main className="login-panel">
         <div className="login-brand">
-          <span className="brand-mark brand-mark-lg" aria-hidden="true">+</span>
+          <span className="brand-mark brand-mark-lg" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </span>
           <div>
             <h1>Smart OPD</h1>
             <p>Admin Dashboard</p>
@@ -88,7 +94,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </div>
-          <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+          <button type="submit" className="btn btn-primary btn-lg btn-block" disabled={busy} aria-busy={busy || undefined}>
             {busy && <Spinner size="xs" />} Sign in
           </button>
         </form>
@@ -111,7 +117,7 @@ export default function LoginPage() {
         <p className="muted small login-foot">
           Doctors and OPD, lab or pharmacy staff use the Staff Dashboard. Patients use the mobile app.
         </p>
-      </div>
+      </main>
       <div className="login-side" aria-hidden="true">
         <div className="login-side-inner">
           <h2>Live OPD monitoring, forecasting and resource planning</h2>

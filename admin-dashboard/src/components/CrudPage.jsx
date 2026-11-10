@@ -184,7 +184,7 @@ export default function CrudPage({
           <>
             <LastUpdated at={list.updatedAt} refreshing={list.refreshing} />
             {headerActions}
-            <button type="button" className="btn btn-secondary" onClick={() => list.reload({ silent: true })} title="Refresh">
+            <button type="button" className="btn btn-secondary btn-icon" onClick={() => list.reload({ silent: true })} title="Refresh" aria-label="Refresh">
               <Icon name="refresh" size={16} />
             </button>
             {canCreate && (
@@ -239,7 +239,7 @@ export default function CrudPage({
         footer={(
           <>
             <button type="button" className="btn btn-secondary" onClick={closeForm} disabled={saving}>Cancel</button>
-            <button type="submit" form="crud-form" className="btn btn-primary" disabled={saving}>
+            <button type="submit" form="crud-form" className="btn btn-primary" disabled={saving} aria-busy={saving || undefined}>
               {saving && <Spinner size="xs" />} {form?.mode === 'create' ? 'Create' : 'Save changes'}
             </button>
           </>
