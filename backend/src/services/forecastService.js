@@ -183,8 +183,9 @@ async function runForecasts(db, { now = time.clock.now(), days = 7, preferAi = t
 }
 
 function toForecast(r) {
-  const expected = r.expected_arrivals === null ? null : Number(r.expected_arrivals);
-  const capacity = r.capacity === null ? null : Number(r.capacity);
+  // == null: documents written by the AI service may omit an unknown value instead of storing null.
+  const expected = r.expected_arrivals == null ? null : Number(r.expected_arrivals);
+  const capacity = r.capacity == null ? null : Number(r.capacity);
   return {
     id: r.forecast_id,
     branchId: r.branch_id,

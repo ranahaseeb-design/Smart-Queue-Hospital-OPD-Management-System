@@ -9,7 +9,9 @@
 const mongoose = require('mongoose');
 const config = require('../config');
 
-mongoose.set('strictQuery', true);
+// Filters are passed to the server as written: a mistyped field then matches nothing instead of
+// being stripped from the filter (strictQuery: true would silently widen the query).
+mongoose.set('strictQuery', false);
 // Indexes are created explicitly (syncIndexes in db:init / seed / tests), never lazily on first use.
 mongoose.set('autoIndex', false);
 mongoose.set('autoCreate', false);

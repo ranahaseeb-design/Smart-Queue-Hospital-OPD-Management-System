@@ -12,7 +12,6 @@ const { configureEnv, freshDatabase } = require('./helpers');
 let server;
 let baseUrl;
 let time;
-let dbName; // unique test database (dropped in after())
 const sockets = [];
 const tokens = {};
 
@@ -75,7 +74,7 @@ function arrives(socket, event, ms = 600) {
 }
 
 before(async () => {
-  dbName = configureEnv('socket');
+  configureEnv('socket'); // unique test database, dropped in after()
   time = require('../src/utils/time');
   const now = new Date();
   time.clock.set(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 10, 0, 0));
