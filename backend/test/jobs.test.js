@@ -30,17 +30,15 @@ test('nightly maintenance closes the previous day: NO_SHOW tokens with events, C
   assert.equal(result.appointments, 1);
   assert.ok(result.visits >= 5);
 
-  const rows = await ctx.db.query(`SELECT status FROM tokens WHERE token_date = ?`, [today]);
+  const { Token, QueueEvent, Visit, Appointment } = ctx.models;
+  const rows = await Token.find({ token_date: today }).lean();
   assert.ok(rows.every((r) => r.status === 'NO_SHOW'));
-  const events = await ctx.db.query(
-    `SELECT e.note FROM queue_events e JOIN tokens t ON t.token_id = e.token_id WHERE t.token_date = ? AND e.event_type = 'NO_SHOW'`,
-    [today]
-  );
+  const events = await QueueEvent.find({ token_id: { $in: rows.map((r) => r._id) }, event_type: 'NO_SHOW' }).lean();
   assert.equal(events.length, 5);
   assert.ok(events.every((e) => e.note === 'End-of-day closure'));
-  const open = await ctx.db.get(`SELECT COUNT(*) AS n FROM visits WHERE status = 'OPEN'`, []);
-  assert.equal(open.n, 0);
-  const a = await ctx.db.get('SELECT status FROM appointments WHERE appointment_id = ?', [appt.body.id]);
+  const open = await Visit.countDocuments({ status: 'OPEN' });
+  assert.equal(open, 0);
+  const a = await Appointment.findById(appt.body.id).lean();
   assert.equal(a.status, 'NO_SHOW');
   // running it again is harmless
   const again = await jobs.runDailyMaintenance(ctx.db);
@@ -64,24 +62,25 @@ test('transfer moves the appointment to the new token; end of day auto-completes
   const target = targets.body.find((t) => t.type === 'OPD' && t.doctorId);
   const moved = await ctx.api.post(`/tokens/${checked.body.id}/transfer`, doctorToken, { toServicePointId: target.servicePointId });
   assert.equal(moved.status, 200);
-  const linkOf = async (id) => (await ctx.db.get('SELECT appointment_id FROM tokens WHERE token_id = ?', [id])).appointment_id;
+  const { Token, QueueEvent, Appointment } = ctx.models;
+  const linkOf = async (id) => (await Token.findById(id).lean()).appointment_id;
   assert.equal(await linkOf(checked.body.id), null);
   assert.equal(await linkOf(moved.body.to.id), appt.body.id);
   const list = (await ctx.api.get('/appointments', patient.token)).body;
   assert.equal(list.find((a) => a.id === appt.body.id).tokenId, moved.body.to.id);
 
   // Staff started the consultation but never completed it.
-  await ctx.db.run(`UPDATE tokens SET status = 'IN_SERVICE', called_at = ? WHERE token_id = ?`, [ctx.time.nowDb(), moved.body.to.id]);
+  await Token.updateOne({ _id: moved.body.to.id }, { $set: { status: 'IN_SERVICE', called_at: ctx.time.nowDb() } });
   const next = ctx.time.parseDate(ctx.time.addDaysStr(day, 1));
   ctx.time.clock.set(new Date(next.getFullYear(), next.getMonth(), next.getDate(), 0, 5, 0));
   const result = await jobs.runDailyMaintenance(ctx.db);
   assert.equal(result.autoCompleted, 1);
-  const tok = await ctx.db.get('SELECT status, completed_at FROM tokens WHERE token_id = ?', [moved.body.to.id]);
+  const tok = await Token.findById(moved.body.to.id).lean();
   assert.equal(tok.status, 'COMPLETED');
-  assert.equal(tok.completed_at, ctx.time.nowDb());
-  const ev = await ctx.db.get(`SELECT note FROM queue_events WHERE token_id = ? AND event_type = 'COMPLETED'`, [moved.body.to.id]);
+  assert.equal(tok.completed_at.getTime(), ctx.time.nowDb().getTime());
+  const ev = await QueueEvent.findOne({ token_id: moved.body.to.id, event_type: 'COMPLETED' }).lean();
   assert.equal(ev.note, 'auto-closed at end of day');
-  const a = await ctx.db.get('SELECT status FROM appointments WHERE appointment_id = ?', [appt.body.id]);
+  const a = await Appointment.findById(appt.body.id).lean();
   assert.equal(a.status, 'COMPLETED');
 });
 
@@ -89,11 +88,12 @@ test('forecast refresh falls back to the baseline and writes the next 7 days', a
   const result = await jobs.runForecastRefresh(ctx.db);
   assert.equal(result.source, 'baseline');
   assert.ok(result.generated > 0);
-  const range = await ctx.db.get('SELECT MIN(forecast_hour) AS a, MAX(forecast_hour) AS b FROM forecasts WHERE generated_at = ?', [
-    ctx.time.nowDb(),
-  ]);
-  assert.ok(range.a >= `${ctx.time.today()} 00:00:00`);
-  assert.ok(range.b < `${ctx.time.addDaysStr(ctx.time.today(), 7)} 01:00:00`);
+  const { Forecast } = ctx.models;
+  const generated = { generated_at: ctx.time.nowDb() };
+  const first = await Forecast.findOne(generated).sort({ forecast_hour: 1 }).lean();
+  const last = await Forecast.findOne(generated).sort({ forecast_hour: -1 }).lean();
+  assert.ok(first.forecast_hour >= ctx.time.dayStart(ctx.time.today()));
+  assert.ok(last.forecast_hour < ctx.time.combine(ctx.time.addDaysStr(ctx.time.today(), 7), '01:00:00'));
 });
 
 test('the scheduler starts and stops cleanly', async () => {

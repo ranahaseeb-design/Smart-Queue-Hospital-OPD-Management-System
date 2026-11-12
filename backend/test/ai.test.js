@@ -129,12 +129,12 @@ test('token estimates come from the active model with the contract feature keys 
     'session_started', 'minutes_to_start', 'hour_of_day', 'day_of_week', 'appointments_ahead', 'department_load',
     'doctor_id', 'department_id', 'branch_id',
   ]);
-  const row = await ctx.db.get('SELECT * FROM wait_predictions WHERE token_id = ? ORDER BY prediction_id LIMIT 1', [res.body.id]);
+  const row = await ctx.models.WaitPrediction.findOne({ token_id: res.body.id }).sort({ _id: 1 }).lean();
   assert.equal(row.model_version, 'rf-test');
   assert.equal(row.predicted_minutes, 42.4);
-  assert.deepEqual(JSON.parse(row.features_json), item.features);
+  assert.deepEqual(row.features, item.features);
 
-  const dept = await ctx.db.get('SELECT department_id FROM doctors WHERE doctor_id = ?', [doctorId]);
+  const dept = await ctx.models.Doctor.findById(doctorId).lean();
   const doctors = await ctx.api.get(`/departments/${dept.department_id}/doctors`, p.token);
   assert.equal(doctors.body[0].estimatedWaitMinutes, 42);
 });
@@ -218,8 +218,13 @@ test('a token mismatch is a 503 (not a client error) and health reports the AI a
 
 test('a busy AI forecast job is a 409 and the baseline does not run over it', async () => {
   const admin = await ctx.login('admin');
-  const before = await ctx.db.get(`SELECT COUNT(*) AS n FROM forecasts WHERE source = 'baseline'`);
-  const stamp = await ctx.db.get('SELECT MAX(generated_at) AS g FROM forecasts');
+  const { Forecast } = ctx.models;
+  const lastGenerated = async () => {
+    const top = await Forecast.findOne({}).sort({ generated_at: -1 }).lean();
+    return top ? top.generated_at.getTime() : null;
+  };
+  const before = await Forecast.countDocuments({ source: 'baseline' });
+  const stamp = await lastGenerated();
   fake.forecastBusy = true;
   try {
     const res = await ctx.api.post('/admin/forecasts/run', admin);
@@ -228,9 +233,9 @@ test('a busy AI forecast job is a 409 and the baseline does not run over it', as
   } finally {
     fake.forecastBusy = false;
   }
-  const after = await ctx.db.get(`SELECT COUNT(*) AS n FROM forecasts WHERE source = 'baseline'`);
-  assert.equal(Number(after.n), Number(before.n));
-  assert.equal((await ctx.db.get('SELECT MAX(generated_at) AS g FROM forecasts')).g, stamp.g);
+  const after = await Forecast.countDocuments({ source: 'baseline' });
+  assert.equal(after, before);
+  assert.equal(await lastGenerated(), stamp);
   // The live prediction path is unaffected (no breaker opened by the job call).
   assert.equal(require('../src/services/aiClient').breakerOpen(), false);
 });
@@ -256,9 +261,9 @@ test('AI service down: baseline predictions, JS ranking, baseline forecast, 503 
   const res = await ctx.api.post('/tokens', p.token, { doctorId });
   assert.equal(res.status, 201);
   assert.equal(res.body.estimate.modelVersion, 'baseline');
-  const row = await ctx.db.get('SELECT model_version, features_json FROM wait_predictions WHERE token_id = ? ORDER BY prediction_id LIMIT 1', [res.body.id]);
+  const row = await ctx.models.WaitPrediction.findOne({ token_id: res.body.id }).sort({ _id: 1 }).lean();
   assert.equal(row.model_version, 'baseline');
-  const f = JSON.parse(row.features_json);
+  const f = row.features;
   assert.equal(
     Math.round(res.body.estimate.minutes),
     Math.round(f.patients_ahead * f.doctor_avg_consult + f.minutes_to_start)
@@ -293,13 +298,12 @@ test('Eq. 6.2 baseline does not double-count priority tokens already in patients
 test('the JS baseline forecast replaces today from 00:00, like the AI job (no mixed sources today)', async () => {
   const forecastService = require('../src/services/forecastService');
   const today = ctx.time.today();
-  await ctx.db.run(`UPDATE forecasts SET source = 'rf-forecast' WHERE forecast_hour >= ?`, [`${today} 00:00:00`]);
+  const { Forecast } = ctx.models;
+  const midnight = ctx.time.dayStart(today);
+  await Forecast.updateMany({ forecast_hour: { $gte: midnight } }, { $set: { source: 'rf-forecast' } });
   await forecastService.runBaselineForecast(ctx.db, { now: ctx.time.clock.now() });
-  const mixed = await ctx.db.get(
-    `SELECT COUNT(*) AS n FROM forecasts WHERE forecast_hour >= ? AND source <> 'baseline'`,
-    [`${today} 00:00:00`]
-  );
-  assert.equal(Number(mixed.n), 0);
-  const first = await ctx.db.get('SELECT MIN(forecast_hour) AS h FROM forecasts WHERE forecast_hour >= ?', [`${today} 00:00:00`]);
-  assert.ok(String(first.h).startsWith(today));
+  const mixed = await Forecast.countDocuments({ forecast_hour: { $gte: midnight }, source: { $ne: 'baseline' } });
+  assert.equal(mixed, 0);
+  const first = await Forecast.findOne({ forecast_hour: { $gte: midnight } }).sort({ forecast_hour: 1 }).lean();
+  assert.ok(ctx.time.formatDate(first.forecast_hour) === today);
 });

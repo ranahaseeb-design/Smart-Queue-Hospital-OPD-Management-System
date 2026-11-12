@@ -28,7 +28,7 @@ before(async () => {
   d3 = await doctor('doctor3');
   assert.notEqual(d1.room.id, d2.room.id);
   // doctor1 also works in doctor2's room (explicit assignment, e.g. a shared room).
-  await ctx.db.run('INSERT INTO staff_assignments (user_id, service_point_id) VALUES (?, ?)', [d1.userId, d2.room.id]);
+  await ctx.dbLayer.insertOne(ctx.db, ctx.models.StaffAssignment, { user_id: d1.userId, service_point_id: d2.room.id });
 });
 after(async () => {
   await ctx.close();
@@ -92,11 +92,15 @@ test("schedule-derived room access only applies on the schedule's weekday", asyn
   const today = ctx.time.isoDow(ctx.time.clock.now());
   const otherDay = (today % 7) + 1;
   // doctor3 is scheduled in doctor2's room, but on another weekday: no access today.
-  const { insertId } = await ctx.db.run(
-    `INSERT INTO doctor_schedules (doctor_id, service_point_id, day_of_week, start_time, end_time, max_patients)
-     VALUES (?, ?, ?, '07:00:00', '08:00:00', NULL)`,
-    [d3.doctorId, d2.room.id, otherDay]
-  );
+  const { DoctorSchedule } = ctx.models;
+  const insertId = await ctx.dbLayer.insertOne(ctx.db, DoctorSchedule, {
+    doctor_id: d3.doctorId,
+    service_point_id: d2.room.id,
+    day_of_week: otherDay,
+    start_time: '07:00:00',
+    end_time: '08:00:00',
+    max_patients: null,
+  });
   assert.equal((await ctx.api.get(`/service-points/${d2.room.id}/queue`, d3.token)).status, 403);
   assert.equal((await ctx.api.post(`/service-points/${d2.room.id}/call-next`, d3.token)).status, 403);
   let list = (await ctx.api.get('/staff/service-points', d3.token)).body;
@@ -104,11 +108,11 @@ test("schedule-derived room access only applies on the schedule's weekday", asyn
   assert.ok(list.some((s) => s.id === d3.room.id), 'own room (assignment) still listed');
 
   // The same schedule on today's weekday grants access.
-  await ctx.db.run('UPDATE doctor_schedules SET day_of_week = ? WHERE schedule_id = ?', [today, insertId]);
+  await DoctorSchedule.updateOne({ _id: insertId }, { $set: { day_of_week: today } });
   assert.equal((await ctx.api.get(`/service-points/${d2.room.id}/queue`, d3.token)).status, 200);
   list = (await ctx.api.get('/staff/service-points', d3.token)).body;
   assert.ok(list.some((s) => s.id === d2.room.id));
-  await ctx.db.run('DELETE FROM doctor_schedules WHERE schedule_id = ?', [insertId]);
+  await DoctorSchedule.deleteOne({ _id: insertId });
 });
 
 test('lab staff are unaffected by doctor scoping', async () => {
