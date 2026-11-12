@@ -1,26 +1,26 @@
 'use strict';
 /** Browse module (FR-02): branches, specialties, departments and doctors with live queue length. */
 const { createRouter, notFound } = require('../utils/errors');
-const { getDb } = require('../db');
+const { getDb, models, sess } = require('../db');
 const v = require('../utils/validate');
 const time = require('../utils/time');
 const scheduleService = require('../services/scheduleService');
 const predictionService = require('../services/predictionService');
 const queueService = require('../services/queueService');
+const { activeDoctorIds } = require('../services/recommendationService');
+
+const { Branch, Department } = models;
 
 const router = createRouter();
 
+// GET /branches (ACTIVE only for patients)
 router.get('/branches', async (req, res) => {
   const db = getDb();
   const patientOnly = req.user.role === 'PATIENT';
-  const rows = await db.query(
-    `SELECT branch_id, name, address, latitude, longitude, status FROM branches
-      ${patientOnly ? "WHERE status = 'ACTIVE'" : ''} ORDER BY branch_id`,
-    []
-  );
+  const rows = await Branch.find(patientOnly ? { status: 'ACTIVE' } : {}).sort({ _id: 1 }).session(sess(db)).lean();
   res.json(
     rows.map((b) => ({
-      id: b.branch_id,
+      id: b._id,
       name: b.name,
       address: b.address,
       latitude: Number(b.latitude),
@@ -30,57 +30,50 @@ router.get('/branches', async (req, res) => {
   );
 });
 
+// GET /specialties — distinct specialties of active departments in active branches
 router.get('/specialties', async (req, res) => {
-  const rows = await getDb().query(
-    `SELECT DISTINCT dp.specialty FROM departments dp JOIN branches b ON b.branch_id = dp.branch_id
-      WHERE dp.is_active = 1 AND b.status = 'ACTIVE' ORDER BY dp.specialty`,
-    []
+  const db = getDb();
+  const activeBranchIds = await Branch.distinct('_id', { status: 'ACTIVE' }).session(sess(db));
+  const specialties = await Department.distinct('specialty', { is_active: true, branch_id: { $in: activeBranchIds } }).session(
+    sess(db)
   );
-  res.json(rows.map((r) => r.specialty));
+  res.json(specialties.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
 });
 
+// GET /branches/:id/departments
 router.get('/branches/:id/departments', async (req, res) => {
   const db = getDb();
   const branchId = v.id(req.params.id);
-  const branch = await db.get('SELECT branch_id, status FROM branches WHERE branch_id = ?', [branchId]);
+  const branch = await Branch.findById(branchId, { status: 1 }).session(sess(db)).lean();
   if (!branch || (req.user.role === 'PATIENT' && branch.status !== 'ACTIVE')) throw notFound('Branch not found');
-  const rows = await db.query(
-    `SELECT dp.department_id, dp.branch_id, dp.specialty, dp.name,
-            (SELECT COUNT(*) FROM doctors d JOIN users u ON u.user_id = d.user_id
-              WHERE d.department_id = dp.department_id AND d.is_active = 1 AND u.is_active = 1) AS doctor_count
-       FROM departments dp WHERE dp.branch_id = ? AND dp.is_active = 1 ORDER BY dp.specialty`,
-    [branchId]
-  );
-  res.json(
-    rows.map((d) => ({
-      id: d.department_id,
+  const rows = await Department.find({ branch_id: branchId, is_active: true }).sort({ specialty: 1, _id: 1 }).session(sess(db)).lean();
+  const out = [];
+  for (const d of rows) {
+    out.push({
+      id: d._id,
       branchId: d.branch_id,
       specialty: d.specialty,
       name: d.name,
-      doctorCount: Number(d.doctor_count) || 0,
-    }))
-  );
+      doctorCount: (await activeDoctorIds(db, d._id)).length,
+    });
+  }
+  res.json(out);
 });
 
+// GET /departments/:id/doctors?date=YYYY-MM-DD
 router.get('/departments/:id/doctors', async (req, res) => {
   const db = getDb();
   const departmentId = v.id(req.params.id);
   const now = time.clock.now();
   const date = v.date(req.query.date, 'date') || time.formatDate(now);
-  const dept = await db.get(
-    `SELECT dp.department_id, dp.is_active, b.status FROM departments dp JOIN branches b ON b.branch_id = dp.branch_id
-      WHERE dp.department_id = ?`,
-    [departmentId]
-  );
-  if (!dept || !dept.is_active || dept.status !== 'ACTIVE') throw notFound('Department not found');
-  const ids = await db.query(
-    `SELECT d.doctor_id FROM doctors d JOIN users u ON u.user_id = d.user_id
-      WHERE d.department_id = ? AND d.is_active = 1 AND u.is_active = 1 ORDER BY d.doctor_id`,
-    [departmentId]
-  );
+  const dept = await Department.findById(departmentId, { is_active: 1, branch_id: 1 }).session(sess(db)).lean();
+  const branch = dept ? await Branch.findById(dept.branch_id, { status: 1 }).session(sess(db)).lean() : null;
+  if (!dept || !branch || !dept.is_active || branch.status !== 'ACTIVE') throw notFound('Department not found');
+  const ids = await activeDoctorIds(db, departmentId);
   const doctors = [];
-  for (const { doctor_id: id } of ids) {
+  for (const id of ids) {
     const doctor = await scheduleService.getDoctor(db, id);
+    if (!doctor) continue;
     const avail = await scheduleService.availability(db, doctor, date, now);
     doctors.push({ doctor, avail });
   }

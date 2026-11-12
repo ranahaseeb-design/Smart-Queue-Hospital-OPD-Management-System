@@ -5,7 +5,10 @@
  * linked tokens on a visit (FR-04).
  */
 const { createRouter, badRequest, conflict, forbidden, notFound, isUniqueViolation } = require('../utils/errors');
-const { getDb } = require('../db');
+const { getDb, models, sess, byIds, insertOne } = require('../db');
+const scheduleService = require('../services/scheduleService');
+
+const { Visit, Branch, Token, ServicePoint, Feedback } = models;
 const v = require('../utils/validate');
 const time = require('../utils/time');
 const fb = require('../services/featureBuilder');
@@ -61,23 +64,29 @@ router.post('/appointments/:id/check-in', patientOnly, async (req, res) => {
 // ---- Visits & feedback (FR-19, FR-20) ----
 router.get('/visits', patientOnly, async (req, res) => {
   const db = getDb();
-  const visits = await db.query(
-    `SELECT v.visit_id, v.visit_date, v.status, v.branch_id, b.name AS branch_name
-       FROM visits v JOIN branches b ON b.branch_id = v.branch_id
-      WHERE v.patient_id = ? ORDER BY v.visit_date DESC, v.visit_id DESC LIMIT 200`,
-    [req.user.user_id]
-  );
+  const visitDocs = await Visit.find({ patient_id: req.user.user_id })
+    .sort({ visit_date: -1, _id: -1 })
+    .limit(200)
+    .session(sess(db))
+    .lean();
+  const branchNames = await byIds(db, Branch, visitDocs.map((x) => x.branch_id), { name: 1 });
+  const visits = visitDocs
+    .filter((x) => branchNames.has(x.branch_id))
+    .map((x) => ({ ...x, visit_id: x._id, branch_name: branchNames.get(x.branch_id).name }));
   const out = [];
   for (const visit of visits) {
-    const tokens = await db.query(
-      `SELECT t.token_id, t.token_number, t.queue_type, t.status, t.issued_at, t.called_at, t.completed_at,
-              u.full_name AS doctor_name, sp.name AS sp_name
-         FROM tokens t JOIN service_points sp ON sp.service_point_id = t.service_point_id
-         LEFT JOIN doctors d ON d.doctor_id = t.doctor_id LEFT JOIN users u ON u.user_id = d.user_id
-        WHERE t.visit_id = ? ORDER BY t.issued_at, t.token_id`,
-      [visit.visit_id]
-    );
-    const feedback = await db.get('SELECT rating, comment FROM feedback WHERE visit_id = ?', [visit.visit_id]);
+    const tokenDocs = await Token.find({ visit_id: visit.visit_id }).sort({ issued_at: 1, _id: 1 }).session(sess(db)).lean();
+    const sps = await byIds(db, ServicePoint, tokenDocs.map((t) => t.service_point_id), { name: 1 });
+    const doctors = await scheduleService.getDoctors(db, tokenDocs.map((t) => t.doctor_id).filter(Boolean));
+    const tokens = tokenDocs
+      .filter((t) => sps.has(t.service_point_id))
+      .map((t) => ({
+        ...t,
+        token_id: t._id,
+        doctor_name: t.doctor_id && doctors.has(t.doctor_id) ? doctors.get(t.doctor_id).full_name : null,
+        sp_name: sps.get(t.service_point_id).name,
+      }));
+    const feedback = await Feedback.findOne({ visit_id: visit.visit_id }, { rating: 1, comment: 1 }).session(sess(db)).lean();
     const hasCompleted = tokens.some((t) => t.status === 'COMPLETED');
     out.push({
       id: visit.visit_id,
@@ -108,21 +117,16 @@ router.post('/visits/:id/feedback', patientOnly, async (req, res) => {
   const body = req.body || {};
   const rating = v.int(body.rating, 'rating', { required: true, min: 1, max: 5 });
   const comment = v.str(body.comment, 'comment', { max: 1000 });
-  const visit = await db.get('SELECT visit_id, patient_id FROM visits WHERE visit_id = ?', [visitId]);
+  const visit = await Visit.findById(visitId, { patient_id: 1 }).session(sess(db)).lean();
   if (!visit) throw notFound('Visit not found');
   if (visit.patient_id !== req.user.user_id) throw forbidden('This is not your visit');
-  const completed = await db.get(
-    `SELECT token_id FROM tokens WHERE visit_id = ? AND status = 'COMPLETED' LIMIT 1`,
-    [visitId]
-  );
+  const completed = await Token.exists({ visit_id: visitId, status: 'COMPLETED' }).session(sess(db));
   if (!completed) throw badRequest('Feedback can only be given after a completed consultation');
-  const existing = await db.get('SELECT feedback_id FROM feedback WHERE visit_id = ?', [visitId]);
+  const existing = await Feedback.exists({ visit_id: visitId }).session(sess(db));
   if (existing) throw conflict('Feedback has already been given for this visit');
   try {
-    const { insertId } = await db.run(
-      'INSERT INTO feedback (visit_id, rating, comment, created_at) VALUES (?, ?, ?, ?)',
-      [visitId, rating, comment, time.nowDb()]
-    );
+    // The unique index uq_feedback_visit settles a simultaneous second submission (-> 409).
+    const insertId = await insertOne(db, Feedback, { visit_id: visitId, rating, comment, created_at: time.nowDb() });
     res.status(201).json({ id: insertId, rating, comment });
   } catch (err) {
     if (isUniqueViolation(err)) throw conflict('Feedback has already been given for this visit');
@@ -152,7 +156,7 @@ router.post('/notifications/read-all', async (req, res) => {
 
 router.post('/notifications/device-token', async (req, res) => {
   const fcmToken = v.str((req.body || {}).fcmToken, 'fcmToken', { required: true, max: 255 });
-  await getDb().run('UPDATE users SET fcm_token = ? WHERE user_id = ?', [fcmToken, req.user.user_id]);
+  await notificationService.setDeviceToken(getDb(), req.user.user_id, fcmToken);
   res.json({ ok: true });
 });
 

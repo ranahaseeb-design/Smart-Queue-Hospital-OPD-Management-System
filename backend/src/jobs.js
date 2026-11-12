@@ -20,6 +20,7 @@ const predictionService = require('./services/predictionService');
 const queueService = require('./services/queueService');
 const analyticsService = require('./services/analyticsService');
 const realtime = require('./services/realtime');
+const { models, sess } = require('./db');
 
 const FORECAST_INTERVAL_MS = 60 * 60 * 1000;
 const DAILY_CHECK_INTERVAL_MS = 60 * 1000;
@@ -45,10 +46,8 @@ async function runForecastRefresh(db, now = time.clock.now()) {
 
 /** True when forecast rows exist for the current hour (no need to refresh at start-up). */
 async function hasCurrentForecasts(db, now) {
-  const row = await db.get('SELECT COUNT(*) AS n FROM forecasts WHERE forecast_hour >= ?', [
-    time.formatDateTime(time.startOfHour(now)),
-  ]);
-  return Number(row && row.n) > 0;
+  const n = await models.Forecast.countDocuments({ forecast_hour: { $gte: time.startOfHour(now) } }).session(sess(db));
+  return n > 0;
 }
 
 function start(db, { logger = console } = {}) {
