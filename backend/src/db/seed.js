@@ -1,7 +1,8 @@
 'use strict';
 /**
- * `npm run seed` — DROP, recreate and fill the database with demo data (development only).
- * Honours DB_CLIENT and SQLITE_PATH (or the DB_* MySQL settings).
+ * `npm run seed` — DROP the MongoDB database of MONGODB_URI, recreate its collections and indexes
+ * and fill it with demo data (development only). Bulk inserts use insertMany in batches with
+ * ordered:false (no transaction: the database is new and nobody else is using it).
  *
  * Master data (docs/API_CONTRACT.md, "Seed / demo accounts"):
  *   - 3 Lahore branches (Model Town, Gulberg, DHA), 4-5 departments each from the standardised
@@ -13,12 +14,12 @@
  *   - schedules Monday-Sunday: every doctor works one session a day, alternating between the
  *     morning (08:00-14:00) and evening (14:00-22:00) shift, max 40 patients per session.
  *
- * Synthetic history (~60 days, every row flagged tokens.is_synthetic = 1): a discrete-event
+ * Synthetic history (~60 days, every token flagged is_synthetic: true): a discrete-event
  * simulation of each doctor's queue and each branch's LAB / PHARMACY counter with morning and
  * Monday peaks, consultation times around each doctor's own average, priority patients,
  * emergencies (PRIORITY_SET), skips and recalls, cancellations, appointment check-ins, linked
  * LAB / PHARMACY tokens, end-of-day no-shows, matching queue_events (FR-21), one wait_predictions
- * row per token whose features_json is exactly what the live feature builder would have stored
+ * row per token whose `features` object is exactly what the live feature builder would have stored
  * at issue time (see db/history.js), model_version 'baseline', and feedback on ~30% of
  * completed visits. Doctors' avg_consult_minutes evolve exactly like the nightly job.
  * Today: a few WAITING tokens of synthetic patients in two doctors' queues (incl. doctor1).
@@ -29,7 +30,7 @@ const time = require('../utils/time');
 const settingsService = require('../services/settingsService');
 const forecastService = require('../services/forecastService');
 const predictionService = require('../services/predictionService');
-const { getDb, closeDb, createSchema, dropSchema, deleteSqliteFile, insertMany } = require('./index');
+const { connect, getDb, closeDb, dropDatabase, syncIndexes, syncIdCounters, getConnection, models } = require('./index');
 const { replayFirstPredictions, createRng } = require('./history');
 
 const PASSWORDS = Object.freeze({ admin: 'Admin@123', staff: 'Staff@123', patient: 'Patient@123' });
@@ -141,7 +142,8 @@ function atSec(dateStr, sec) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, Math.round(sec));
 }
 
-const fmt = (d) => (d ? time.formatDateTime(d) : null);
+/** Stored datetime: a Date with whole-second precision (null stays null). */
+const fmt = (d) => (d ? time.dbDate(d) : null);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 // Same averaging as predictionService.meanDuration (order-independent, see time.meanMinutes).
 const meanOrNull = (arr) => (arr.length >= MIN_SAMPLES ? time.meanMinutes(arr) : null);
@@ -767,7 +769,7 @@ class Simulator {
         tok.id,
         p.minutes,
         'baseline',
-        JSON.stringify(p.features),
+        p.features,
         fmt(tok.issuedAt),
       ]);
     }
@@ -930,79 +932,87 @@ async function seed(db, { historyDays = 60, now = time.clock.now(), logger = con
   };
 
   // ---- Insert everything in one transaction ----
-  await db.transaction(async (tx) => {
-    await insertMany(
-      tx,
-      'branches',
-      ['branch_id', 'name', 'address', 'latitude', 'longitude', 'status'],
-      md.branches.map((b) => [b.id, b.name, b.address, b.latitude, b.longitude, 'ACTIVE'])
-    );
-    await insertMany(
-      tx,
-      'users',
-      ['user_id', 'full_name', 'email', 'phone', 'password_hash', 'role', 'date_of_birth', 'priority_category',
-        'admin_branch_id', 'fcm_token', 'is_active', 'created_at'],
-      md.users.map((u) => [u.id, u.fullName, u.email, u.phone, hashes[u.password], u.role, u.dateOfBirth,
-        u.priorityCategory, u.adminBranchId, null, 1, u.createdAt])
-    );
-    await insertMany(
-      tx,
-      'departments',
-      ['department_id', 'branch_id', 'specialty', 'name', 'is_active'],
-      md.departments.map((d) => [d.id, d.branchId, d.specialty, d.name, 1])
-    );
-    await insertMany(
-      tx,
-      'service_points',
-      ['service_point_id', 'branch_id', 'type', 'name', 'is_active'],
-      md.servicePoints.map((s) => [s.id, s.branchId, s.type, s.name, 1])
-    );
-    await insertMany(
-      tx,
-      'doctors',
-      ['doctor_id', 'user_id', 'department_id', 'avg_consult_minutes', 'is_active'],
-      md.doctors.map((d) => [d.id, d.userId, d.departmentId, d.currentAvg, 1])
-    );
-    await insertMany(
-      tx,
-      'doctor_schedules',
-      ['schedule_id', 'doctor_id', 'service_point_id', 'day_of_week', 'start_time', 'end_time', 'max_patients'],
-      md.schedules.map((s) => [s.id, s.doctorId, s.servicePointId, s.dayOfWeek, s.startTime, s.endTime, s.maxPatients])
-    );
-    await insertMany(
-      tx,
-      'staff_assignments',
-      ['assignment_id', 'user_id', 'service_point_id'],
-      md.assignments.map((a) => [a.id, a.userId, a.servicePointId])
-    );
-    await insertMany(tx, 'visits', ['visit_id', 'patient_id', 'branch_id', 'visit_date', 'status'], sim.rows.visits);
-    await insertMany(
-      tx,
-      'appointments',
-      ['appointment_id', 'patient_id', 'doctor_id', 'slot_start', 'status', 'updated_at'],
-      sim.rows.appointments
-    );
-    await insertMany(
-      tx,
-      'tokens',
-      ['token_id', 'visit_id', 'service_point_id', 'doctor_id', 'appointment_id', 'token_number', 'token_date',
-        'queue_type', 'priority_level', 'status', 'issued_at', 'called_at', 'completed_at', 'is_synthetic'],
+  // ---- Bulk insert (explicit integer ids; counters are aligned afterwards) ----
+  const toDocs = (fields, rows) =>
+    rows.map((r) => {
+      const doc = {};
+      fields.forEach((f, i) => {
+        doc[f] = r[i] === undefined ? null : r[i];
+      });
+      return doc;
+    });
+  await bulkInsert(
+    models.Branch,
+    md.branches.map((b) => ({ _id: b.id, name: b.name, address: b.address, latitude: b.latitude, longitude: b.longitude, status: 'ACTIVE' }))
+  );
+  await bulkInsert(
+    models.User,
+    md.users.map((u) => ({
+      _id: u.id,
+      full_name: u.fullName,
+      email: u.email,
+      phone: u.phone,
+      password_hash: hashes[u.password],
+      role: u.role,
+      date_of_birth: u.dateOfBirth,
+      priority_category: u.priorityCategory,
+      admin_branch_id: u.adminBranchId,
+      fcm_token: null,
+      is_active: true,
+      created_at: u.createdAt,
+    }))
+  );
+  await bulkInsert(
+    models.Department,
+    md.departments.map((d) => ({ _id: d.id, branch_id: d.branchId, specialty: d.specialty, name: d.name, is_active: true }))
+  );
+  await bulkInsert(
+    models.ServicePoint,
+    md.servicePoints.map((s) => ({ _id: s.id, branch_id: s.branchId, type: s.type, name: s.name, is_active: true }))
+  );
+  await bulkInsert(
+    models.Doctor,
+    md.doctors.map((d) => ({ _id: d.id, user_id: d.userId, department_id: d.departmentId, avg_consult_minutes: d.currentAvg, is_active: true }))
+  );
+  await bulkInsert(
+    models.DoctorSchedule,
+    md.schedules.map((s) => ({
+      _id: s.id,
+      doctor_id: s.doctorId,
+      service_point_id: s.servicePointId,
+      day_of_week: s.dayOfWeek,
+      start_time: s.startTime,
+      end_time: s.endTime,
+      max_patients: s.maxPatients,
+    }))
+  );
+  await bulkInsert(
+    models.StaffAssignment,
+    md.assignments.map((a) => ({ _id: a.id, user_id: a.userId, service_point_id: a.servicePointId }))
+  );
+  await bulkInsert(models.Visit, toDocs(['_id', 'patient_id', 'branch_id', 'visit_date', 'status'], sim.rows.visits));
+  await bulkInsert(
+    models.Appointment,
+    toDocs(['_id', 'patient_id', 'doctor_id', 'slot_start', 'status', 'updated_at'], sim.rows.appointments)
+  );
+  await bulkInsert(
+    models.Token,
+    toDocs(
+      ['_id', 'visit_id', 'service_point_id', 'doctor_id', 'appointment_id', 'token_number', 'token_date', 'queue_type',
+        'priority_level', 'status', 'issued_at', 'called_at', 'completed_at', 'is_synthetic'],
       sim.rows.tokens
-    );
-    await insertMany(
-      tx,
-      'queue_events',
-      ['event_id', 'token_id', 'event_type', 'performed_by', 'from_point_id', 'to_point_id', 'note', 'event_time'],
-      sim.rows.events
-    );
-    await insertMany(
-      tx,
-      'wait_predictions',
-      ['prediction_id', 'token_id', 'predicted_minutes', 'model_version', 'features_json', 'created_at'],
-      sim.rows.predictions
-    );
-    await insertMany(tx, 'feedback', ['feedback_id', 'visit_id', 'rating', 'comment', 'created_at'], sim.rows.feedback);
-  });
+    ).map((t) => ({ ...t, is_synthetic: Boolean(t.is_synthetic) }))
+  );
+  await bulkInsert(
+    models.QueueEvent,
+    toDocs(['_id', 'token_id', 'event_type', 'performed_by', 'from_point_id', 'to_point_id', 'note', 'event_time'], sim.rows.events)
+  );
+  await bulkInsert(
+    models.WaitPrediction,
+    toDocs(['_id', 'token_id', 'predicted_minutes', 'model_version', 'features', 'created_at'], sim.rows.predictions)
+  );
+  await bulkInsert(models.Feedback, toDocs(['_id', 'visit_id', 'rating', 'comment', 'created_at'], sim.rows.feedback));
+  await syncIdCounters();
   await settingsService.writeDefaults(db);
   predictionService.clearCaches();
 
@@ -1032,36 +1042,30 @@ async function seed(db, { historyDays = 60, now = time.clock.now(), logger = con
   return summary;
 }
 
-/** Drop and recreate the schema of the configured database. */
-async function resetDatabase(logger = console) {
-  if (config.db.client === 'sqlite') {
-    await closeDb();
-    try {
-      deleteSqliteFile();
-      const db = getDb();
-      await createSchema(db);
-      return db;
-    } catch (err) {
-      if (!['EBUSY', 'EPERM', 'EACCES'].includes(err.code)) throw err;
-      // The file is held open by another process (e.g. the AI service on Windows): drop tables instead.
-      if (logger) logger.log(`[seed] ${config.db.sqlitePath} is in use (${err.code}); dropping tables instead`);
-      const db = getDb();
-      await dropSchema(db);
-      await createSchema(db);
-      return db;
-    }
+/**
+ * Insert documents in batches (insertMany, ordered:false). `lean` skips hydrating Mongoose
+ * documents (the values are already of the schema types), which keeps 60 days of history fast.
+ */
+const BATCH = 5000;
+async function bulkInsert(Model, docs) {
+  for (let i = 0; i < docs.length; i += BATCH) {
+    await Model.insertMany(docs.slice(i, i + BATCH), { ordered: false, lean: true });
   }
-  const admin = getDb();
-  await admin.execAdmin(`DROP DATABASE IF EXISTS \`${config.db.database}\``);
-  await closeDb();
-  const db = getDb();
-  await createSchema(db);
-  return db;
+}
+
+/**
+ * Drop the configured database and recreate its collections and indexes. Connects first when
+ * needed. Returns the root DB context.
+ */
+async function resetDatabase(logger = console) {
+  await connect();
+  if (logger) logger.log(`[seed] Dropping database "${getConnection().name}"`);
+  await dropDatabase();
+  await syncIndexes();
+  return getDb();
 }
 
 async function main() {
-  const target = config.db.client === 'sqlite' ? config.db.sqlitePath : `${config.db.host}/${config.db.database}`;
-  console.log(`[seed] Resetting ${config.db.client} database ${target}`);
   const db = await resetDatabase();
   await seed(db, { historyDays: config.seedHistoryDays });
   await closeDb();
@@ -1077,4 +1081,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { seed, resetDatabase, PASSWORDS, BRANCHES, SPECIALTY_PROFILE };
+module.exports = { seed, resetDatabase, bulkInsert, PASSWORDS, BRANCHES, SPECIALTY_PROFILE };
