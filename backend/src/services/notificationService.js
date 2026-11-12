@@ -11,6 +11,9 @@ const fs = require('node:fs');
 const config = require('../config');
 const time = require('../utils/time');
 const realtime = require('./realtime');
+const { models, sess, insertOne } = require('../db');
+
+const { Notification, User } = models;
 
 let firebaseInitialised = false;
 let firebaseMessaging = null;
@@ -47,12 +50,20 @@ function getMailTransport() {
   return mailTransport;
 }
 
+function notificationDoc(userId, tokenId, channel, message, status) {
+  return {
+    user_id: userId,
+    token_id: tokenId || null,
+    channel,
+    message,
+    sent_at: time.nowDb(),
+    status,
+    is_read: false,
+  };
+}
+
 async function logChannel(db, userId, tokenId, channel, message, status) {
-  await db.run(
-    `INSERT INTO notifications (user_id, token_id, channel, message, sent_at, status, is_read)
-     VALUES (?, ?, ?, ?, ?, ?, 0)`,
-    [userId, tokenId || null, channel, message, time.nowDb(), status]
-  );
+  await insertOne(db, Notification, notificationDoc(userId, tokenId, channel, message, status));
 }
 
 /**
@@ -63,11 +74,7 @@ async function logChannel(db, userId, tokenId, channel, message, status) {
  */
 async function notify(db, userId, { tokenId = null, message, email = false, subject = 'Smart OPD notification' }) {
   const text = String(message).slice(0, 255);
-  const { insertId } = await db.run(
-    `INSERT INTO notifications (user_id, token_id, channel, message, sent_at, status, is_read)
-     VALUES (?, ?, 'IN_APP', ?, ?, 'SENT', 0)`,
-    [userId, tokenId || null, text, time.nowDb()]
-  );
+  const insertId = await insertOne(db, Notification, notificationDoc(userId, tokenId, 'IN_APP', text, 'SENT'));
   realtime.emitNotification(userId, { id: insertId, message: text, tokenId: tokenId || null });
 
   // Optional external channels run in the background so they never slow down the API.
@@ -82,7 +89,7 @@ async function notify(db, userId, { tokenId = null, message, email = false, subj
 }
 
 async function sendExternal(db, userId, tokenId, text, { email, subject }) {
-  const user = await db.get('SELECT email, fcm_token FROM users WHERE user_id = ?', [userId]);
+  const user = await User.findById(userId, { email: 1, fcm_token: 1 }).session(sess(db)).lean();
   if (!user) return;
   const messaging = getFirebaseMessaging();
   if (messaging && user.fcm_token) {
@@ -110,22 +117,23 @@ async function sendExternal(db, userId, tokenId, text, { email, subject }) {
 
 /** Has an IN_APP notification starting with `prefix` already been sent for this token? */
 async function alreadySent(db, tokenId, prefix) {
-  const row = await db.get(
-    `SELECT notification_id FROM notifications WHERE token_id = ? AND channel = 'IN_APP' AND message LIKE ?`,
-    [tokenId, `${prefix}%`]
-  );
+  const escaped = String(prefix).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const row = await Notification.exists({
+    token_id: tokenId,
+    channel: 'IN_APP',
+    message: { $regex: `^${escaped}`, $options: 'i' }, // SQL LIKE 'prefix%' (case-insensitive)
+  }).session(sess(db));
   return Boolean(row);
 }
 
 async function listForUser(db, userId, limit = 100) {
-  const rows = await db.query(
-    `SELECT notification_id, token_id, channel, message, sent_at, is_read FROM notifications
-      WHERE user_id = ? AND channel = 'IN_APP'
-      ORDER BY notification_id DESC LIMIT ${Number(limit) | 0}`,
-    [userId]
-  );
+  const rows = await Notification.find({ user_id: userId, channel: 'IN_APP' })
+    .sort({ _id: -1 })
+    .limit(Number(limit) | 0)
+    .session(sess(db))
+    .lean();
   return rows.map((r) => ({
-    id: r.notification_id,
+    id: r._id,
     tokenId: r.token_id,
     channel: r.channel,
     message: r.message,
@@ -135,7 +143,12 @@ async function listForUser(db, userId, limit = 100) {
 }
 
 async function markAllRead(db, userId) {
-  await db.run('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0', [userId]);
+  await Notification.updateMany({ user_id: userId, is_read: false }, { $set: { is_read: true } }, { session: sess(db) });
 }
 
-module.exports = { notify, alreadySent, listForUser, markAllRead };
+/** Register the device token used for push notifications (POST /notifications/device-token). */
+async function setDeviceToken(db, userId, fcmToken) {
+  await User.updateOne({ _id: userId }, { $set: { fcm_token: fcmToken } }, { session: sess(db) });
+}
+
+module.exports = { notify, alreadySent, listForUser, markAllRead, setDeviceToken };

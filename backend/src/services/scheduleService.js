@@ -5,23 +5,53 @@
  */
 const config = require('../config');
 const time = require('../utils/time');
+const { models, sess, byIds } = require('../db');
+
+const { Doctor, User, Department, Branch, DoctorSchedule, ServicePoint, Token } = models;
+
+/** Doctor row built from doctors + users + departments + branches. */
+function doctorRow(d, u, dp, b) {
+  return {
+    doctor_id: d._id,
+    user_id: d.user_id,
+    department_id: d.department_id,
+    avg_consult_minutes: d.avg_consult_minutes,
+    is_active: d.is_active,
+    full_name: u.full_name,
+    email: u.email,
+    phone: u.phone,
+    user_active: u.is_active,
+    specialty: dp.specialty,
+    department_name: dp.name,
+    branch_id: dp.branch_id,
+    department_active: dp.is_active,
+    branch_name: b.name,
+    branch_status: b.status,
+    branch_address: b.address,
+    latitude: b.latitude,
+    longitude: b.longitude,
+  };
+}
+
+/** Doctor rows for many doctor ids: Map doctorId -> row (inner-join semantics). */
+async function getDoctors(db, doctorIds) {
+  const docs = await byIds(db, Doctor, doctorIds);
+  const users = await byIds(db, User, [...docs.values()].map((d) => d.user_id), { password_hash: 0 });
+  const depts = await byIds(db, Department, [...docs.values()].map((d) => d.department_id));
+  const branches = await byIds(db, Branch, [...depts.values()].map((d) => d.branch_id));
+  const out = new Map();
+  for (const d of docs.values()) {
+    const u = users.get(d.user_id);
+    const dp = depts.get(d.department_id);
+    const b = dp ? branches.get(dp.branch_id) : null;
+    if (u && dp && b) out.set(d._id, doctorRow(d, u, dp, b));
+  }
+  return out;
+}
 
 /** Doctor with user, department and branch data (null if missing). */
 async function getDoctor(db, doctorId) {
-  const row = await db.get(
-    `SELECT d.doctor_id, d.user_id, d.department_id, d.avg_consult_minutes, d.is_active,
-            u.full_name, u.email, u.phone, u.is_active AS user_active,
-            dp.specialty, dp.name AS department_name, dp.branch_id, dp.is_active AS department_active,
-            b.name AS branch_name, b.status AS branch_status, b.address AS branch_address,
-            b.latitude, b.longitude
-       FROM doctors d
-       JOIN users u ON u.user_id = d.user_id
-       JOIN departments dp ON dp.department_id = d.department_id
-       JOIN branches b ON b.branch_id = dp.branch_id
-      WHERE d.doctor_id = ?`,
-    [doctorId]
-  );
-  return row || null;
+  return (await getDoctors(db, [doctorId])).get(doctorId) || null;
 }
 
 function isDoctorBookable(doc) {
@@ -33,7 +63,7 @@ function isDoctorBookable(doc) {
 /** Convert a doctor_schedules row into a session on a given date. */
 function toSession(row, dateStr) {
   return {
-    scheduleId: row.schedule_id,
+    scheduleId: row.schedule_id !== undefined ? row.schedule_id : row._id,
     doctorId: row.doctor_id,
     servicePointId: row.service_point_id,
     servicePointName: row.service_point_name || null,
@@ -46,17 +76,18 @@ function toSession(row, dateStr) {
   };
 }
 
-/** All sessions of a doctor on a date (sorted by start). */
+/** Sort by start_time ("HH:mm:ss" strings compare like times), then schedule id. */
+const byStartTime = (a, b) => (a.start_time < b.start_time ? -1 : a.start_time > b.start_time ? 1 : a._id - b._id);
+
+/** All sessions of a doctor on a date (sorted by start), only in active service points. */
 async function doctorSessions(db, doctorId, dateStr) {
   const dow = time.isoDow(time.parseDate(dateStr));
-  const rows = await db.query(
-    `SELECT ds.*, sp.name AS service_point_name FROM doctor_schedules ds
-       JOIN service_points sp ON sp.service_point_id = ds.service_point_id
-      WHERE ds.doctor_id = ? AND ds.day_of_week = ? AND sp.is_active = 1
-      ORDER BY ds.start_time`,
-    [doctorId, dow]
-  );
-  return rows.map((r) => toSession(r, dateStr));
+  const rows = await DoctorSchedule.find({ doctor_id: doctorId, day_of_week: dow }).session(sess(db)).lean();
+  const sps = await byIds(db, ServicePoint, rows.map((r) => r.service_point_id));
+  return rows
+    .filter((r) => sps.get(r.service_point_id) && sps.get(r.service_point_id).is_active)
+    .sort(byStartTime)
+    .map((r) => toSession({ ...r, schedule_id: r._id, service_point_name: sps.get(r.service_point_id).name }, dateStr));
 }
 
 /**
@@ -71,17 +102,41 @@ function pickSession(sessions, dateStr, now) {
   return sessions[0];
 }
 
+/**
+ * Schedules on a weekday of active doctors (active user account) in active service points,
+ * with the doctor's avg_consult_minutes and department_id. `doctorFilter` narrows the doctors.
+ */
+async function activeSchedules(db, dow, doctorFilter = {}, { activeDepartmentsOnly = false } = {}) {
+  const doctors = await Doctor.find({ ...doctorFilter, is_active: true }).session(sess(db)).lean();
+  if (!doctors.length) return [];
+  const users = await byIds(db, User, doctors.map((d) => d.user_id), { is_active: 1 });
+  let active = doctors.filter((d) => users.get(d.user_id) && users.get(d.user_id).is_active);
+  if (activeDepartmentsOnly) {
+    const depts = await byIds(db, Department, active.map((d) => d.department_id), { is_active: 1, branch_id: 1 });
+    active = active.filter((d) => depts.get(d.department_id) && depts.get(d.department_id).is_active);
+  }
+  const byDoctor = new Map(active.map((d) => [d._id, d]));
+  const filter = { doctor_id: { $in: [...byDoctor.keys()] } };
+  if (dow !== null && dow !== undefined) filter.day_of_week = dow;
+  const rows = await DoctorSchedule.find(filter).session(sess(db)).lean();
+  const sps = await byIds(db, ServicePoint, rows.map((r) => r.service_point_id), { is_active: 1, name: 1 });
+  return rows
+    .filter((r) => sps.get(r.service_point_id) && sps.get(r.service_point_id).is_active)
+    .map((r) => {
+      const d = byDoctor.get(r.doctor_id);
+      return {
+        ...r,
+        schedule_id: r._id,
+        department_id: d.department_id,
+        avg_consult_minutes: d.avg_consult_minutes,
+      };
+    });
+}
+
 /** Sessions on a date of all active doctors in a department (with avg consult minutes). */
 async function departmentSessions(db, departmentId, dateStr) {
   const dow = time.isoDow(time.parseDate(dateStr));
-  const rows = await db.query(
-    `SELECT ds.*, d.avg_consult_minutes FROM doctor_schedules ds
-       JOIN doctors d ON d.doctor_id = ds.doctor_id
-       JOIN users u ON u.user_id = d.user_id
-       JOIN service_points sp ON sp.service_point_id = ds.service_point_id
-      WHERE d.department_id = ? AND ds.day_of_week = ? AND d.is_active = 1 AND u.is_active = 1 AND sp.is_active = 1`,
-    [departmentId, dow]
-  );
+  const rows = await activeSchedules(db, dow, { department_id: departmentId });
   return rows.map((r) => toSession(r, dateStr));
 }
 
@@ -90,7 +145,7 @@ async function departmentSessions(db, departmentId, dateStr) {
  * belongs to the first session that has not ended at t. So session i covers
  * [end of session i-1 (or 00:00), end of session i), and the last session also takes
  * everything until midnight (DEMO_ALWAYS_OPEN issues after the end).
- * Returns { from, to } as 'YYYY-MM-DD HH:MM:SS' strings (to is exclusive).
+ * Returns { from, to } as Dates (to is exclusive).
  */
 function sessionWindow(sessions, session, dateStr) {
   const ordered = [...sessions].sort((a, b) => a.end - b.end);
@@ -98,7 +153,7 @@ function sessionWindow(sessions, session, dateStr) {
   const dayStart = time.parseDate(dateStr);
   const from = idx > 0 ? ordered[idx - 1].end : dayStart;
   const to = idx >= 0 && idx < ordered.length - 1 ? session.end : time.addDays(dayStart, 1);
-  return { from: time.formatDateTime(from), to: time.formatDateTime(to) };
+  return { from, to };
 }
 
 /**
@@ -106,16 +161,14 @@ function sessionWindow(sessions, session, dateStr) {
  * the tokens issued within that session's window count (max_patients is per session, not per day).
  */
 async function issuedCount(db, doctorId, dateStr, window = null) {
-  let sql = `SELECT COUNT(*) AS n FROM tokens
-      WHERE doctor_id = ? AND token_date = ? AND queue_type = 'OPD'
-        AND status <> 'CANCELLED' AND status <> 'TRANSFERRED'`;
-  const params = [doctorId, dateStr];
-  if (window) {
-    sql += ' AND issued_at >= ? AND issued_at < ?';
-    params.push(window.from, window.to);
-  }
-  const row = await db.get(sql, params);
-  return Number(row.n) || 0;
+  const filter = {
+    doctor_id: doctorId,
+    token_date: dateStr,
+    queue_type: 'OPD',
+    status: { $nin: ['CANCELLED', 'TRANSFERRED'] },
+  };
+  if (window) filter.issued_at = { $gte: window.from, $lt: window.to };
+  return Token.countDocuments(filter).session(sess(db));
 }
 
 /** Tokens already issued in `session` (of `sessions` on dateStr) for the doctor. */
@@ -124,11 +177,7 @@ async function sessionIssuedCount(db, doctorId, dateStr, sessions, session) {
 }
 
 async function waitingCount(db, doctorId, dateStr) {
-  const row = await db.get(
-    `SELECT COUNT(*) AS n FROM tokens WHERE doctor_id = ? AND token_date = ? AND status = 'WAITING'`,
-    [doctorId, dateStr]
-  );
-  return Number(row.n) || 0;
+  return Token.countDocuments({ doctor_id: doctorId, token_date: dateStr, status: 'WAITING' }).session(sess(db));
 }
 
 /**
@@ -155,10 +204,12 @@ async function availability(db, doctor, dateStr, now) {
 
 module.exports = {
   getDoctor,
+  getDoctors,
   isDoctorBookable,
   toSession,
   doctorSessions,
   pickSession,
+  activeSchedules,
   departmentSessions,
   issuedCount,
   sessionWindow,
