@@ -15,8 +15,10 @@ THRESHOLDS = {"high": 0.5, "critical": 0.9}  # seeded in the settings table
 
 
 def _forecast_rows() -> pd.DataFrame:
-    frame = db.fetch_df("SELECT * FROM forecasts ORDER BY forecast_hour, department_id")
-    frame["forecast_hour"] = db.to_datetime_series(frame["forecast_hour"])
+    """All forecasts documents, ``forecast_hour`` converted from stored UTC to hospital local time."""
+    docs = list(db.get_db()["forecasts"].find({}, sort=[("forecast_hour", 1), ("department_id", 1)]))
+    frame = pd.DataFrame(docs)
+    frame["forecast_hour"] = db.utc_series_to_local(frame["forecast_hour"])
     return frame
 
 
@@ -26,7 +28,7 @@ def test_congestion_level_boundaries():
     assert congestion_level(1.0, {"high": 0.85, "critical": 1.0}) == "CRITICAL"
 
 
-def test_forecast_job_writes_scheduled_hours(engine, seed_forecast_history, forecast_expectations):
+def test_forecast_job_writes_scheduled_hours(mongo, seed_forecast_history, forecast_expectations):
     now = datetime(2026, 10, 28, 10, 30)  # a Wednesday
     today = now.replace(hour=0, minute=0)
     seed_forecast_history(today)
@@ -81,7 +83,7 @@ def test_forecast_job_writes_scheduled_hours(engine, seed_forecast_history, fore
     assert other_days["is_peak"].astype(int).mean() <= 0.25
 
 
-def test_forecast_job_is_idempotent(engine, seed_forecast_history, forecast_expectations):
+def test_forecast_job_is_idempotent(mongo, seed_forecast_history, forecast_expectations):
     now = datetime(2026, 10, 28, 10, 30)
     today = now.replace(hour=0, minute=0)
     seed_forecast_history(today)

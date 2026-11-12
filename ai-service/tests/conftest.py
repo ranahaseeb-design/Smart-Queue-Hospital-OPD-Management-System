@@ -1,20 +1,22 @@
-"""Shared fixtures: an in-memory SQLite database with the tables the AI service reads/writes.
+"""Shared fixtures: an in-memory MongoDB (mongomock) holding the collections the AI service reads/writes.
 
-Table and column names match database/schema.mysql.sql; datetimes are stored as
-'YYYY-MM-DD HH:MM:SS' strings and JSON columns as text, like the backend's SQLite dev DB.
+Collection and field names follow database/MONGODB_DESIGN.md: integer ``_id`` values, foreign keys
+under their SQL column names, ``wait_predictions.features`` and ``settings.value`` as embedded
+objects, ``model_versions._id`` = version, datetimes stored as naive **UTC** ``datetime`` values
+(BSON Date). The generators below think in hospital-local time and convert with ``db.to_utc``, so
+the tests also exercise the UTC <-> HOSPITAL_TZ handling.
 """
 
 from __future__ import annotations
 
-import json
 import random
 from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import mongomock
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
 from app import db
 from app.config import settings
@@ -22,60 +24,22 @@ from app.predictor import registry
 from app.security import TOKEN_HEADER
 
 TEST_SERVICE_TOKEN = "test-ai-service-token"
-
-SQLITE_SCHEMA = [
-    """CREATE TABLE users (
-        user_id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, role TEXT NOT NULL,
-        is_active INTEGER NOT NULL DEFAULT 1)""",
-    """CREATE TABLE branches (
-        branch_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, address TEXT,
-        latitude REAL NOT NULL, longitude REAL NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')""",
-    """CREATE TABLE departments (
-        department_id INTEGER PRIMARY KEY AUTOINCREMENT, branch_id INTEGER NOT NULL,
-        specialty TEXT NOT NULL, name TEXT, is_active INTEGER NOT NULL DEFAULT 1)""",
-    """CREATE TABLE service_points (
-        service_point_id INTEGER PRIMARY KEY AUTOINCREMENT, branch_id INTEGER NOT NULL,
-        type TEXT NOT NULL, name TEXT, is_active INTEGER NOT NULL DEFAULT 1)""",
-    """CREATE TABLE doctors (
-        doctor_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL UNIQUE,
-        department_id INTEGER NOT NULL, avg_consult_minutes REAL NOT NULL DEFAULT 10.0,
-        is_active INTEGER NOT NULL DEFAULT 1)""",
-    """CREATE TABLE doctor_schedules (
-        schedule_id INTEGER PRIMARY KEY AUTOINCREMENT, doctor_id INTEGER NOT NULL,
-        service_point_id INTEGER NOT NULL, day_of_week INTEGER NOT NULL,
-        start_time TEXT NOT NULL, end_time TEXT NOT NULL, max_patients INTEGER)""",
-    """CREATE TABLE tokens (
-        token_id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL,
-        service_point_id INTEGER NOT NULL, doctor_id INTEGER, appointment_id INTEGER UNIQUE,
-        token_number INTEGER NOT NULL, token_date TEXT NOT NULL, queue_type TEXT NOT NULL,
-        priority_level INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'WAITING',
-        issued_at TEXT NOT NULL, called_at TEXT, completed_at TEXT,
-        is_synthetic INTEGER NOT NULL DEFAULT 0)""",
-    """CREATE TABLE wait_predictions (
-        prediction_id INTEGER PRIMARY KEY AUTOINCREMENT, token_id INTEGER NOT NULL,
-        predicted_minutes REAL NOT NULL, model_version TEXT NOT NULL, features_json TEXT,
-        created_at TEXT NOT NULL)""",
-    """CREATE TABLE forecasts (
-        forecast_id INTEGER PRIMARY KEY AUTOINCREMENT, branch_id INTEGER NOT NULL,
-        department_id INTEGER NOT NULL, forecast_hour TEXT NOT NULL, expected_arrivals REAL,
-        capacity REAL, congestion_level TEXT NOT NULL, is_peak INTEGER NOT NULL DEFAULT 0,
-        source TEXT NOT NULL DEFAULT 'baseline', generated_at TEXT NOT NULL)""",
-    """CREATE TABLE model_versions (
-        version TEXT PRIMARY KEY, trained_at TEXT NOT NULL, training_rows INTEGER NOT NULL,
-        data_source TEXT NOT NULL, metrics_json TEXT NOT NULL, status TEXT NOT NULL,
-        is_active INTEGER NOT NULL DEFAULT 0)""",
-    """CREATE TABLE settings (
-        setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TEXT NOT NULL)""",
-]
+TEST_DB_NAME = "smart_opd_test"
 
 
-def fmt(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d %H:%M:%S")
+def utc(local: datetime) -> datetime:
+    """Hospital-local naive datetime -> the naive UTC value MongoDB stores."""
+    return db.to_utc(local)
+
+
+def new_database():
+    """A fresh mongomock database registered as the service's database."""
+    return db.set_client(mongomock.MongoClient(), TEST_DB_NAME)
 
 
 @pytest.fixture
-def engine(tmp_path):
-    """Fresh in-memory database + isolated settings for every test."""
+def mongo(tmp_path):
+    """Fresh in-memory MongoDB + isolated settings for every test; yields the Database handle."""
     original = replace(settings)
     settings.models_dir = tmp_path / "models"
     settings.search_iter = 2  # keep the hyperparameter search quick in tests
@@ -83,22 +47,19 @@ def engine(tmp_path):
     settings.min_training_rows = 200
     settings.ai_service_token = TEST_SERVICE_TOKEN
     settings.allow_unauthenticated = False
-    eng = db.reset_engine("sqlite://")
-    with eng.begin() as conn:
-        for statement in SQLITE_SCHEMA:
-            conn.execute(text(statement))
+    database = new_database()
     registry.invalidate()
-    yield eng
+    yield database
     registry.invalidate()
-    for name in ("database_url", "models_dir", "search_iter", "n_jobs", "min_training_rows", "forecast_lookback_days",
-                 "ai_service_token", "allow_unauthenticated",
+    for name in ("mongodb_uri", "mongodb_db", "models_dir", "search_iter", "n_jobs", "min_training_rows",
+                 "forecast_lookback_days", "ai_service_token", "allow_unauthenticated",
                  "department_min_rows", "department_tolerance"):
         setattr(settings, name, getattr(original, name))
-    db.reset_engine(original.database_url)
+    db.reset_client()
 
 
 @pytest.fixture
-def client(engine):
+def client(mongo):
     from app.main import app
 
     with TestClient(app, headers={TOKEN_HEADER: TEST_SERVICE_TOKEN}) as test_client:
@@ -106,7 +67,7 @@ def client(engine):
 
 
 @pytest.fixture
-def anon_client(engine):
+def anon_client(mongo):
     """Client WITHOUT the X-AI-Service-Token header."""
     from app.main import app
 
@@ -120,13 +81,13 @@ TRUE_CONSULT = {1: 6.0, 2: 9.0, 3: 12.0, 4: 15.0}  # actual minutes per patient 
 DEPARTMENT_OF = {1: 1, 2: 1, 3: 2, 4: 2}
 
 
-def _seed_wait_history(eng, days: int = 40, per_session: int = 8, start: datetime = datetime(2026, 8, 3)) -> dict:
+def _seed_wait_history(database, days: int = 40, per_session: int = 8, start: datetime = datetime(2026, 8, 3)) -> dict:
     """Synthetic tokens whose real wait depends on the doctor's *actual* consult time.
 
     The Eq. 6.2 baseline uses the registered average (10 min) and is therefore biased per
     doctor, while ``doctor_recent_consult`` lets the forest learn the true speed.
-    A second, later prediction per token (patients_ahead = 0) checks that training uses
-    the FIRST prediction of each token.
+    A second, later prediction per token (patients_ahead = 0, higher ``_id``) checks that
+    training uses the FIRST prediction of each token.
     """
     rng = random.Random(7)
     tokens, first_predictions, later_predictions = [], [], []
@@ -165,55 +126,49 @@ def _seed_wait_history(eng, days: int = 40, per_session: int = 8, start: datetim
                     summary["patients_ahead_sum"] += features["patients_ahead"]
                 tokens.append(
                     {
-                        "token_id": token_id,
+                        "_id": token_id,
                         "visit_id": token_id,
                         "service_point_id": doctor_id,
                         "doctor_id": doctor_id,
+                        "appointment_id": None,
                         "token_number": i + 1,
                         "token_date": day.strftime("%Y-%m-%d"),
                         "queue_type": "OPD",
+                        "priority_level": 0,
                         "status": "COMPLETED" if called else "CANCELLED",
-                        "issued_at": fmt(issued),
-                        "called_at": fmt(called) if called else None,
-                        "is_synthetic": 1,
+                        "issued_at": utc(issued),
+                        "called_at": utc(called) if called else None,
+                        "completed_at": None,
+                        "is_synthetic": True,
                     }
                 )
                 first_predictions.append(
-                    {"token_id": token_id, "minutes": 30.0, "features": json.dumps(features), "created_at": fmt(issued)}
+                    {"token_id": token_id, "predicted_minutes": 30.0, "model_version": "baseline",
+                     "features": features, "created_at": utc(issued)}
                 )
                 later = dict(features, patients_ahead=0, priority_ahead=0)
                 later_predictions.append(
-                    {
-                        "token_id": token_id,
-                        "minutes": 5.0,
-                        "features": json.dumps(later),
-                        "created_at": fmt(issued + timedelta(minutes=1)),
-                    }
+                    {"token_id": token_id, "predicted_minutes": 5.0, "model_version": "baseline",
+                     "features": later, "created_at": utc(issued + timedelta(minutes=1))}
                 )
 
-    with eng.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO tokens (token_id, visit_id, service_point_id, doctor_id, token_number, token_date, "
-                "queue_type, status, issued_at, called_at, is_synthetic) VALUES (:token_id, :visit_id, "
-                ":service_point_id, :doctor_id, :token_number, :token_date, :queue_type, :status, :issued_at, "
-                ":called_at, :is_synthetic)"
-            ),
-            tokens,
-        )
-        insert_prediction = text(
-            "INSERT INTO wait_predictions (token_id, predicted_minutes, model_version, features_json, created_at) "
-            "VALUES (:token_id, :minutes, 'baseline', :features, :created_at)"
-        )
-        conn.execute(insert_prediction, first_predictions)
-        conn.execute(insert_prediction, later_predictions)
+    database["tokens"].insert_many(tokens)
+    # Integer ids in insertion order (as allocated from counters): every first prediction has a
+    # lower _id than the later prediction of the same token.
+    predictions = first_predictions + later_predictions
+    for new_id, doc in enumerate(predictions, start=1):
+        doc["_id"] = new_id
+    database["wait_predictions"].insert_many(predictions)
+    database["counters"].insert_many(
+        [{"_id": "tokens", "seq": len(tokens)}, {"_id": "wait_predictions", "seq": len(predictions)}]
+    )
     summary["tokens"] = len(tokens)
     return summary
 
 
 @pytest.fixture
-def seed_wait_history(engine):
-    return lambda **kwargs: _seed_wait_history(engine, **kwargs)
+def seed_wait_history(mongo):
+    return lambda **kwargs: _seed_wait_history(mongo, **kwargs)
 
 
 # --------------------------------------------------------------------------- forecasting history
@@ -224,132 +179,130 @@ DEPT2_FULL_HOUR = 60 / 15  # doctor 3, 14:00-16:30, Mon-Fri
 DEPT2_HALF_HOUR = 30 / 15
 
 
-def _seed_forecast_history(eng, today: datetime, weeks: int = 9) -> None:
+def _seed_forecast_history(database, today: datetime, weeks: int = 9) -> None:
     rng = random.Random(11)
-    with eng.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO branches (branch_id, name, latitude, longitude, status) VALUES "
-                "(1, 'Model Town', 31.48, 74.32, 'ACTIVE'), (2, 'Closed Branch', 31.50, 74.30, 'INACTIVE')"
+    database["branches"].insert_many(
+        [
+            {"_id": 1, "name": "Model Town", "address": None, "latitude": 31.48, "longitude": 74.32, "status": "ACTIVE"},
+            {"_id": 2, "name": "Closed Branch", "address": None, "latitude": 31.50, "longitude": 74.30, "status": "INACTIVE"},
+        ]
+    )
+    database["departments"].insert_many(
+        [
+            {"_id": 1, "branch_id": 1, "specialty": "Cardiology", "name": "Cardiology", "is_active": True},
+            {"_id": 2, "branch_id": 1, "specialty": "ENT", "name": "ENT", "is_active": True},
+            {"_id": 3, "branch_id": 2, "specialty": "ENT", "name": "ENT", "is_active": True},
+        ]
+    )
+    # Doctor 5's user account and doctor 6's room are deactivated: like the backend's live Eq. 6.5,
+    # they must not add forecast capacity although they still have schedules.
+    database["users"].insert_many(
+        [
+            {"_id": uid, "full_name": name, "role": "STAFF", "is_active": active}
+            for uid, name, active in (
+                (101, "Dr A", True), (102, "Dr B", True), (103, "Dr C", True),
+                (104, "Dr D", True), (105, "Dr E", False), (106, "Dr F", True),
             )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO departments (department_id, branch_id, specialty, name, is_active) VALUES "
-                "(1, 1, 'Cardiology', 'Cardiology', 1), (2, 1, 'ENT', 'ENT', 1), (3, 2, 'ENT', 'ENT', 1)"
-            )
-        )
-        # Doctor 5's user account and doctor 6's room are deactivated: like the backend's live Eq. 6.5,
-        # they must not add forecast capacity although they still have schedules.
-        conn.execute(
-            text(
-                "INSERT INTO users (user_id, full_name, role, is_active) VALUES "
-                "(101, 'Dr A', 'STAFF', 1), (102, 'Dr B', 'STAFF', 1), (103, 'Dr C', 'STAFF', 1), "
-                "(104, 'Dr D', 'STAFF', 1), (105, 'Dr E', 'STAFF', 0), (106, 'Dr F', 'STAFF', 1)"
-            )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO service_points (service_point_id, branch_id, type, name, is_active) VALUES "
-                "(1, 1, 'OPD', 'Room 1', 1), (2, 1, 'OPD', 'Room 2', 1), (3, 1, 'OPD', 'Room 3', 1), "
-                "(4, 2, 'OPD', 'Room 4', 1), (5, 1, 'OPD', 'Room 5', 1), (6, 1, 'OPD', 'Room 6', 0)"
-            )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO doctors (doctor_id, user_id, department_id, avg_consult_minutes, is_active) VALUES "
-                "(1, 101, 1, 10.0, 1), (2, 102, 1, 12.0, 1), (3, 103, 2, 15.0, 1), (4, 104, 3, 10.0, 1), "
-                "(5, 105, 1, 10.0, 1), (6, 106, 2, 10.0, 1)"
-            )
-        )
-        schedules = []
-        for dow in range(1, 8):
-            if dow <= 6:
-                schedules.append({"doctor_id": 1, "sp": 1, "dow": dow, "start": "09:00", "end": "13:00"})
-                schedules.append({"doctor_id": 2, "sp": 2, "dow": dow, "start": "09:00:00", "end": "13:00:00"})
-                schedules.append({"doctor_id": 5, "sp": 5, "dow": dow, "start": "09:00", "end": "13:00"})  # inactive user
-            if dow <= 5:
-                schedules.append({"doctor_id": 3, "sp": 3, "dow": dow, "start": "14:00:00", "end": "16:30:00"})
-                schedules.append({"doctor_id": 6, "sp": 6, "dow": dow, "start": "14:00", "end": "17:00"})  # inactive room
-            schedules.append({"doctor_id": 4, "sp": 4, "dow": dow, "start": "09:00", "end": "17:00"})  # inactive branch
-        conn.execute(
-            text(
-                "INSERT INTO doctor_schedules (doctor_id, service_point_id, day_of_week, start_time, end_time) "
-                "VALUES (:doctor_id, :sp, :dow, :start, :end)"
-            ),
-            schedules,
-        )
-        conn.execute(
-            text("INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (:k, :v, :u)"),
-            {"k": "congestionThresholds", "v": json.dumps({"high": 0.5, "critical": 0.9}), "u": fmt(today)},
+        ]
+    )
+    database["service_points"].insert_many(
+        [
+            {"_id": sp, "branch_id": branch, "type": "OPD", "name": f"Room {sp}", "is_active": active}
+            for sp, branch, active in ((1, 1, True), (2, 1, True), (3, 1, True), (4, 2, True), (5, 1, True), (6, 1, False))
+        ]
+    )
+    database["doctors"].insert_many(
+        [
+            {"_id": did, "user_id": uid, "department_id": dep, "avg_consult_minutes": c, "is_active": True}
+            for did, uid, dep, c in ((1, 101, 1, 10.0), (2, 102, 1, 12.0), (3, 103, 2, 15.0), (4, 104, 3, 10.0),
+                                     (5, 105, 1, 10.0), (6, 106, 2, 10.0))
+        ]
+    )
+    schedules = []
+
+    def schedule(doctor_id: int, sp: int, dow: int, start: str, end: str) -> None:
+        schedules.append(
+            {"_id": len(schedules) + 1, "doctor_id": doctor_id, "service_point_id": sp, "day_of_week": dow,
+             "start_time": start, "end_time": end, "max_patients": None}
         )
 
-        tokens = []
-        number = 0
+    for dow in range(1, 8):
+        if dow <= 6:
+            schedule(1, 1, dow, "09:00:00", "13:00:00")
+            schedule(2, 2, dow, "09:00:00", "13:00:00")
+            schedule(5, 5, dow, "09:00:00", "13:00:00")  # inactive user
+        if dow <= 5:
+            schedule(3, 3, dow, "14:00:00", "16:30:00")
+            schedule(6, 6, dow, "14:00", "17:00")  # inactive room (also: 'HH:mm' is tolerated)
+        schedule(4, 4, dow, "09:00:00", "17:00:00")  # inactive branch
+    database["doctor_schedules"].insert_many(schedules)
+    database["settings"].insert_one(
+        {"_id": "congestionThresholds", "value": {"high": 0.5, "critical": 0.9}, "updated_at": utc(today)}
+    )
 
-        def add(issued: datetime, doctor_id, queue_type: str = "OPD") -> None:
-            nonlocal number
-            number += 1
-            tokens.append(
-                {
-                    "visit_id": number,
-                    "sp": doctor_id or 99,
-                    "doctor_id": doctor_id,
-                    "number": number,
-                    "date": issued.strftime("%Y-%m-%d"),
-                    "queue_type": queue_type,
-                    "issued_at": fmt(issued),
-                }
-            )
+    tokens = []
 
-        for d in range(weeks * 7, 0, -1):
-            day = today - timedelta(days=d)
-            dow = day.isoweekday()
-            if dow <= 6:  # Cardiology: Monday surge (FR-17 peak hours)
-                for hour in range(9, 13):
-                    count = (14 if dow == 1 else 8) + rng.randint(-1, 1)
-                    for i in range(count):
-                        add(day.replace(hour=hour, minute=rng.randint(0, 59)), 1 + i % 2)
-            if dow <= 5:  # ENT afternoon session
-                for hour, count in ((14, 5), (15, 5), (16, 2)):
-                    for _ in range(count):
-                        add(day.replace(hour=hour, minute=rng.randint(0, 29)), 3)
-            for _ in range(10):  # LAB tokens are not OPD arrivals
-                add(day.replace(hour=10, minute=rng.randint(0, 59)), None, "LAB")
-        for _ in range(30):  # today's tokens are not part of the (complete-day) history
-            add(today.replace(hour=0, minute=30), 1)
-
-        conn.execute(
-            text(
-                "INSERT INTO tokens (visit_id, service_point_id, doctor_id, token_number, token_date, queue_type, "
-                "status, issued_at, is_synthetic) VALUES (:visit_id, :sp, :doctor_id, :number, :date, :queue_type, "
-                "'COMPLETED', :issued_at, 1)"
-            ),
-            tokens,
-        )
-
-        # Stale rows: one inside the horizon and one after it (both must be replaced, e.g. what the
-        # backend's JS fallback writes up to now + 7 days) and one in the past (must be kept).
-        conn.execute(
-            text(
-                "INSERT INTO forecasts (branch_id, department_id, forecast_hour, expected_arrivals, capacity, "
-                "congestion_level, is_peak, source, generated_at) VALUES "
-                "(1, 1, :inside, 99.0, 1.0, 'CRITICAL', 1, 'stale', :gen), "
-                "(1, 1, :after, 7.0, 11.0, 'NORMAL', 0, 'baseline', :gen), "
-                "(1, 1, :past, 5.0, 11.0, 'NORMAL', 0, 'stale', :gen)"
-            ),
+    def add(issued: datetime, doctor_id, queue_type: str = "OPD") -> None:
+        number = len(tokens) + 1
+        tokens.append(
             {
-                "inside": fmt(today.replace(hour=3)),
-                "after": fmt(today + timedelta(days=31, hours=10)),
-                "past": fmt(today - timedelta(days=1, hours=-10)),
-                "gen": fmt(today - timedelta(days=2)),
-            },
+                "_id": number,
+                "visit_id": number,
+                "service_point_id": doctor_id or 99,
+                "doctor_id": doctor_id,
+                "token_number": number,
+                "token_date": issued.strftime("%Y-%m-%d"),
+                "queue_type": queue_type,
+                "priority_level": 0,
+                "status": "COMPLETED",
+                "issued_at": utc(issued),
+                "called_at": None,
+                "is_synthetic": True,
+            }
         )
+
+    for d in range(weeks * 7, 0, -1):
+        day = today - timedelta(days=d)
+        dow = day.isoweekday()
+        if dow <= 6:  # Cardiology: Monday surge (FR-17 peak hours)
+            for hour in range(9, 13):
+                count = (14 if dow == 1 else 8) + rng.randint(-1, 1)
+                for i in range(count):
+                    add(day.replace(hour=hour, minute=rng.randint(0, 59)), 1 + i % 2)
+        if dow <= 5:  # ENT afternoon session
+            for hour, count in ((14, 5), (15, 5), (16, 2)):
+                for _ in range(count):
+                    add(day.replace(hour=hour, minute=rng.randint(0, 29)), 3)
+        for _ in range(10):  # LAB tokens are not OPD arrivals
+            add(day.replace(hour=10, minute=rng.randint(0, 59)), None, "LAB")
+    # Today's tokens are not part of the (complete-day) history. 00:30 local is still the previous
+    # day in UTC, so this also checks that the history bounds are converted to UTC.
+    for _ in range(30):
+        add(today.replace(hour=0, minute=30), 1)
+    database["tokens"].insert_many(tokens)
+
+    # Stale documents: one inside the horizon and one after it (both must be replaced, e.g. what the
+    # backend's JS fallback writes up to now + 7 days) and one in the past (must be kept). No
+    # counters document exists yet: the job must not reuse these _id values.
+    generated = utc(today - timedelta(days=2))
+    database["forecasts"].insert_many(
+        [
+            {"_id": 1, "branch_id": 1, "department_id": 1, "forecast_hour": utc(today.replace(hour=3)),
+             "expected_arrivals": 99.0, "capacity": 1.0, "congestion_level": "CRITICAL", "is_peak": True,
+             "source": "stale", "generated_at": generated},
+            {"_id": 2, "branch_id": 1, "department_id": 1, "forecast_hour": utc(today + timedelta(days=31, hours=10)),
+             "expected_arrivals": 7.0, "capacity": 11.0, "congestion_level": "NORMAL", "is_peak": False,
+             "source": "baseline", "generated_at": generated},
+            {"_id": 3, "branch_id": 1, "department_id": 1, "forecast_hour": utc(today - timedelta(days=1, hours=-10)),
+             "expected_arrivals": 5.0, "capacity": 11.0, "congestion_level": "NORMAL", "is_peak": False,
+             "source": "stale", "generated_at": generated},
+        ]
+    )
 
 
 @pytest.fixture
-def seed_forecast_history(engine):
-    return lambda today, **kwargs: _seed_forecast_history(engine, today, **kwargs)
+def seed_forecast_history(mongo):
+    return lambda today, **kwargs: _seed_forecast_history(mongo, today, **kwargs)
 
 
 def expected_forecast_rows(today: datetime, days: int) -> int:
