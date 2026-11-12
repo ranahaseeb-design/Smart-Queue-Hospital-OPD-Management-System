@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Seed contents (contract accounts and master data, synthetic history) and the key property of
- * the synthetic history: every stored features_json equals what the live feature builder writes.
+ * the synthetic history: every stored `features` object equals what the live feature builder writes.
  * The second part drives a scripted day through the live API and checks that the seed's as-of
  * replay (db/history.js) reproduces each live first prediction exactly.
  */
@@ -12,12 +12,20 @@ const fb = require('../src/services/featureBuilder');
 const { replayFirstPredictions } = require('../src/db/history');
 
 let ctx;
+let M; // models
 before(async () => {
   ctx = await createContext('seed', { historyDays: 10 });
+  M = ctx.models;
 });
 after(async () => {
   await ctx.close();
 });
+
+/** { value: count } of a field over a collection (optionally filtered). */
+async function countBy(Model, field, filter = {}) {
+  const rows = await Model.aggregate([{ $match: filter }, { $group: { _id: `$${field}`, n: { $sum: 1 } } }]);
+  return Object.fromEntries(rows.map((r) => [r._id, r.n]));
+}
 
 test('every contract account can log in with the documented password', async () => {
   for (const key of Object.keys(ACCOUNTS)) {
@@ -28,59 +36,62 @@ test('every contract account can log in with the documented password', async () 
   const byPhone = await ctx.api.post('/auth/login', null, { identifier: '03001234567', password: 'Patient@123' });
   assert.equal(byPhone.body.user.email, 'patient@opd.test');
   assert.equal(byPhone.body.user.priorityCategory, 'NONE');
-  const doctorCount = await ctx.db.get('SELECT COUNT(*) AS n FROM doctors', []);
-  const last = await ctx.api.post('/auth/login', null, { identifier: `doctor${doctorCount.n}@opd.test`, password: 'Staff@123' });
+  const doctorCount = await M.Doctor.countDocuments();
+  const last = await ctx.api.post('/auth/login', null, { identifier: `doctor${doctorCount}@opd.test`, password: 'Staff@123' });
   assert.equal(last.status, 200);
-  const roles = await ctx.db.query('SELECT role, COUNT(*) AS n FROM users GROUP BY role ORDER BY role', []);
-  const byRole = Object.fromEntries(roles.map((r) => [r.role, r.n]));
+  const byRole = await countBy(M.User, 'role');
   assert.equal(byRole.HOSPITAL_ADMIN, 1);
   assert.equal(byRole.BRANCH_ADMIN, 1);
-  assert.equal(byRole.STAFF, doctorCount.n + 2);
-  const ba = await ctx.db.get(`SELECT admin_branch_id FROM users WHERE email = 'branchadmin@opd.test'`, []);
+  assert.equal(byRole.STAFF, doctorCount + 2);
+  const ba = await M.User.findOne({ email: 'branchadmin@opd.test' }).lean();
   assert.equal(ba.admin_branch_id, 1);
 });
 
 test('master data: 3 Lahore branches, 4-5 departments, 2 doctors each, rooms, counters, schedules', async () => {
-  const branches = await ctx.db.query('SELECT * FROM branches ORDER BY branch_id', []);
+  const branches = await M.Branch.find().sort({ _id: 1 }).lean();
   assert.deepEqual(
     branches.map((b) => [b.name, b.latitude, b.longitude]),
     [['Model Town', 31.4834, 74.3255], ['Gulberg', 31.5204, 74.3587], ['DHA', 31.4697, 74.4091]]
   );
   const allowed = ['General Medicine', 'Cardiology', 'Pediatrics', 'ENT', 'Orthopedics', 'Dermatology'];
   for (const b of branches) {
-    const depts = await ctx.db.query('SELECT * FROM departments WHERE branch_id = ?', [b.branch_id]);
+    const depts = await M.Department.find({ branch_id: b._id }).lean();
     assert.ok(depts.length >= 4 && depts.length <= 5);
     assert.ok(depts.every((d) => allowed.includes(d.specialty)));
     assert.ok(depts.some((d) => d.specialty === 'Cardiology'));
     assert.ok(depts.some((d) => d.specialty === 'General Medicine'));
     for (const d of depts) {
-      const n = await ctx.db.get('SELECT COUNT(*) AS n FROM doctors WHERE department_id = ?', [d.department_id]);
-      assert.equal(n.n, 2);
+      assert.equal(await M.Doctor.countDocuments({ department_id: d._id }), 2);
     }
-    const sp = await ctx.db.query('SELECT type, COUNT(*) AS n FROM service_points WHERE branch_id = ? GROUP BY type', [b.branch_id]);
-    const byType = Object.fromEntries(sp.map((r) => [r.type, r.n]));
+    const byType = await countBy(M.ServicePoint, 'type', { branch_id: b._id });
     assert.equal(byType.LAB, 1);
     assert.equal(byType.PHARMACY, 1);
     assert.equal(byType.OPD, depts.length * 2);
   }
-  const sched = await ctx.db.query('SELECT doctor_id, COUNT(DISTINCT day_of_week) AS days, MIN(max_patients) AS mp FROM doctor_schedules GROUP BY doctor_id', []);
-  assert.ok(sched.every((s) => s.days === 7 && s.mp === 40));
-  const shifts = await ctx.db.query('SELECT DISTINCT start_time, end_time FROM doctor_schedules ORDER BY start_time', []);
-  assert.deepEqual(shifts.map((s) => `${s.start_time}-${s.end_time}`), ['08:00:00-14:00:00', '14:00:00-22:00:00']);
+  const sched = await M.DoctorSchedule.aggregate([
+    { $group: { _id: '$doctor_id', days: { $addToSet: '$day_of_week' }, mp: { $min: '$max_patients' } } },
+  ]);
+  assert.ok(sched.every((s) => s.days.length === 7 && s.mp === 40));
+  const shifts = (await M.DoctorSchedule.aggregate([{ $group: { _id: { s: '$start_time', e: '$end_time' } } }]))
+    .map((x) => `${x._id.s}-${x._id.e}`)
+    .sort();
+  assert.deepEqual(shifts, ['08:00:00-14:00:00', '14:00:00-22:00:00']);
   // every doctor is assigned to their own room; lab1 / pharmacy1 to branch-1 counters
-  const own = await ctx.db.query(
-    `SELECT COUNT(*) AS n FROM doctors d JOIN staff_assignments sa ON sa.user_id = d.user_id
-       JOIN doctor_schedules ds ON ds.doctor_id = d.doctor_id AND ds.service_point_id = sa.service_point_id AND ds.day_of_week = 1`,
-    []
-  );
-  assert.equal(own[0].n, sched.length);
-  const counters = await ctx.db.query(
-    `SELECT u.email, sp.type, sp.branch_id FROM staff_assignments sa JOIN users u ON u.user_id = sa.user_id
-       JOIN service_points sp ON sp.service_point_id = sa.service_point_id WHERE u.email IN ('lab1@opd.test', 'pharmacy1@opd.test')
-      ORDER BY u.email`,
-    []
-  );
-  assert.deepEqual(counters.map((c) => [c.email, c.type, c.branch_id]), [
+  let own = 0;
+  for (const d of await M.Doctor.find().lean()) {
+    const rooms = await M.StaffAssignment.distinct('service_point_id', { user_id: d.user_id });
+    own += await M.DoctorSchedule.countDocuments({ doctor_id: d._id, day_of_week: 1, service_point_id: { $in: rooms } });
+  }
+  assert.equal(own, sched.length);
+  const counters = [];
+  for (const email of ['lab1@opd.test', 'pharmacy1@opd.test']) {
+    const u = await M.User.findOne({ email }).lean();
+    for (const a of await M.StaffAssignment.find({ user_id: u._id }).lean()) {
+      const sp = await M.ServicePoint.findById(a.service_point_id).lean();
+      counters.push([email, sp.type, sp.branch_id]);
+    }
+  }
+  assert.deepEqual(counters, [
     ['lab1@opd.test', 'LAB', 1],
     ['pharmacy1@opd.test', 'PHARMACY', 1],
   ]);
@@ -88,93 +99,78 @@ test('master data: 3 Lahore branches, 4-5 departments, 2 doctors each, rooms, co
 
 test('synthetic history: flagged rows, events, one prediction per token, feedback, closed visits', async () => {
   const today = ctx.time.today();
-  const tokens = await ctx.db.get(
-    `SELECT COUNT(*) AS n, SUM(is_synthetic) AS s, COUNT(DISTINCT token_date) AS days FROM tokens WHERE token_date < ?`,
-    [today]
-  );
-  assert.ok(tokens.n > 1000);
-  assert.equal(tokens.s, tokens.n);
-  assert.equal(tokens.days, 10);
-  const types = await ctx.db.query(`SELECT queue_type, COUNT(*) AS n FROM tokens GROUP BY queue_type`, []);
-  assert.deepEqual(types.map((t) => t.queue_type).sort(), ['LAB', 'OPD', 'PHARMACY']);
-  const preds = await ctx.db.get(
-    `SELECT COUNT(*) AS n, COUNT(DISTINCT token_id) AS t, MIN(model_version) AS mv, MAX(model_version) AS mv2 FROM wait_predictions`,
-    []
-  );
-  assert.equal(preds.n, preds.t);
-  assert.equal(preds.t, tokens.n + 5);
-  assert.equal(preds.mv, 'baseline');
-  assert.equal(preds.mv2, 'baseline');
-  const sample = await ctx.db.query('SELECT features_json FROM wait_predictions ORDER BY prediction_id LIMIT 50', []);
-  for (const r of sample) assert.deepEqual(Object.keys(JSON.parse(r.features_json)), [...fb.FEATURE_KEYS]);
+  const past = { token_date: { $lt: today } };
+  const n = await M.Token.countDocuments(past);
+  const synthetic = await M.Token.countDocuments({ ...past, is_synthetic: true });
+  const days = (await M.Token.distinct('token_date', past)).length;
+  assert.ok(n > 1000);
+  assert.equal(synthetic, n);
+  assert.equal(days, 10);
+  const types = await M.Token.distinct('queue_type');
+  assert.deepEqual(types.sort(), ['LAB', 'OPD', 'PHARMACY']);
+  const predN = await M.WaitPrediction.countDocuments();
+  const predTokens = (await M.WaitPrediction.distinct('token_id')).length;
+  const versions = await M.WaitPrediction.distinct('model_version');
+  assert.equal(predN, predTokens);
+  assert.equal(predTokens, n + 5);
+  assert.deepEqual(versions, ['baseline']);
+  const sample = await M.WaitPrediction.find().sort({ _id: 1 }).limit(50).lean();
+  for (const r of sample) assert.deepEqual(Object.keys(r.features), [...fb.FEATURE_KEYS]);
 
-  const noIssued = await ctx.db.get(
-    `SELECT COUNT(*) AS n FROM tokens t WHERE NOT EXISTS (SELECT 1 FROM queue_events e WHERE e.token_id = t.token_id AND e.event_type = 'ISSUED')`,
-    []
+  const issuedTokens = new Set(await M.QueueEvent.distinct('token_id', { event_type: 'ISSUED' }));
+  const allTokens = await M.Token.find({}, { status: 1, completed_at: 1 }).lean();
+  assert.equal(allTokens.filter((t) => !issuedTokens.has(t._id)).length, 0);
+  const completedEvents = await M.QueueEvent.find({ event_type: 'COMPLETED' }, { token_id: 1, event_time: 1 }).lean();
+  const completedAt = new Set(completedEvents.map((e) => `${e.token_id}|${e.event_time.getTime()}`));
+  const completedWithoutEvent = allTokens.filter(
+    (t) => t.status === 'COMPLETED' && !completedAt.has(`${t._id}|${t.completed_at.getTime()}`)
   );
-  assert.equal(noIssued.n, 0);
-  const completedWithoutEvent = await ctx.db.get(
-    `SELECT COUNT(*) AS n FROM tokens t WHERE t.status = 'COMPLETED' AND NOT EXISTS
-       (SELECT 1 FROM queue_events e WHERE e.token_id = t.token_id AND e.event_type = 'COMPLETED' AND e.event_time = t.completed_at)`,
-    []
-  );
-  assert.equal(completedWithoutEvent.n, 0);
-  const kinds = await ctx.db.query('SELECT DISTINCT event_type FROM queue_events ORDER BY event_type', []);
+  assert.equal(completedWithoutEvent.length, 0);
+  const kinds = await M.QueueEvent.distinct('event_type');
   for (const k of ['CALLED', 'COMPLETED', 'ISSUED', 'NO_SHOW', 'PRIORITY_SET', 'RECALLED', 'SKIPPED', 'STARTED']) {
-    assert.ok(kinds.some((x) => x.event_type === k), k);
+    assert.ok(kinds.includes(k), k);
   }
-  const priority = await ctx.db.get(`SELECT COUNT(*) AS n FROM tokens WHERE priority_level > 0`, []);
-  assert.ok(priority.n > 0);
-  const linked = await ctx.db.get(
-    `SELECT COUNT(*) AS n FROM tokens l JOIN tokens o ON o.visit_id = l.visit_id AND o.queue_type = 'OPD' WHERE l.queue_type <> 'OPD'`,
-    []
+  assert.ok((await M.Token.countDocuments({ priority_level: { $gt: 0 } })) > 0);
+  const opdVisits = new Set(await M.Token.distinct('visit_id', { queue_type: 'OPD' }));
+  const linkedVisits = await M.Token.distinct('visit_id', { queue_type: { $ne: 'OPD' } });
+  assert.ok(linkedVisits.some((v) => opdVisits.has(v)));
+  assert.equal(await M.Visit.countDocuments({ status: 'OPEN', visit_date: { $lt: today } }), 0);
+  assert.equal(
+    await M.Token.countDocuments({ ...past, status: { $in: ['WAITING', 'CALLED', 'IN_SERVICE', 'SKIPPED'] } }),
+    0
   );
-  assert.ok(linked.n > 0);
-  const open = await ctx.db.get(`SELECT COUNT(*) AS n FROM visits WHERE status = 'OPEN' AND visit_date < ?`, [today]);
-  assert.equal(open.n, 0);
-  const stale = await ctx.db.get(`SELECT COUNT(*) AS n FROM tokens WHERE token_date < ? AND status IN ('WAITING', 'CALLED', 'IN_SERVICE', 'SKIPPED')`, [today]);
-  assert.equal(stale.n, 0);
 
-  const fbRow = await ctx.db.get(
-    `SELECT COUNT(*) AS f, (SELECT COUNT(DISTINCT visit_id) FROM tokens WHERE queue_type = 'OPD' AND status = 'COMPLETED') AS v FROM feedback`,
-    []
-  );
-  const share = fbRow.f / fbRow.v;
+  const feedbackCount = await M.Feedback.countDocuments();
+  const completedVisits = (await M.Token.distinct('visit_id', { queue_type: 'OPD', status: 'COMPLETED' })).length;
+  const share = feedbackCount / completedVisits;
   assert.ok(share > 0.2 && share < 0.4, `feedback share ${share}`);
 });
 
 test("today's WAITING tokens (incl. doctor1's room) and the demo patient's past visit", async () => {
-  const rows = await ctx.db.query(
-    `SELECT t.service_point_id, t.status, v.status AS visit_status FROM tokens t JOIN visits v ON v.visit_id = t.visit_id
-      WHERE t.token_date = ?`,
-    [ctx.time.today()]
-  );
-  assert.equal(rows.length, 5);
-  assert.ok(rows.every((r) => r.status === 'WAITING' && r.visit_status === 'OPEN'));
-  const doctor1Room = await ctx.db.get(
-    `SELECT sa.service_point_id FROM staff_assignments sa JOIN users u ON u.user_id = sa.user_id WHERE u.email = 'doctor1@opd.test'`,
-    []
-  );
-  assert.equal(rows.filter((r) => r.service_point_id === doctor1Room.service_point_id).length, 3);
+  const todayTokens = await M.Token.find({ token_date: ctx.time.today() }).lean();
+  assert.equal(todayTokens.length, 5);
+  for (const t of todayTokens) {
+    const v = await M.Visit.findById(t.visit_id).lean();
+    assert.equal(t.status, 'WAITING');
+    assert.equal(v.status, 'OPEN');
+  }
+  const doctor1 = await M.User.findOne({ email: 'doctor1@opd.test' }).lean();
+  const doctor1Room = await M.StaffAssignment.findOne({ user_id: doctor1._id }).lean();
+  assert.equal(todayTokens.filter((t) => t.service_point_id === doctor1Room.service_point_id).length, 3);
 
-  const demo = await ctx.db.query(
-    `SELECT v.visit_id, v.status, t.status AS token_status, t.queue_type,
-            (SELECT COUNT(*) FROM feedback f WHERE f.visit_id = v.visit_id) AS feedback
-       FROM visits v JOIN users u ON u.user_id = v.patient_id JOIN tokens t ON t.visit_id = v.visit_id
-      WHERE u.email = 'patient@opd.test' AND t.queue_type = 'OPD'`,
-    []
-  );
+  const demoUser = await M.User.findOne({ email: 'patient@opd.test' }).lean();
+  const demoVisits = await M.Visit.distinct('_id', { patient_id: demoUser._id });
+  const demo = await M.Token.find({ visit_id: { $in: demoVisits }, queue_type: 'OPD' }).lean();
   assert.equal(demo.length, 1);
-  assert.equal(demo[0].token_status, 'COMPLETED');
-  assert.equal(demo[0].feedback, 0);
+  assert.equal(demo[0].status, 'COMPLETED');
+  assert.equal(await M.Feedback.countDocuments({ visit_id: demo[0].visit_id }), 0);
 });
 
 test('doctor averages equal the rolling mean of the last 30 consultations (nightly job is a no-op)', async () => {
   const predictionService = require('../src/services/predictionService');
   const updated = await predictionService.refreshDoctorAverages(ctx.db);
   assert.equal(updated, 0);
-  const forecasts = await ctx.db.get('SELECT COUNT(*) AS n FROM forecasts', []);
-  assert.ok(forecasts.n > 0);
+  assert.ok((await M.Forecast.countDocuments()) > 0);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -193,20 +189,24 @@ const STATUS_OF_EVENT = {
   NO_SHOW: 'NO_SHOW',
 };
 
-/** Rebuild timelines of a date from the tokens and queue_events tables. */
-async function timelinesFromDb(db, date) {
+/** Rebuild timelines of a date from the tokens and queue_events collections. */
+async function timelinesFromDb(date) {
   const time = ctx.time;
-  const rows = await db.query(
-    `SELECT t.*, v.branch_id, d.department_id, u.priority_category
-       FROM tokens t JOIN visits v ON v.visit_id = t.visit_id JOIN users u ON u.user_id = v.patient_id
-       LEFT JOIN doctors d ON d.doctor_id = t.doctor_id
-      WHERE t.token_date = ? ORDER BY t.token_id`,
-    [date]
-  );
-  const events = await db.query(
-    `SELECT e.* FROM queue_events e JOIN tokens t ON t.token_id = e.token_id WHERE t.token_date = ? ORDER BY e.event_id`,
-    [date]
-  );
+  const tokenDocs = await M.Token.find({ token_date: date }).sort({ _id: 1 }).lean();
+  const rows = [];
+  for (const t of tokenDocs) {
+    const v = await M.Visit.findById(t.visit_id).lean();
+    const u = await M.User.findById(v.patient_id).lean();
+    const d = t.doctor_id ? await M.Doctor.findById(t.doctor_id).lean() : null;
+    rows.push({
+      ...t,
+      token_id: t._id,
+      branch_id: v.branch_id,
+      department_id: d ? d.department_id : null,
+      priority_category: u.priority_category,
+    });
+  }
+  const events = await M.QueueEvent.find({ token_id: { $in: rows.map((r) => r.token_id) } }).sort({ _id: 1 }).lean();
   const byToken = new Map(rows.map((r) => [r.token_id, []]));
   for (const e of events) byToken.get(e.token_id).push(e);
   const tokens = rows.map((r) => {
@@ -238,7 +238,7 @@ test('seed replay reproduces the live first prediction of every token (features 
   const predictionService = require('../src/services/predictionService');
   const { db, api, time } = ctx;
   const today = time.today();
-  const maxSeeded = (await db.get('SELECT MAX(token_id) AS m FROM tokens', [])).m;
+  const maxSeeded = (await M.Token.findOne().sort({ _id: -1 }).lean())._id;
 
   const d1 = await ctx.login('doctor1');
   const d2 = await ctx.login('doctor2');
@@ -300,7 +300,7 @@ test('seed replay reproduces the live first prediction of every token (features 
   step(); await join('L', me2.doctorId);
 
   // Replay context, assembled exactly like the seed does for a simulated day.
-  const { tokens, events } = await timelinesFromDb(db, today);
+  const { tokens, events } = await timelinesFromDb(today);
   const doctors = new Map();
   const departmentSessions = new Map();
   for (const doctorId of [me1.doctorId, me2.doctorId]) {
@@ -318,14 +318,15 @@ test('seed replay reproduces the live first prediction of every token (features 
     }
   }
   const counterAverages = new Map();
-  for (const sp of await db.query(`SELECT service_point_id, type FROM service_points WHERE branch_id = 1 AND type <> 'OPD'`, [])) {
-    counterAverages.set(sp.service_point_id, await predictionService.servicePointAverage(db, sp.service_point_id, sp.type, today));
+  for (const sp of await M.ServicePoint.find({ branch_id: 1, type: { $ne: 'OPD' } }).lean()) {
+    counterAverages.set(sp._id, await predictionService.servicePointAverage(db, sp._id, sp.type, today));
   }
-  const apptRows = await db.query(
-    `SELECT a.slot_start, (SELECT issued_at FROM tokens t WHERE t.appointment_id = a.appointment_id) AS checked_in
-       FROM appointments a WHERE a.doctor_id = ? AND a.slot_start >= ?`,
-    [me2.doctorId, `${today} 00:00:00`]
-  );
+  const apptDocs = await M.Appointment.find({ doctor_id: me2.doctorId, slot_start: { $gte: time.dayStart(today) } }).lean();
+  const apptRows = [];
+  for (const a of apptDocs) {
+    const t = await M.Token.findOne({ appointment_id: a._id }).lean();
+    apptRows.push({ slot_start: a.slot_start, checked_in: t ? t.issued_at : null });
+  }
   const appointments = new Map([
     [
       me2.doctorId,
@@ -340,17 +341,18 @@ test('seed replay reproduces the live first prediction of every token (features 
   assert.ok(scenarioIds.size >= 15);
   const replay = replayFirstPredictions({ tokens, events, doctors, counterAverages, departmentSessions, appointments, only: scenarioIds });
 
-  const first = await db.query(
-    `SELECT wp.token_id, wp.predicted_minutes, wp.features_json FROM wait_predictions wp
-      WHERE wp.prediction_id IN (SELECT MIN(prediction_id) FROM wait_predictions WHERE token_id > ? GROUP BY token_id)`,
-    [maxSeeded]
-  );
+  // First prediction (lowest _id) of every scenario token.
+  const first = await M.WaitPrediction.aggregate([
+    { $match: { token_id: { $gt: maxSeeded } } },
+    { $sort: { _id: 1 } },
+    { $group: { _id: '$token_id', predicted_minutes: { $first: '$predicted_minutes' }, features: { $first: '$features' } } },
+  ]);
   assert.equal(first.length, scenarioIds.size);
   let interesting = 0;
   for (const row of first) {
-    const expected = replay.get(row.token_id);
-    assert.deepEqual(expected.features, JSON.parse(row.features_json), `token ${row.token_id} features`);
-    assert.equal(expected.minutes, row.predicted_minutes, `token ${row.token_id} minutes`);
+    const expected = replay.get(row._id);
+    assert.deepEqual(expected.features, row.features, `token ${row._id} features`);
+    assert.equal(expected.minutes, row.predicted_minutes, `token ${row._id} minutes`);
     const f = expected.features;
     if (f.interruptions_last_hour > 0 || f.appointments_ahead > 0 || f.priority_ahead > 0 || f.session_started) interesting += 1;
   }

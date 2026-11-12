@@ -3,7 +3,9 @@
  * System settings (key -> JSON value) managed by the Hospital Administrator.
  * Missing keys fall back to the contract defaults.
  */
-const { parseJson } = require('../db');
+const { sess, models } = require('../db');
+
+const { Setting } = models;
 const time = require('../utils/time');
 const { badRequest } = require('../utils/errors');
 
@@ -25,14 +27,14 @@ function clone(v) {
 
 async function getSettings(db) {
   if (cache && Date.now() - cacheAt < CACHE_MS) return clone(cache);
-  const rows = await db.query('SELECT setting_key, setting_value FROM settings', []);
+  const rows = await Setting.find({}).session(sess(db)).lean();
   const merged = clone(DEFAULTS);
   for (const row of rows) {
-    if (Object.prototype.hasOwnProperty.call(DEFAULTS, row.setting_key)) {
-      const value = parseJson(row.setting_value, null);
+    if (Object.prototype.hasOwnProperty.call(DEFAULTS, row._id)) {
+      const value = row.value === undefined ? null : row.value;
       if (value !== null) {
-        merged[row.setting_key] =
-          typeof DEFAULTS[row.setting_key] === 'object' ? { ...DEFAULTS[row.setting_key], ...value } : value;
+        merged[row._id] =
+          typeof DEFAULTS[row._id] === 'object' ? { ...DEFAULTS[row._id], ...value } : value;
       }
     }
   }
@@ -99,13 +101,11 @@ async function updateSettings(db, input) {
   const now = time.nowDb();
   await db.transaction(async (tx) => {
     for (const key of Object.keys(DEFAULTS)) {
-      const value = JSON.stringify(next[key]);
-      const existing = await tx.get('SELECT setting_key FROM settings WHERE setting_key = ?', [key]);
-      if (existing) {
-        await tx.run('UPDATE settings SET setting_value = ?, updated_at = ? WHERE setting_key = ?', [value, now, key]);
-      } else {
-        await tx.run('INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)', [key, value, now]);
-      }
+      await Setting.updateOne(
+        { _id: key },
+        { $set: { value: clone(next[key]), updated_at: now } },
+        { upsert: true, session: sess(tx) }
+      );
     }
   });
   invalidate();
@@ -116,14 +116,12 @@ async function updateSettings(db, input) {
 async function writeDefaults(db) {
   const now = time.nowDb();
   for (const [key, value] of Object.entries(DEFAULTS)) {
-    const existing = await db.get('SELECT setting_key FROM settings WHERE setting_key = ?', [key]);
-    if (!existing) {
-      await db.run('INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)', [
-        key,
-        JSON.stringify(value),
-        now,
-      ]);
-    }
+    // $setOnInsert: an existing (administrator-changed) value is never overwritten.
+    await Setting.updateOne(
+      { _id: key },
+      { $setOnInsert: { value: clone(value), updated_at: now } },
+      { upsert: true, session: sess(db) }
+    );
   }
   invalidate();
 }

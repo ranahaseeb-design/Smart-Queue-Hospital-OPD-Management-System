@@ -3,13 +3,20 @@
  * Appointment Service (FR-10): slot calculation from doctor schedules (settings.slotMinutes),
  * booking without double booking, rescheduling, cancellation (slot released) and check-in,
  * which converts the appointment into an OPD token.
+ *
+ * No double booking: the checks run inside a transaction and the partial unique index
+ * uq_active_slot ({ doctor_id, slot_start } where status is BOOKED / CHECKED_IN) is the
+ * backstop for two simultaneous bookings (duplicate key -> 409 CONFLICT).
  */
 const time = require('../utils/time');
 const { badRequest, conflict, forbidden, notFound } = require('../utils/errors');
+const { models, sess, insertOne, isDuplicateKey, lockKey } = require('../db');
 const scheduleService = require('./scheduleService');
 const settingsService = require('./settingsService');
 const notificationService = require('./notificationService');
 const queueService = require('./queueService');
+
+const { Appointment, Token } = models;
 
 const BLOCKING = ['BOOKED', 'CHECKED_IN'];
 
@@ -38,14 +45,20 @@ async function slotGrid(db, doctorId, dateStr) {
   return { slotMinutes: step, slots };
 }
 
+/** Taken slot starts of a doctor on a date: Set of epoch milliseconds. */
 async function takenSlots(db, doctorId, dateStr, excludeAppointmentId = 0) {
-  const rows = await db.query(
-    `SELECT slot_start FROM appointments
-      WHERE doctor_id = ? AND status IN ('BOOKED', 'CHECKED_IN') AND slot_start >= ? AND slot_start < ?
-        AND appointment_id <> ?`,
-    [doctorId, `${dateStr} 00:00:00`, `${time.addDaysStr(dateStr, 1)} 00:00:00`, excludeAppointmentId]
-  );
-  return new Set(rows.map((r) => String(r.slot_start).slice(0, 19)));
+  const rows = await Appointment.find(
+    {
+      doctor_id: doctorId,
+      status: { $in: BLOCKING },
+      slot_start: time.dayRange(dateStr),
+      _id: { $ne: excludeAppointmentId },
+    },
+    { slot_start: 1 }
+  )
+    .session(sess(db))
+    .lean();
+  return new Set(rows.map((r) => time.dbDate(r.slot_start).getTime()));
 }
 
 /** GET /doctors/:id/slots */
@@ -61,22 +74,26 @@ async function listSlots(db, doctorId, dateStr, now = time.clock.now()) {
     slotMinutes,
     slots: slots
       .filter((s) => s > now)
-      .map((s) => ({ start: time.toApi(s), available: bookable && !taken.has(time.formatDateTime(s)) })),
+      .map((s) => ({ start: time.toApi(s), available: bookable && !taken.has(time.dbDate(s).getTime()) })),
   };
 }
 
+/** Appointment row with doctor, specialty, branch and the linked token id (null if missing). */
 async function appointmentRow(db, appointmentId) {
-  return db.get(
-    `SELECT a.*, u.full_name AS doctor_name, dp.specialty, b.branch_id, b.name AS branch_name,
-            (SELECT t.token_id FROM tokens t WHERE t.appointment_id = a.appointment_id) AS token_id
-       FROM appointments a
-       JOIN doctors d ON d.doctor_id = a.doctor_id
-       JOIN users u ON u.user_id = d.user_id
-       JOIN departments dp ON dp.department_id = d.department_id
-       JOIN branches b ON b.branch_id = dp.branch_id
-      WHERE a.appointment_id = ?`,
-    [appointmentId]
-  );
+  const a = await Appointment.findById(appointmentId).session(sess(db)).lean();
+  if (!a) return undefined;
+  const doctor = await scheduleService.getDoctor(db, a.doctor_id);
+  if (!doctor) return undefined;
+  const token = await Token.findOne({ appointment_id: a._id }, { _id: 1 }).session(sess(db)).lean();
+  return {
+    ...a,
+    appointment_id: a._id,
+    doctor_name: doctor.full_name,
+    specialty: doctor.specialty,
+    branch_id: doctor.branch_id,
+    branch_name: doctor.branch_name,
+    token_id: token ? token._id : null,
+  };
 }
 
 function toAppointment(r) {
@@ -92,11 +109,15 @@ function toAppointment(r) {
 }
 
 async function listForPatient(db, patientId) {
-  const rows = await db.query('SELECT appointment_id FROM appointments WHERE patient_id = ? ORDER BY slot_start DESC, appointment_id DESC', [
-    patientId,
-  ]);
+  const rows = await Appointment.find({ patient_id: patientId }, { _id: 1 })
+    .sort({ slot_start: -1, _id: -1 })
+    .session(sess(db))
+    .lean();
   const out = [];
-  for (const r of rows) out.push(toAppointment(await appointmentRow(db, r.appointment_id)));
+  for (const r of rows) {
+    const row = await appointmentRow(db, r._id);
+    if (row) out.push(toAppointment(row));
+  }
   return out;
 }
 
@@ -112,41 +133,56 @@ async function assertValidSlot(db, doctor, slot, now) {
   return dateStr;
 }
 
-async function assertSlotFree(tx, doctorId, slotStr, excludeAppointmentId = 0) {
-  const taken = await tx.get(
-    `SELECT appointment_id FROM appointments
-      WHERE doctor_id = ? AND slot_start = ? AND status IN ('BOOKED', 'CHECKED_IN') AND appointment_id <> ?`,
-    [doctorId, slotStr, excludeAppointmentId]
-  );
+async function assertSlotFree(tx, doctorId, slot, excludeAppointmentId = 0) {
+  const taken = await Appointment.exists({
+    doctor_id: doctorId,
+    slot_start: slot,
+    status: { $in: BLOCKING },
+    _id: { $ne: excludeAppointmentId },
+  }).session(sess(tx));
   if (taken) throw conflict('This slot is already booked');
 }
 
 async function assertNoOtherBookingThatDay(tx, patientId, doctorId, dateStr, excludeAppointmentId = 0) {
-  const other = await tx.get(
-    `SELECT appointment_id FROM appointments
-      WHERE patient_id = ? AND doctor_id = ? AND status IN ('BOOKED', 'CHECKED_IN')
-        AND slot_start >= ? AND slot_start < ? AND appointment_id <> ?`,
-    [patientId, doctorId, `${dateStr} 00:00:00`, `${time.addDaysStr(dateStr, 1)} 00:00:00`, excludeAppointmentId]
-  );
+  const other = await Appointment.exists({
+    patient_id: patientId,
+    doctor_id: doctorId,
+    status: { $in: BLOCKING },
+    slot_start: time.dayRange(dateStr),
+    _id: { $ne: excludeAppointmentId },
+  }).session(sess(tx));
   if (other) throw conflict('You already have an appointment with this doctor on that day');
+}
+
+/** A duplicate key on uq_active_slot means another booking took the slot first. */
+function slotConflict(err) {
+  if (isDuplicateKey(err)) return conflict('This slot is already booked');
+  return err;
 }
 
 async function book(db, patient, doctorId, slot, now = time.clock.now()) {
   const doctor = await scheduleService.getDoctor(db, doctorId);
   if (!doctor) throw notFound('Doctor not found');
   const dateStr = await assertValidSlot(db, doctor, slot, now);
-  const slotStr = time.formatDateTime(slot);
-  const at = time.formatDateTime(now);
-  const id = await db.transaction(async (tx) => {
-    await tx.lockRow('doctors', 'doctor_id', doctorId); // serialise bookings per doctor (no double booking)
-    await assertSlotFree(tx, doctorId, slotStr);
-    await assertNoOtherBookingThatDay(tx, patient.user_id, doctorId, dateStr);
-    const r = await tx.run(
-      `INSERT INTO appointments (patient_id, doctor_id, slot_start, status, updated_at) VALUES (?, ?, ?, 'BOOKED', ?)`,
-      [patient.user_id, doctorId, slotStr, at]
-    );
-    return r.insertId;
-  });
+  const slotAt = time.dbDate(slot);
+  const at = time.dbDate(now);
+  let id;
+  try {
+    id = await db.transaction(async (tx) => {
+      await lockKey(`doctor:${doctorId}`, sess(tx)); // serialise bookings per doctor
+      await assertSlotFree(tx, doctorId, slotAt);
+      await assertNoOtherBookingThatDay(tx, patient.user_id, doctorId, dateStr);
+      return insertOne(tx, Appointment, {
+        patient_id: patient.user_id,
+        doctor_id: doctorId,
+        slot_start: slotAt,
+        status: 'BOOKED',
+        updated_at: at,
+      });
+    });
+  } catch (err) {
+    throw slotConflict(err);
+  }
   await notificationService.notify(db, patient.user_id, {
     message: `Appointment booked with ${doctor.full_name} (${doctor.specialty}, ${doctor.branch_name}) on ${formatSlotHuman(slot)}.`,
     email: true,
@@ -167,18 +203,23 @@ async function reschedule(db, user, appointmentId, slot, now = time.clock.now())
   if (row.status !== 'BOOKED') throw conflict('Only booked appointments can be rescheduled');
   const doctor = await scheduleService.getDoctor(db, row.doctor_id);
   const dateStr = await assertValidSlot(db, doctor, slot, now);
-  const slotStr = time.formatDateTime(slot);
-  const at = time.formatDateTime(now);
-  await db.transaction(async (tx) => {
-    await tx.lockRow('doctors', 'doctor_id', row.doctor_id);
-    await assertSlotFree(tx, row.doctor_id, slotStr, appointmentId);
-    await assertNoOtherBookingThatDay(tx, user.user_id, row.doctor_id, dateStr, appointmentId);
-    const r = await tx.run(
-      `UPDATE appointments SET slot_start = ?, updated_at = ? WHERE appointment_id = ? AND status = 'BOOKED'`,
-      [slotStr, at, appointmentId]
-    );
-    if (r.changes !== 1) throw conflict('Appointment changed, please refresh');
-  });
+  const slotAt = time.dbDate(slot);
+  const at = time.dbDate(now);
+  try {
+    await db.transaction(async (tx) => {
+      await lockKey(`doctor:${row.doctor_id}`, sess(tx));
+      await assertSlotFree(tx, row.doctor_id, slotAt, appointmentId);
+      await assertNoOtherBookingThatDay(tx, user.user_id, row.doctor_id, dateStr, appointmentId);
+      const r = await Appointment.updateOne(
+        { _id: appointmentId, status: 'BOOKED' },
+        { $set: { slot_start: slotAt, updated_at: at } },
+        { session: sess(tx) }
+      );
+      if (r.matchedCount !== 1) throw conflict('Appointment changed, please refresh');
+    });
+  } catch (err) {
+    throw slotConflict(err);
+  }
   await notificationService.notify(db, user.user_id, {
     message: `Appointment with ${row.doctor_name} rescheduled to ${formatSlotHuman(slot)}.`,
     email: true,
@@ -190,12 +231,13 @@ async function reschedule(db, user, appointmentId, slot, now = time.clock.now())
 async function cancel(db, user, appointmentId, now = time.clock.now()) {
   const row = await requireOwn(db, user, appointmentId);
   if (row.status !== 'BOOKED') throw conflict('Only booked appointments can be cancelled');
-  const at = time.formatDateTime(now);
-  const r = await db.run(
-    `UPDATE appointments SET status = 'CANCELLED', updated_at = ? WHERE appointment_id = ? AND status = 'BOOKED'`,
-    [at, appointmentId]
+  const at = time.dbDate(now);
+  const r = await Appointment.updateOne(
+    { _id: appointmentId, status: 'BOOKED' },
+    { $set: { status: 'CANCELLED', updated_at: at } },
+    { session: sess(db) }
   );
-  if (r.changes !== 1) throw conflict('Appointment changed, please refresh');
+  if (r.matchedCount !== 1) throw conflict('Appointment changed, please refresh');
   await notificationService.notify(db, user.user_id, {
     message: `Appointment with ${row.doctor_name} on ${formatSlotHuman(time.parseDateTime(row.slot_start))} was cancelled.`,
     email: true,

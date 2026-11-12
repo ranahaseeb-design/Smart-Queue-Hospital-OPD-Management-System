@@ -3,7 +3,8 @@
  * Analytics & Reporting Service: live dashboard KPIs (FR-15), congestion alerts (FR-17),
  * reports with CSV export (FR-16), workload analysis and resource-allocation
  * recommendations (FR-18) and the feedback summary (FR-20).
- * Aggregation happens in JS so the SQL stays portable between MySQL and SQLite.
+ * Documents are loaded with indexed Mongoose queries and aggregated in JS (the formulas stay in one
+ * readable place); grouping-heavy reads use the aggregation pipeline (first prediction per token).
  */
 const config = require('../config');
 const time = require('../utils/time');
@@ -11,6 +12,13 @@ const { badRequest } = require('../utils/errors');
 const fb = require('./featureBuilder');
 const scheduleService = require('./scheduleService');
 const settingsService = require('./settingsService');
+const forecastService = require('./forecastService');
+const { models, sess, byIds, asRows, asRow } = require('../db');
+
+const { Branch, Department, ServicePoint, Doctor, DoctorSchedule, Token, Visit, Feedback, WaitPrediction, User } = models;
+
+/** Milliseconds of a stored datetime (null -> 0) for in-memory sorting. */
+const ms = (d) => (d ? new Date(d).getTime() : 0);
 
 const mean = (arr) => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null);
 const r1 = (v) => (v === null || v === undefined ? null : time.round(v, 1));
@@ -32,41 +40,35 @@ const minutes = (a, b) => time.minutesBetween(time.parseDateTime(a), time.parseD
  * the history of a closed branch stays reportable.
  */
 async function loadScope(db, branchId, { activeOnly = false } = {}) {
-  const conds = [];
-  const bParams = [];
-  if (branchId) {
-    conds.push('b.branch_id = ?');
-    bParams.push(branchId);
-  }
-  if (activeOnly) conds.push("b.status = 'ACTIVE'");
-  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
-  const branches = await db.query(`SELECT b.* FROM branches b ${where} ORDER BY b.branch_id`, bParams);
-  const departments = await db.query(
-    `SELECT dp.*, b.name AS branch_name FROM departments dp JOIN branches b ON b.branch_id = dp.branch_id
-      ${where} ORDER BY dp.branch_id, dp.department_id`,
-    bParams
-  );
-  const servicePoints = await db.query(
-    `SELECT sp.*, b.name AS branch_name FROM service_points sp JOIN branches b ON b.branch_id = sp.branch_id
-      ${where} ORDER BY sp.branch_id, sp.type, sp.service_point_id`,
-    bParams
-  );
+  const bFilter = {};
+  if (branchId) bFilter._id = branchId;
+  if (activeOnly) bFilter.status = 'ACTIVE';
+  const branches = asRows(Branch, await Branch.find(bFilter).sort({ _id: 1 }).session(sess(db)).lean());
+  const names = new Map(branches.map((b) => [b.branch_id, b.name]));
+  const inScope = { branch_id: { $in: [...names.keys()] } };
+  const departments = (await Department.find(inScope).sort({ branch_id: 1, _id: 1 }).session(sess(db)).lean()).map((d) => ({
+    ...asRow(Department, d),
+    branch_name: names.get(d.branch_id),
+  }));
+  const servicePoints = (
+    await ServicePoint.find(inScope).sort({ branch_id: 1, type: 1, _id: 1 }).session(sess(db)).lean()
+  ).map((sp) => ({ ...asRow(ServicePoint, sp), branch_name: names.get(sp.branch_id) }));
   return { branches, departments, servicePoints };
+}
+
+/** Department ids of a branch (all departments when branchId is null -> null = no filter). */
+async function departmentIdsOf(db, branchId) {
+  if (!branchId) return null;
+  return Department.distinct('_id', { branch_id: branchId }).session(sess(db));
 }
 
 /** Today's sessions of active doctors in scope: Map deptId -> sessions. */
 async function todaysSessions(db, dateStr, branchId) {
   const dow = time.isoDow(time.parseDate(dateStr));
-  const rows = await db.query(
-    `SELECT ds.*, d.department_id, d.avg_consult_minutes FROM doctor_schedules ds
-       JOIN doctors d ON d.doctor_id = ds.doctor_id
-       JOIN users u ON u.user_id = d.user_id
-       JOIN departments dp ON dp.department_id = d.department_id
-       JOIN service_points sp ON sp.service_point_id = ds.service_point_id
-      WHERE ds.day_of_week = ? AND d.is_active = 1 AND u.is_active = 1 AND sp.is_active = 1 AND dp.is_active = 1
-        ${branchId ? 'AND dp.branch_id = ?' : ''}`,
-    branchId ? [dow, branchId] : [dow]
-  );
+  const deptIds = await departmentIdsOf(db, branchId);
+  const rows = await scheduleService.activeSchedules(db, dow, deptIds ? { department_id: { $in: deptIds } } : {}, {
+    activeDepartmentsOnly: true,
+  });
   const map = new Map();
   for (const r of rows) {
     if (!map.has(r.department_id)) map.set(r.department_id, []);
@@ -88,14 +90,7 @@ async function dashboard(db, branchId, now = time.clock.now()) {
   const settings = await settingsService.getSettings(db);
   const date = time.formatDate(now);
   const { branches, departments, servicePoints } = await loadScope(db, branchId, { activeOnly: true });
-  const tokens = await db.query(
-    `SELECT t.token_id, t.status, t.queue_type, t.token_number, t.issued_at, t.called_at, t.service_point_id,
-            t.doctor_id, d.department_id, v.branch_id
-       FROM tokens t JOIN visits v ON v.visit_id = t.visit_id
-       LEFT JOIN doctors d ON d.doctor_id = t.doctor_id
-      WHERE t.token_date = ? ${branchId ? 'AND v.branch_id = ?' : ''}`,
-    branchId ? [date, branchId] : [date]
-  );
+  const tokens = await tokensWithScope(db, { token_date: date }, branchId);
   const sessionsByDept = await todaysSessions(db, date, branchId);
   const waitOf = (t) => Math.max(0, time.minutesBetween(time.parseDateTime(t.issued_at), now));
 
@@ -155,7 +150,7 @@ async function dashboard(db, branchId, now = time.clock.now()) {
       const spTokens = tokens.filter((t) => t.service_point_id === sp.service_point_id);
       const serving = spTokens
         .filter((t) => t.status === 'CALLED' || t.status === 'IN_SERVICE')
-        .sort((a, b) => String(b.called_at).localeCompare(String(a.called_at)))[0];
+        .sort((a, b) => ms(b.called_at) - ms(a.called_at))[0];
       return {
         id: sp.service_point_id,
         name: sp.name,
@@ -214,17 +209,12 @@ async function alerts(db, branchId, now = time.clock.now()) {
       at: time.toApi(now),
     });
   }
-  const from = time.formatDateTime(time.startOfHour(now));
-  const to = time.formatDateTime(new Date(now.getTime() + time.DAY));
-  const rows = await db.query(
-    `SELECT f.*, dp.name AS department_name, dp.specialty, b.name AS branch_name
-       FROM forecasts f JOIN departments dp ON dp.department_id = f.department_id
-       JOIN branches b ON b.branch_id = f.branch_id
-      WHERE f.forecast_hour >= ? AND f.forecast_hour < ? AND f.congestion_level IN ('HIGH', 'CRITICAL')
-        AND dp.is_active = 1 ${branchId ? 'AND f.branch_id = ?' : ''}
-      ORDER BY f.forecast_hour`,
-    branchId ? [from, to, branchId] : [from, to]
-  );
+  const filter = {
+    forecast_hour: { $gte: time.startOfHour(now), $lt: new Date(now.getTime() + time.DAY) },
+    congestion_level: { $in: ['HIGH', 'CRITICAL'] },
+  };
+  if (branchId) filter.branch_id = branchId;
+  const rows = await forecastService.forecastRows(db, filter, { forecast_hour: 1, _id: 1 }, { activeDepartmentsOnly: true });
   for (const f of rows) {
     const at = time.parseDateTime(f.forecast_hour);
     const name = f.department_name || f.specialty;
@@ -270,13 +260,20 @@ function daysInRange(range) {
 
 /** Scheduled doctor-minutes per department over a date range. */
 async function scheduledMinutes(db, range, branchId) {
-  const rows = await db.query(
-    `SELECT ds.day_of_week, ds.start_time, ds.end_time, d.department_id, dp.branch_id
-       FROM doctor_schedules ds JOIN doctors d ON d.doctor_id = ds.doctor_id
-       JOIN departments dp ON dp.department_id = d.department_id
-      WHERE d.is_active = 1 ${branchId ? 'AND dp.branch_id = ?' : ''}`,
-    branchId ? [branchId] : []
-  );
+  // Schedules of active doctors (regardless of account / room state, as before) with the branch
+  // of the doctor's department.
+  const deptIds = await departmentIdsOf(db, branchId);
+  const doctors = await Doctor.find({ is_active: true, ...(deptIds ? { department_id: { $in: deptIds } } : {}) }, { department_id: 1 })
+    .session(sess(db))
+    .lean();
+  const depts = await byIds(db, Department, doctors.map((d) => d.department_id), { branch_id: 1 });
+  const doctorById = new Map(doctors.filter((d) => depts.has(d.department_id)).map((d) => [d._id, d]));
+  const rows = (
+    await DoctorSchedule.find({ doctor_id: { $in: [...doctorById.keys()] } }).session(sess(db)).lean()
+  ).map((s) => {
+    const d = doctorById.get(s.doctor_id);
+    return { ...s, department_id: d.department_id, branch_id: depts.get(d.department_id).branch_id };
+  });
   const dowCount = new Map();
   for (let d = range.from; d <= range.to; d = time.addDaysStr(d, 1)) {
     const dow = time.isoDow(time.parseDate(d));
@@ -294,15 +291,56 @@ async function scheduledMinutes(db, range, branchId) {
   return { byDept, byBranch };
 }
 
+/**
+ * Tokens matching `filter` with the visit's branch_id and the doctor's department_id
+ * (token join visit, left join doctor), optionally limited to one branch.
+ */
+async function tokensWithScope(db, filter, branchId) {
+  const tokens = await Token.find(filter, {
+    status: 1,
+    queue_type: 1,
+    token_number: 1,
+    issued_at: 1,
+    called_at: 1,
+    completed_at: 1,
+    service_point_id: 1,
+    doctor_id: 1,
+    token_date: 1,
+    visit_id: 1,
+  })
+    .session(sess(db))
+    .lean();
+  const visits = await byIds(db, Visit, tokens.map((t) => t.visit_id), { branch_id: 1 });
+  const doctors = await byIds(db, Doctor, tokens.map((t) => t.doctor_id), { department_id: 1 });
+  const out = [];
+  for (const t of tokens) {
+    const v = visits.get(t.visit_id);
+    if (!v || (branchId && v.branch_id !== branchId)) continue;
+    const d = t.doctor_id ? doctors.get(t.doctor_id) : null;
+    out.push({ ...t, token_id: t._id, branch_id: v.branch_id, department_id: d ? d.department_id : null });
+  }
+  return out;
+}
+
 async function opdTokensInRange(db, range, branchId) {
-  return db.query(
-    `SELECT t.token_id, t.status, t.queue_type, t.issued_at, t.called_at, t.completed_at, t.doctor_id, t.token_date,
-            d.department_id, v.branch_id
-       FROM tokens t JOIN visits v ON v.visit_id = t.visit_id
-       LEFT JOIN doctors d ON d.doctor_id = t.doctor_id
-      WHERE t.token_date >= ? AND t.token_date <= ? ${branchId ? 'AND v.branch_id = ?' : ''}`,
-    branchId ? [range.from, range.to, branchId] : [range.from, range.to]
-  );
+  return tokensWithScope(db, { token_date: { $gte: range.from, $lte: range.to } }, branchId);
+}
+
+/** Feedback of visits matching `visitFilter` (optionally one branch): [{ ...feedback, visit }]. */
+async function feedbackWithVisits(db, visitFilter, branchId) {
+  const vf = { ...visitFilter };
+  if (branchId) vf.branch_id = branchId;
+  const hasFilter = Object.keys(vf).length > 0;
+  const fbFilter = {};
+  let visits;
+  if (hasFilter) {
+    const list = await Visit.find(vf).session(sess(db)).lean();
+    visits = new Map(list.map((v) => [v._id, v]));
+    fbFilter.visit_id = { $in: [...visits.keys()] };
+  }
+  const feedback = await Feedback.find(fbFilter).session(sess(db)).lean();
+  if (!visits) visits = await byIds(db, Visit, feedback.map((f) => f.visit_id));
+  return feedback.filter((f) => visits.has(f.visit_id)).map((f) => ({ ...f, visit: visits.get(f.visit_id) }));
 }
 
 async function report(db, { type, from, to, branchId }, now = time.clock.now()) {
@@ -312,11 +350,10 @@ async function report(db, { type, from, to, branchId }, now = time.clock.now()) 
   const period = `${range.from} to ${range.to}`;
 
   if (type === 'feedback') {
-    const rows = await db.query(
-      `SELECT f.rating, v.branch_id FROM feedback f JOIN visits v ON v.visit_id = f.visit_id
-        WHERE v.visit_date >= ? AND v.visit_date <= ? ${branchId ? 'AND v.branch_id = ?' : ''}`,
-      branchId ? [range.from, range.to, branchId] : [range.from, range.to]
-    );
+    const rows = (await feedbackWithVisits(db, { visit_date: { $gte: range.from, $lte: range.to } }, branchId)).map((f) => ({
+      rating: f.rating,
+      branch_id: f.visit.branch_id,
+    }));
     return {
       type,
       title: `Patient feedback by branch (${period})`,
@@ -348,12 +385,10 @@ async function report(db, { type, from, to, branchId }, now = time.clock.now()) 
   const opd = tokens.filter((t) => t.queue_type === 'OPD');
 
   if (type === 'doctor-consult') {
-    const doctors = await db.query(
-      `SELECT d.doctor_id, d.avg_consult_minutes, u.full_name, dp.name AS department_name, dp.specialty, b.name AS branch_name, dp.branch_id
-         FROM doctors d JOIN users u ON u.user_id = d.user_id JOIN departments dp ON dp.department_id = d.department_id
-         JOIN branches b ON b.branch_id = dp.branch_id ${branchId ? 'WHERE dp.branch_id = ?' : ''}
-        ORDER BY dp.branch_id, dp.department_id, d.doctor_id`,
-      branchId ? [branchId] : []
+    const deptIds = await departmentIdsOf(db, branchId);
+    const ids = await Doctor.distinct('_id', deptIds ? { department_id: { $in: deptIds } } : {}).session(sess(db));
+    const doctors = [...(await scheduleService.getDoctors(db, ids)).values()].sort(
+      (a, b) => a.branch_id - b.branch_id || a.department_id - b.department_id || a.doctor_id - b.doctor_id
     );
     return {
       type,
@@ -408,7 +443,7 @@ async function report(db, { type, from, to, branchId }, now = time.clock.now()) 
         const dt = opd.filter((t) => t.department_id === d.department_id && t.status !== 'TRANSFERRED');
         const byHour = new Array(24).fill(0);
         dt.forEach((t) => {
-          byHour[Number(String(t.issued_at).slice(11, 13))] += 1;
+          byHour[time.parseDateTime(t.issued_at).getHours()] += 1;
         });
         const peak = dt.length ? byHour.indexOf(Math.max(...byHour)) : null;
         return {
@@ -466,18 +501,15 @@ async function report(db, { type, from, to, branchId }, now = time.clock.now()) 
 
   // waiting-times: actual wait (called - issued) and accuracy of the first prediction per token.
   const called = opd.filter((t) => t.called_at);
-  const preds = await db.query(
-    `SELECT wp.token_id, wp.predicted_minutes, wp.prediction_id FROM wait_predictions wp
-       JOIN tokens t ON t.token_id = wp.token_id JOIN visits v ON v.visit_id = t.visit_id
-      WHERE t.token_date >= ? AND t.token_date <= ? AND t.queue_type = 'OPD' AND t.called_at IS NOT NULL
-        ${branchId ? 'AND v.branch_id = ?' : ''}`,
-    branchId ? [range.from, range.to, branchId] : [range.from, range.to]
-  );
-  const firstPred = new Map();
-  for (const p of preds) {
-    const cur = firstPred.get(p.token_id);
-    if (!cur || p.prediction_id < cur.prediction_id) firstPred.set(p.token_id, p);
-  }
+  // First prediction (lowest _id) of every called OPD token in range, grouped by the server.
+  const preds = called.length
+    ? await WaitPrediction.aggregate([
+        { $match: { token_id: { $in: called.map((t) => t.token_id) } } },
+        { $sort: { _id: 1 } },
+        { $group: { _id: '$token_id', predicted_minutes: { $first: '$predicted_minutes' } } },
+      ]).session(sess(db))
+    : [];
+  const firstPred = new Map(preds.map((p) => [p._id, { token_id: p._id, predicted_minutes: p.predicted_minutes }]));
   return {
     type,
     title: `Waiting times per department (${period})`,
@@ -541,21 +573,13 @@ async function workloadAndRecommendations(db, branchId, now = time.clock.now()) 
   });
 
   // Forecast peaks where expected arrivals exceed scheduled capacity (next 7 days).
-  const from = time.formatDateTime(time.startOfHour(now));
-  const to = time.formatDateTime(new Date(now.getTime() + 7 * time.DAY));
-  const fc = await db.query(
-    `SELECT f.*, dp.name AS department_name, dp.specialty, b.name AS branch_name
-       FROM forecasts f JOIN departments dp ON dp.department_id = f.department_id
-       JOIN branches b ON b.branch_id = f.branch_id
-      WHERE f.forecast_hour >= ? AND f.forecast_hour < ? AND dp.is_active = 1 ${branchId ? 'AND f.branch_id = ?' : ''}
-      ORDER BY f.department_id, f.forecast_hour`,
-    branchId ? [from, to, branchId] : [from, to]
-  );
+  const fcFilter = { forecast_hour: { $gte: time.startOfHour(now), $lt: new Date(now.getTime() + 7 * time.DAY) } };
+  if (branchId) fcFilter.branch_id = branchId;
+  const fc = await forecastService.forecastRows(db, fcFilter, { department_id: 1, forecast_hour: 1, _id: 1 }, {
+    activeDepartmentsOnly: true,
+  });
   const avgByDept = new Map();
-  const docs = await db.query(
-    'SELECT department_id, avg_consult_minutes FROM doctors WHERE is_active = 1',
-    []
-  );
+  const docs = await Doctor.find({ is_active: true }, { department_id: 1, avg_consult_minutes: 1 }).session(sess(db)).lean();
   for (const d of docs) {
     if (!avgByDept.has(d.department_id)) avgByDept.set(d.department_id, []);
     avgByDept.get(d.department_id).push(Number(d.avg_consult_minutes));
@@ -628,28 +652,31 @@ async function workloadAndRecommendations(db, branchId, now = time.clock.now()) 
 // ---------------------------------------------------------------------------------------------
 
 async function feedbackSummary(db, branchId, { limit = 200 } = {}) {
-  const where = branchId ? 'WHERE v.branch_id = ?' : '';
-  const params = branchId ? [branchId] : [];
-  const dist = await db.query(
-    `SELECT f.rating, COUNT(*) AS n FROM feedback f JOIN visits v ON v.visit_id = f.visit_id ${where} GROUP BY f.rating`,
-    params
-  );
+  const all = await feedbackWithVisits(db, {}, branchId);
   const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   let count = 0;
   let sum = 0;
-  for (const d of dist) {
-    const n = Number(d.n);
-    distribution[d.rating] = n;
-    count += n;
-    sum += n * Number(d.rating);
+  for (const f of all) {
+    distribution[f.rating] = (distribution[f.rating] || 0) + 1;
+    count += 1;
+    sum += Number(f.rating);
   }
-  const items = await db.query(
-    `SELECT f.feedback_id, f.rating, f.comment, f.created_at, u.full_name, b.name AS branch_name, v.visit_date
-       FROM feedback f JOIN visits v ON v.visit_id = f.visit_id
-       JOIN users u ON u.user_id = v.patient_id JOIN branches b ON b.branch_id = v.branch_id
-      ${where} ORDER BY f.created_at DESC, f.feedback_id DESC LIMIT ${Math.max(1, Math.min(1000, Number(limit) || 200))}`,
-    params
-  );
+  const top = [...all]
+    .sort((a, b) => ms(b.created_at) - ms(a.created_at) || b._id - a._id)
+    .slice(0, Math.max(1, Math.min(1000, Number(limit) || 200)));
+  const users = await byIds(db, User, top.map((f) => f.visit.patient_id), { full_name: 1 });
+  const branchNames = await byIds(db, Branch, top.map((f) => f.visit.branch_id), { name: 1 });
+  const items = top
+    .filter((f) => users.has(f.visit.patient_id) && branchNames.has(f.visit.branch_id))
+    .map((f) => ({
+      feedback_id: f._id,
+      rating: f.rating,
+      comment: f.comment,
+      created_at: f.created_at,
+      full_name: users.get(f.visit.patient_id).full_name,
+      branch_name: branchNames.get(f.visit.branch_id).name,
+      visit_date: f.visit.visit_date,
+    }));
   return {
     summary: {
       count,

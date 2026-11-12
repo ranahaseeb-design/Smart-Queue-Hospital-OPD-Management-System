@@ -14,7 +14,7 @@ let room; // doctor1's OPD room
 const P = {}; // patients: { token, user, tokenDetail }
 
 async function eventsOf(tokenId) {
-  return ctx.db.query('SELECT * FROM queue_events WHERE token_id = ? ORDER BY event_id', [tokenId]);
+  return ctx.models.QueueEvent.find({ token_id: tokenId }).sort({ _id: 1 }).lean();
 }
 async function queue() {
   const res = await ctx.api.get(`/service-points/${room.id}/queue`, doctorToken);
@@ -66,10 +66,10 @@ test('patient joins a doctor queue: TokenDetail with position and estimate (FR-0
   assert.deepEqual(t.linkedTokens, []);
   P.a.tokenDetail = t;
 
-  const pred = await ctx.db.query('SELECT * FROM wait_predictions WHERE token_id = ?', [t.id]);
+  const pred = await ctx.models.WaitPrediction.find({ token_id: t.id }).lean();
   assert.equal(pred.length, 1);
   assert.equal(pred[0].model_version, 'baseline');
-  const features = JSON.parse(pred[0].features_json);
+  const features = pred[0].features;
   assert.equal(features.patients_ahead, 3);
   assert.equal(features.doctor_id, room.doctorId);
   const ev = await eventsOf(t.id);
@@ -112,8 +112,8 @@ test('elderly patient gets priority 1 and is ordered before normal tokens (FR-13
   // P.a moved back by one: position 5 now, and its estimate was re-predicted (FR-07)
   const a = await ctx.api.get(`/tokens/${P.a.tokenDetail.id}`, P.a.token);
   assert.equal(a.body.position, 5);
-  const preds = await ctx.db.query('SELECT COUNT(*) AS n FROM wait_predictions WHERE token_id = ?', [P.a.tokenDetail.id]);
-  assert.ok(preds[0].n >= 2);
+  const preds = await ctx.models.WaitPrediction.countDocuments({ token_id: P.a.tokenDetail.id });
+  assert.ok(preds >= 2);
 });
 
 test('GET /tokens/active lists the patient tokens; other patients cannot read them', async () => {
@@ -195,7 +195,7 @@ test('skip and recall: recall is 409 while another token is open (FR-12)', async
   assert.equal(recalled.body.status, 'CALLED');
   // A recall keeps the FIRST call time (the wait label for analytics and model training).
   assert.equal(recalled.body.calledAt, firstCalledAt);
-  const stored = await ctx.db.get('SELECT called_at FROM tokens WHERE token_id = ?', [P.b.tokenDetail.id]);
+  const stored = await ctx.models.Token.findById(P.b.tokenDetail.id).lean();
   assert.equal(ctx.time.toApi(stored.called_at), firstCalledAt);
   ctx.advance(7);
   assert.equal((await ctx.api.post(`/tokens/${P.b.tokenDetail.id}/complete`, doctorToken)).status, 200);
@@ -375,18 +375,22 @@ test('notifications: stored IN_APP rows for issue/call/skip/recall; read-all; de
   assert.ok((await ctx.api.get('/notifications', P.b.token)).body.every((n) => n.isRead));
   assert.equal((await ctx.api.post('/notifications/device-token', P.b.token, { fcmToken: 'abc' })).status, 200);
   assert.equal((await ctx.api.post('/notifications/device-token', P.b.token, {})).status, 400);
-  const row = await ctx.db.get('SELECT fcm_token FROM users WHERE user_id = ?', [P.b.user.id]);
+  const row = await ctx.models.User.findById(P.b.user.id).lean();
   assert.equal(row.fcm_token, 'abc');
 });
 
 test('every status change wrote exactly one queue event (FR-21)', async () => {
   const today = ctx.time.today();
-  const rows = await ctx.db.query(
-    `SELECT t.token_id, t.status, (SELECT COUNT(*) FROM queue_events e WHERE e.token_id = t.token_id) AS n,
-            (SELECT COUNT(*) FROM queue_events e WHERE e.token_id = t.token_id AND e.event_type = 'ISSUED') AS issued
-       FROM tokens t WHERE t.token_date = ?`,
-    [today]
-  );
+  const { Token, QueueEvent } = ctx.models;
+  const rows = [];
+  for (const t of await Token.find({ token_date: today }).lean()) {
+    rows.push({
+      token_id: t._id,
+      status: t.status,
+      n: await QueueEvent.countDocuments({ token_id: t._id }),
+      issued: await QueueEvent.countDocuments({ token_id: t._id, event_type: 'ISSUED' }),
+    });
+  }
   for (const r of rows) {
     assert.equal(r.issued, 1, `token ${r.token_id} has one ISSUED event`);
     assert.ok(r.n >= 1);

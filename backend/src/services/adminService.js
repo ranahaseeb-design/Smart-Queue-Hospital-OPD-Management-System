@@ -7,7 +7,7 @@
  *    staff assignments of their own branch only; branches are read-only for them and requests
  *    that target another branch answer 403 FORBIDDEN.
  *
- * DELETE on master data is a soft deactivation (is_active = 0 / status = INACTIVE) so records
+ * DELETE on master data is a soft deactivation (is_active = false / status = INACTIVE) so records
  * referenced by tokens and history are never lost; schedules and staff assignments, which are
  * pure configuration, are hard-deleted.
  */
@@ -16,7 +16,10 @@ const v = require('../utils/validate');
 const { badRequest, conflict, forbidden, notFound } = require('../utils/errors');
 const access = require('./accessService');
 const userService = require('./userService');
-const { placeholders } = require('../db');
+const scheduleService = require('./scheduleService');
+const { models, sess, asRow, asRows, byIds, insertOne, nextId } = require('../db');
+
+const { Branch, Department, Doctor, DoctorSchedule, ServicePoint, StaffAssignment, User, Token } = models;
 
 const SERVICE_POINT_TYPES = ['OPD', 'LAB', 'PHARMACY'];
 const STAFF_ROLES = ['STAFF', 'BRANCH_ADMIN', 'HOSPITAL_ADMIN'];
@@ -35,6 +38,16 @@ const bodyOf = (body) => {
   return body;
 };
 
+/** Binary string comparison (the former SQL ORDER BY on text columns). */
+const cmp = (a, b) => {
+  const x = a === null || a === undefined ? '' : String(a);
+  const y = b === null || b === undefined ? '' : String(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+
+/** Case-insensitive exact match (the former LOWER(col) = ?). */
+const ciEquals = (s) => new RegExp(`^${String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+
 /** Branch filter for list endpoints (403 when a branch admin asks for another branch). */
 function listScope(user, query) {
   const requested = v.int(query.branchId, 'branchId', { min: 1 });
@@ -42,9 +55,17 @@ function listScope(user, query) {
 }
 
 async function requireBranch(db, branchId) {
-  const b = await db.get('SELECT * FROM branches WHERE branch_id = ?', [branchId]);
+  const b = asRow(Branch, await Branch.findById(branchId).session(sess(db)).lean());
   if (!b) throw notFound('Branch not found');
   return b;
+}
+
+/** $set only the provided (non-undefined) fields. */
+async function updateColumns(db, Model, id, columns) {
+  const set = {};
+  for (const [key, value] of Object.entries(columns)) if (value !== undefined) set[key] = value;
+  if (!Object.keys(set).length) return;
+  await Model.updateOne({ _id: id }, { $set: set }, { session: sess(db) });
 }
 
 // =============================================================================================
@@ -77,21 +98,15 @@ function validateBranch(body, current) {
 }
 
 async function assertBranchNameFree(db, name, excludeId = 0) {
-  const dup = await db.get('SELECT branch_id FROM branches WHERE LOWER(name) = ? AND branch_id <> ?', [
-    name.toLowerCase(),
-    excludeId,
-  ]);
+  const dup = await Branch.exists({ name: ciEquals(name), _id: { $ne: excludeId } }).session(sess(db));
   if (dup) throw conflict(`A branch named "${name}" already exists`);
 }
 
 const branches = {
   async list(db, user, query) {
     const scope = listScope(user, query);
-    const rows = await db.query(
-      `SELECT * FROM branches ${scope ? 'WHERE branch_id = ?' : ''} ORDER BY branch_id`,
-      scope ? [scope] : []
-    );
-    return rows.map(toBranch);
+    const rows = await Branch.find(scope ? { _id: scope } : {}).sort({ _id: 1 }).session(sess(db)).lean();
+    return asRows(Branch, rows).map(toBranch);
   },
   async get(db, user, id) {
     const row = await requireBranch(db, id);
@@ -102,10 +117,13 @@ const branches = {
     requireHospitalAdmin(user, 'branch creation');
     const data = validateBranch(bodyOf(rawBody), null);
     await assertBranchNameFree(db, data.name);
-    const { insertId } = await db.run(
-      'INSERT INTO branches (name, address, latitude, longitude, status) VALUES (?, ?, ?, ?, ?)',
-      [data.name, data.address || null, data.latitude, data.longitude, data.status || 'ACTIVE']
-    );
+    const insertId = await insertOne(db, Branch, {
+      name: data.name,
+      address: data.address || null,
+      latitude: data.latitude,
+      longitude: data.longitude,
+      status: data.status || 'ACTIVE',
+    });
     return toBranch(await requireBranch(db, insertId));
   },
   async update(db, user, id, rawBody) {
@@ -113,7 +131,7 @@ const branches = {
     const current = await requireBranch(db, id);
     const data = validateBranch(bodyOf(rawBody), current);
     if (data.name) await assertBranchNameFree(db, data.name, id);
-    await updateColumns(db, 'branches', 'branch_id', id, {
+    await updateColumns(db, Branch, id, {
       name: data.name,
       address: data.address,
       latitude: data.latitude,
@@ -125,29 +143,34 @@ const branches = {
   async remove(db, user, id) {
     requireHospitalAdmin(user, 'branch deactivation');
     await requireBranch(db, id);
-    await db.run(`UPDATE branches SET status = 'INACTIVE' WHERE branch_id = ?`, [id]);
+    await Branch.updateOne({ _id: id }, { $set: { status: 'INACTIVE' } }, { session: sess(db) });
     return toBranch(await requireBranch(db, id));
   },
 };
-
-/** UPDATE only the provided (non-undefined) columns. */
-async function updateColumns(db, table, idColumn, id, columns) {
-  const entries = Object.entries(columns).filter(([, value]) => value !== undefined);
-  if (!entries.length) return;
-  await db.run(
-    `UPDATE ${table} SET ${entries.map(([c]) => `${c} = ?`).join(', ')} WHERE ${idColumn} = ?`,
-    [...entries.map(([, value]) => (typeof value === 'boolean' ? (value ? 1 : 0) : value)), id]
-  );
-}
 
 // =============================================================================================
 // Departments
 // =============================================================================================
 
-const DEPARTMENT_SQL = `
-  SELECT dp.*, b.name AS branch_name,
-         (SELECT COUNT(*) FROM doctors d WHERE d.department_id = dp.department_id AND d.is_active = 1) AS doctor_count
-    FROM departments dp JOIN branches b ON b.branch_id = dp.branch_id`;
+/** Department rows with branch_name and doctor_count (active doctors), inner join on branch. */
+async function departmentRows(db, filter) {
+  const docs = await Department.find(filter).session(sess(db)).lean();
+  const branchNames = await byIds(db, Branch, docs.map((d) => d.branch_id), { name: 1 });
+  const counts = new Map();
+  if (docs.length) {
+    const active = await Doctor.find({ department_id: { $in: docs.map((d) => d._id) }, is_active: true }, { department_id: 1 })
+      .session(sess(db))
+      .lean();
+    for (const d of active) counts.set(d.department_id, (counts.get(d.department_id) || 0) + 1);
+  }
+  return docs
+    .filter((d) => branchNames.has(d.branch_id))
+    .map((d) => ({
+      ...asRow(Department, d),
+      branch_name: branchNames.get(d.branch_id).name,
+      doctor_count: counts.get(d._id) || 0,
+    }));
+}
 
 function toDepartment(r) {
   return {
@@ -162,27 +185,26 @@ function toDepartment(r) {
 }
 
 async function requireDepartment(db, id) {
-  const row = await db.get(`${DEPARTMENT_SQL} WHERE dp.department_id = ?`, [id]);
+  const row = (await departmentRows(db, { _id: id }))[0];
   if (!row) throw notFound('Department not found');
   return row;
 }
 
 async function assertSpecialtyFree(db, branchId, specialty, excludeId = 0) {
-  const dup = await db.get(
-    `SELECT department_id FROM departments
-      WHERE branch_id = ? AND LOWER(specialty) = ? AND is_active = 1 AND department_id <> ?`,
-    [branchId, specialty.toLowerCase(), excludeId]
-  );
+  const dup = await Department.exists({
+    branch_id: branchId,
+    specialty: ciEquals(specialty),
+    is_active: true,
+    _id: { $ne: excludeId },
+  }).session(sess(db));
   if (dup) throw conflict(`An active ${specialty} department already exists at this branch`);
 }
 
 const departments = {
   async list(db, user, query) {
     const scope = listScope(user, query);
-    const rows = await db.query(
-      `${DEPARTMENT_SQL} ${scope ? 'WHERE dp.branch_id = ?' : ''} ORDER BY dp.branch_id, dp.specialty, dp.department_id`,
-      scope ? [scope] : []
-    );
+    const rows = await departmentRows(db, scope ? { branch_id: scope } : {});
+    rows.sort((a, b) => a.branch_id - b.branch_id || cmp(a.specialty, b.specialty) || a.department_id - b.department_id);
     return rows.map(toDepartment);
   },
   async get(db, user, id) {
@@ -199,10 +221,7 @@ const departments = {
     const name = v.str(body.name, 'name', { max: 100 }) || specialty;
     const isActive = has(body, 'isActive') ? v.bool(body.isActive, 'isActive', { required: true }) : true;
     if (isActive) await assertSpecialtyFree(db, branchId, specialty);
-    const { insertId } = await db.run(
-      'INSERT INTO departments (branch_id, specialty, name, is_active) VALUES (?, ?, ?, ?)',
-      [branchId, specialty, name, isActive ? 1 : 0]
-    );
+    const insertId = await insertOne(db, Department, { branch_id: branchId, specialty, name, is_active: isActive });
     return toDepartment(await requireDepartment(db, insertId));
   },
   async update(db, user, id, rawBody) {
@@ -215,8 +234,8 @@ const departments = {
       if (branchId !== current.branch_id) {
         access.assertBranchAccess(user, branchId);
         await requireBranch(db, branchId);
-        const used = await db.get('SELECT COUNT(*) AS n FROM doctors WHERE department_id = ?', [id]);
-        if (Number(used.n) > 0) throw conflict('A department with doctors cannot be moved to another branch');
+        const used = await Doctor.countDocuments({ department_id: id }).session(sess(db));
+        if (used > 0) throw conflict('A department with doctors cannot be moved to another branch');
       }
     }
     const specialty = has(body, 'specialty') ? v.str(body.specialty, 'specialty', { required: true, min: 2, max: 80 }) : undefined;
@@ -226,7 +245,7 @@ const departments = {
     if (finalActive) {
       await assertSpecialtyFree(db, branchId || current.branch_id, specialty || current.specialty, id);
     }
-    await updateColumns(db, 'departments', 'department_id', id, {
+    await updateColumns(db, Department, id, {
       branch_id: branchId,
       specialty,
       name,
@@ -237,23 +256,14 @@ const departments = {
   async remove(db, user, id) {
     const current = await requireDepartment(db, id);
     access.assertBranchAccess(user, current.branch_id);
-    await db.run('UPDATE departments SET is_active = 0 WHERE department_id = ?', [id]);
+    await Department.updateOne({ _id: id }, { $set: { is_active: false } }, { session: sess(db) });
     return toDepartment(await requireDepartment(db, id));
   },
 };
 
 // =============================================================================================
-// Doctors (STAFF user + doctors row)
+// Doctors (STAFF user + doctors document)
 // =============================================================================================
-
-const DOCTOR_SQL = `
-  SELECT d.doctor_id, d.user_id, d.department_id, d.avg_consult_minutes, d.is_active,
-         u.full_name, u.email, u.phone, u.is_active AS user_active,
-         dp.name AS department_name, dp.specialty, dp.branch_id, b.name AS branch_name
-    FROM doctors d
-    JOIN users u ON u.user_id = d.user_id
-    JOIN departments dp ON dp.department_id = d.department_id
-    JOIN branches b ON b.branch_id = dp.branch_id`;
 
 function toDoctor(r) {
   return {
@@ -273,15 +283,13 @@ function toDoctor(r) {
 }
 
 async function requireDoctor(db, id) {
-  const row = await db.get(`${DOCTOR_SQL} WHERE d.doctor_id = ?`, [id]);
+  const row = await scheduleService.getDoctor(db, id);
   if (!row) throw notFound('Doctor not found');
   return row;
 }
 
 async function departmentInScope(db, user, departmentId) {
-  const dept = await db.get('SELECT department_id, branch_id, is_active FROM departments WHERE department_id = ?', [
-    departmentId,
-  ]);
+  const dept = asRow(Department, await Department.findById(departmentId, { branch_id: 1, is_active: 1 }).session(sess(db)).lean());
   if (!dept) throw notFound('Department not found');
   access.assertBranchAccess(user, dept.branch_id);
   return dept;
@@ -291,20 +299,11 @@ const doctors = {
   async list(db, user, query) {
     const scope = listScope(user, query);
     const departmentId = v.int(query.departmentId, 'departmentId', { min: 1 });
-    const where = [];
-    const params = [];
-    if (scope) {
-      where.push('dp.branch_id = ?');
-      params.push(scope);
-    }
-    if (departmentId) {
-      where.push('d.department_id = ?');
-      params.push(departmentId);
-    }
-    const rows = await db.query(
-      `${DOCTOR_SQL} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY dp.branch_id, dp.specialty, u.full_name`,
-      params
-    );
+    const filter = {};
+    if (departmentId) filter.department_id = departmentId;
+    const ids = await Doctor.distinct('_id', filter).session(sess(db));
+    const rows = [...(await scheduleService.getDoctors(db, ids)).values()].filter((r) => !scope || r.branch_id === scope);
+    rows.sort((a, b) => a.branch_id - b.branch_id || cmp(a.specialty, b.specialty) || cmp(a.full_name, b.full_name));
     return rows.map(toDoctor);
   },
   async get(db, user, id) {
@@ -324,18 +323,40 @@ const doctors = {
     if (!dept.is_active) throw badRequest('The department is inactive');
     await userService.assertUnique(db, { email, phone });
     const hash = await userService.hashPassword(password);
-    const doctorId = await db.transaction(async (tx) => {
-      const u = await tx.run(
-        `INSERT INTO users (full_name, email, phone, password_hash, role, date_of_birth, priority_category,
-                            admin_branch_id, fcm_token, is_active, created_at)
-         VALUES (?, ?, ?, ?, 'STAFF', NULL, 'NONE', NULL, NULL, 1, ?)`,
-        [fullName, email, phone, hash, time.nowDb()]
+    const userId = await nextId('users');
+    const doctorId = await nextId('doctors');
+    await db.transaction(async (tx) => {
+      await User.create(
+        [
+          {
+            _id: userId,
+            full_name: fullName,
+            email,
+            phone,
+            password_hash: hash,
+            role: 'STAFF',
+            date_of_birth: null,
+            priority_category: 'NONE',
+            admin_branch_id: null,
+            fcm_token: null,
+            is_active: true,
+            created_at: time.nowDb(),
+          },
+        ],
+        { session: sess(tx) }
       );
-      const d = await tx.run(
-        'INSERT INTO doctors (user_id, department_id, avg_consult_minutes, is_active) VALUES (?, ?, ?, 1)',
-        [u.insertId, departmentId, avg === null ? 10 : time.round(avg, 2)]
+      await Doctor.create(
+        [
+          {
+            _id: doctorId,
+            user_id: userId,
+            department_id: departmentId,
+            avg_consult_minutes: avg === null ? 10 : time.round(avg, 2),
+            is_active: true,
+          },
+        ],
+        { session: sess(tx) }
       );
-      return d.insertId;
     });
     return toDoctor(await requireDoctor(db, doctorId));
   },
@@ -357,8 +378,8 @@ const doctors = {
       if (departmentId !== current.department_id) {
         const dept = await departmentInScope(db, user, departmentId);
         if (dept.branch_id !== current.branch_id) {
-          const sched = await db.get('SELECT COUNT(*) AS n FROM doctor_schedules WHERE doctor_id = ?', [id]);
-          if (Number(sched.n) > 0) {
+          const sched = await DoctorSchedule.countDocuments({ doctor_id: id }).session(sess(db));
+          if (sched > 0) {
             throw conflict('Remove the doctor\'s schedules before moving them to a department of another branch');
           }
         }
@@ -371,14 +392,14 @@ const doctors = {
     );
     const hash = password ? await userService.hashPassword(password) : undefined;
     await db.transaction(async (tx) => {
-      await updateColumns(tx, 'users', 'user_id', current.user_id, {
+      await updateColumns(tx, User, current.user_id, {
         full_name: fullName,
         email,
         phone,
         password_hash: hash,
         is_active: isActive,
       });
-      await updateColumns(tx, 'doctors', 'doctor_id', id, {
+      await updateColumns(tx, Doctor, id, {
         department_id: departmentId,
         avg_consult_minutes: avg === undefined ? undefined : time.round(avg, 2),
         is_active: isActive,
@@ -390,8 +411,8 @@ const doctors = {
     const current = await requireDoctor(db, id);
     access.assertBranchAccess(user, current.branch_id);
     await db.transaction(async (tx) => {
-      await tx.run('UPDATE doctors SET is_active = 0 WHERE doctor_id = ?', [id]);
-      await tx.run('UPDATE users SET is_active = 0 WHERE user_id = ?', [current.user_id]);
+      await Doctor.updateOne({ _id: id }, { $set: { is_active: false } }, { session: sess(tx) });
+      await User.updateOne({ _id: current.user_id }, { $set: { is_active: false } }, { session: sess(tx) });
     });
     return toDoctor(await requireDoctor(db, id));
   },
@@ -401,15 +422,25 @@ const doctors = {
 // Doctor schedules (hard delete)
 // =============================================================================================
 
-const SCHEDULE_SQL = `
-  SELECT ds.*, u.full_name AS doctor_name, dp.specialty, dp.branch_id, b.name AS branch_name,
-         sp.name AS service_point_name
-    FROM doctor_schedules ds
-    JOIN doctors d ON d.doctor_id = ds.doctor_id
-    JOIN users u ON u.user_id = d.user_id
-    JOIN departments dp ON dp.department_id = d.department_id
-    JOIN branches b ON b.branch_id = dp.branch_id
-    JOIN service_points sp ON sp.service_point_id = ds.service_point_id`;
+/** Schedule rows with doctor name, specialty, branch and room name (inner joins). */
+async function scheduleRows(db, filter) {
+  const docs = await DoctorSchedule.find(filter).session(sess(db)).lean();
+  const doctorRows = await scheduleService.getDoctors(db, docs.map((s) => s.doctor_id));
+  const sps = await byIds(db, ServicePoint, docs.map((s) => s.service_point_id), { name: 1 });
+  return docs
+    .filter((s) => doctorRows.has(s.doctor_id) && sps.has(s.service_point_id))
+    .map((s) => {
+      const d = doctorRows.get(s.doctor_id);
+      return {
+        ...asRow(DoctorSchedule, s),
+        doctor_name: d.full_name,
+        specialty: d.specialty,
+        branch_id: d.branch_id,
+        branch_name: d.branch_name,
+        service_point_name: sps.get(s.service_point_id).name,
+      };
+    });
+}
 
 function toSchedule(r) {
   return {
@@ -429,34 +460,31 @@ function toSchedule(r) {
 }
 
 async function requireSchedule(db, id) {
-  const row = await db.get(`${SCHEDULE_SQL} WHERE ds.schedule_id = ?`, [id]);
+  const row = (await scheduleRows(db, { _id: id }))[0];
   if (!row) throw notFound('Schedule not found');
   return row;
 }
 
 /** Validate a full schedule (doctor/room/branch consistency, times, overlaps). */
 async function validateSchedule(db, user, s, excludeId = 0) {
-  const doctor = await db.get(
-    `SELECT d.doctor_id, dp.branch_id FROM doctors d JOIN departments dp ON dp.department_id = d.department_id
-      WHERE d.doctor_id = ?`,
-    [s.doctorId]
-  );
-  if (!doctor) throw notFound('Doctor not found');
+  const d = await Doctor.findById(s.doctorId, { department_id: 1 }).session(sess(db)).lean();
+  const dept = d ? await Department.findById(d.department_id, { branch_id: 1 }).session(sess(db)).lean() : null;
+  if (!d || !dept) throw notFound('Doctor not found');
+  const doctor = { doctor_id: d._id, branch_id: dept.branch_id };
   access.assertBranchAccess(user, doctor.branch_id);
-  const sp = await db.get('SELECT service_point_id, branch_id, type FROM service_points WHERE service_point_id = ?', [
-    s.servicePointId,
-  ]);
+  const sp = await ServicePoint.findById(s.servicePointId, { branch_id: 1, type: 1 }).session(sess(db)).lean();
   if (!sp) throw notFound('Service point not found');
   if (sp.type !== 'OPD') throw badRequest('Doctor schedules must use an OPD room');
   if (sp.branch_id !== doctor.branch_id) throw badRequest("The room must belong to the doctor's branch");
   if (s.startTime >= s.endTime) throw badRequest('endTime must be after startTime');
 
-  const sameDay = await db.query(
-    `SELECT ds.schedule_id, ds.doctor_id, ds.service_point_id, ds.start_time, ds.end_time
-       FROM doctor_schedules ds
-      WHERE ds.day_of_week = ? AND ds.schedule_id <> ? AND (ds.doctor_id = ? OR ds.service_point_id = ?)`,
-    [s.dayOfWeek, excludeId, s.doctorId, s.servicePointId]
-  );
+  const sameDay = await DoctorSchedule.find({
+    day_of_week: s.dayOfWeek,
+    _id: { $ne: excludeId },
+    $or: [{ doctor_id: s.doctorId }, { service_point_id: s.servicePointId }],
+  })
+    .session(sess(db))
+    .lean();
   for (const o of sameDay) {
     const overlaps = time.normalizeTime(o.start_time) < s.endTime && s.startTime < time.normalizeTime(o.end_time);
     if (!overlaps) continue;
@@ -493,24 +521,16 @@ const schedules = {
     const scope = listScope(user, query);
     const doctorId = v.int(query.doctorId, 'doctorId', { min: 1 });
     const servicePointId = v.int(query.servicePointId, 'servicePointId', { min: 1 });
-    const where = [];
-    const params = [];
-    if (scope) {
-      where.push('dp.branch_id = ?');
-      params.push(scope);
-    }
-    if (doctorId) {
-      where.push('ds.doctor_id = ?');
-      params.push(doctorId);
-    }
-    if (servicePointId) {
-      where.push('ds.service_point_id = ?');
-      params.push(servicePointId);
-    }
-    const rows = await db.query(
-      `${SCHEDULE_SQL} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY dp.branch_id, u.full_name, ds.day_of_week, ds.start_time`,
-      params
+    const filter = {};
+    if (doctorId) filter.doctor_id = doctorId;
+    if (servicePointId) filter.service_point_id = servicePointId;
+    const rows = (await scheduleRows(db, filter)).filter((r) => !scope || r.branch_id === scope);
+    rows.sort(
+      (a, b) =>
+        a.branch_id - b.branch_id ||
+        cmp(a.doctor_name, b.doctor_name) ||
+        a.day_of_week - b.day_of_week ||
+        cmp(a.start_time, b.start_time)
     );
     return rows.map(toSchedule);
   },
@@ -522,11 +542,14 @@ const schedules = {
   async create(db, user, rawBody) {
     const s = readSchedule(bodyOf(rawBody), null);
     await validateSchedule(db, user, s);
-    const { insertId } = await db.run(
-      `INSERT INTO doctor_schedules (doctor_id, service_point_id, day_of_week, start_time, end_time, max_patients)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [s.doctorId, s.servicePointId, s.dayOfWeek, s.startTime, s.endTime, s.maxPatients]
-    );
+    const insertId = await insertOne(db, DoctorSchedule, {
+      doctor_id: s.doctorId,
+      service_point_id: s.servicePointId,
+      day_of_week: s.dayOfWeek,
+      start_time: s.startTime,
+      end_time: s.endTime,
+      max_patients: s.maxPatients,
+    });
     return toSchedule(await requireSchedule(db, insertId));
   },
   async update(db, user, id, rawBody) {
@@ -534,17 +557,26 @@ const schedules = {
     access.assertBranchAccess(user, current.branch_id);
     const s = readSchedule(bodyOf(rawBody), current);
     await validateSchedule(db, user, s, id);
-    await db.run(
-      `UPDATE doctor_schedules SET doctor_id = ?, service_point_id = ?, day_of_week = ?, start_time = ?, end_time = ?,
-              max_patients = ? WHERE schedule_id = ?`,
-      [s.doctorId, s.servicePointId, s.dayOfWeek, s.startTime, s.endTime, s.maxPatients, id]
+    await DoctorSchedule.updateOne(
+      { _id: id },
+      {
+        $set: {
+          doctor_id: s.doctorId,
+          service_point_id: s.servicePointId,
+          day_of_week: s.dayOfWeek,
+          start_time: s.startTime,
+          end_time: s.endTime,
+          max_patients: s.maxPatients === undefined ? null : s.maxPatients,
+        },
+      },
+      { session: sess(db) }
     );
     return toSchedule(await requireSchedule(db, id));
   },
   async remove(db, user, id) {
     const current = await requireSchedule(db, id);
     access.assertBranchAccess(user, current.branch_id);
-    await db.run('DELETE FROM doctor_schedules WHERE schedule_id = ?', [id]);
+    await DoctorSchedule.deleteOne({ _id: id }, { session: sess(db) });
     return toSchedule(current);
   },
 };
@@ -553,8 +585,13 @@ const schedules = {
 // Service points (OPD rooms, LAB and PHARMACY counters)
 // =============================================================================================
 
-const SERVICE_POINT_SQL = `
-  SELECT sp.*, b.name AS branch_name FROM service_points sp JOIN branches b ON b.branch_id = sp.branch_id`;
+async function servicePointRows(db, filter) {
+  const docs = await ServicePoint.find(filter).session(sess(db)).lean();
+  const branchNames = await byIds(db, Branch, docs.map((s) => s.branch_id), { name: 1 });
+  return docs
+    .filter((s) => branchNames.has(s.branch_id))
+    .map((s) => ({ ...asRow(ServicePoint, s), branch_name: branchNames.get(s.branch_id).name }));
+}
 
 function toServicePoint(r) {
   return {
@@ -568,48 +605,34 @@ function toServicePoint(r) {
 }
 
 async function requireServicePoint(db, id) {
-  const row = await db.get(`${SERVICE_POINT_SQL} WHERE sp.service_point_id = ?`, [id]);
+  const row = (await servicePointRows(db, { _id: id }))[0];
   if (!row) throw notFound('Service point not found');
   return row;
 }
 
 async function assertServicePointNameFree(db, branchId, name, excludeId = 0) {
-  const dup = await db.get(
-    'SELECT service_point_id FROM service_points WHERE branch_id = ? AND LOWER(name) = ? AND service_point_id <> ?',
-    [branchId, name.toLowerCase(), excludeId]
-  );
+  const dup = await ServicePoint.exists({ branch_id: branchId, name: ciEquals(name), _id: { $ne: excludeId } }).session(sess(db));
   if (dup) throw conflict(`A service point named "${name}" already exists at this branch`);
 }
 
 async function servicePointInUse(db, id) {
-  const row = await db.get(
-    `SELECT (SELECT COUNT(*) FROM doctor_schedules WHERE service_point_id = ?) +
-            (SELECT COUNT(*) FROM staff_assignments WHERE service_point_id = ?) +
-            (SELECT COUNT(*) FROM tokens WHERE service_point_id = ?) AS n`,
-    [id, id, id]
+  const s = sess(db);
+  return Boolean(
+    (await DoctorSchedule.exists({ service_point_id: id }).session(s)) ||
+      (await StaffAssignment.exists({ service_point_id: id }).session(s)) ||
+      (await Token.exists({ service_point_id: id }).session(s))
   );
-  return Number(row.n) > 0;
 }
 
 const servicePoints = {
   async list(db, user, query) {
     const scope = listScope(user, query);
     const type = v.oneOf(query.type, 'type', SERVICE_POINT_TYPES);
-    const where = [];
-    const params = [];
-    if (scope) {
-      where.push('sp.branch_id = ?');
-      params.push(scope);
-    }
-    if (type) {
-      where.push('sp.type = ?');
-      params.push(type);
-    }
-    const rows = await db.query(
-      `${SERVICE_POINT_SQL} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY sp.branch_id, sp.type, sp.service_point_id`,
-      params
-    );
+    const filter = {};
+    if (scope) filter.branch_id = scope;
+    if (type) filter.type = type;
+    const rows = await servicePointRows(db, filter);
+    rows.sort((a, b) => a.branch_id - b.branch_id || cmp(a.type, b.type) || a.service_point_id - b.service_point_id);
     return rows.map(toServicePoint);
   },
   async get(db, user, id) {
@@ -626,10 +649,7 @@ const servicePoints = {
     const name = v.str(body.name, 'name', { required: true, min: 1, max: 60 });
     const isActive = has(body, 'isActive') ? v.bool(body.isActive, 'isActive', { required: true }) : true;
     await assertServicePointNameFree(db, branchId, name);
-    const { insertId } = await db.run(
-      'INSERT INTO service_points (branch_id, type, name, is_active) VALUES (?, ?, ?, ?)',
-      [branchId, type, name, isActive ? 1 : 0]
-    );
+    const insertId = await insertOne(db, ServicePoint, { branch_id: branchId, type, name, is_active: isActive });
     return toServicePoint(await requireServicePoint(db, insertId));
   },
   async update(db, user, id, rawBody) {
@@ -654,7 +674,7 @@ const servicePoints = {
     const name = has(body, 'name') ? v.str(body.name, 'name', { required: true, min: 1, max: 60 }) : undefined;
     if (name || branchId) await assertServicePointNameFree(db, branchId || current.branch_id, name || current.name, id);
     const isActive = has(body, 'isActive') ? v.bool(body.isActive, 'isActive', { required: true }) : undefined;
-    await updateColumns(db, 'service_points', 'service_point_id', id, {
+    await updateColumns(db, ServicePoint, id, {
       branch_id: branchId,
       type,
       name,
@@ -665,7 +685,7 @@ const servicePoints = {
   async remove(db, user, id) {
     const current = await requireServicePoint(db, id);
     access.assertBranchAccess(user, current.branch_id);
-    await db.run('UPDATE service_points SET is_active = 0 WHERE service_point_id = ?', [id]);
+    await ServicePoint.updateOne({ _id: id }, { $set: { is_active: false } }, { session: sess(db) });
     return toServicePoint(await requireServicePoint(db, id));
   },
 };
@@ -678,20 +698,15 @@ const servicePoints = {
 async function userBranchMap(db, userIds) {
   const map = new Map(userIds.map((id) => [id, new Set()]));
   if (!userIds.length) return map;
-  const ph = placeholders(userIds.length);
-  const rows = await db.query(
-    `SELECT u.user_id, u.admin_branch_id AS branch_id FROM users u
-      WHERE u.user_id IN (${ph}) AND u.admin_branch_id IS NOT NULL
-     UNION
-     SELECT sa.user_id, sp.branch_id FROM staff_assignments sa
-       JOIN service_points sp ON sp.service_point_id = sa.service_point_id
-      WHERE sa.user_id IN (${ph})
-     UNION
-     SELECT d.user_id, dp.branch_id FROM doctors d JOIN departments dp ON dp.department_id = d.department_id
-      WHERE d.user_id IN (${ph})`,
-    [...userIds, ...userIds, ...userIds]
-  );
-  for (const r of rows) map.get(r.user_id).add(r.branch_id);
+  const s = sess(db);
+  const users = await User.find({ _id: { $in: userIds }, admin_branch_id: { $ne: null } }, { admin_branch_id: 1 }).session(s).lean();
+  for (const u of users) map.get(u._id).add(u.admin_branch_id);
+  const assigns = await StaffAssignment.find({ user_id: { $in: userIds } }).session(s).lean();
+  const sps = await byIds(db, ServicePoint, assigns.map((a) => a.service_point_id), { branch_id: 1 });
+  for (const a of assigns) if (sps.has(a.service_point_id)) map.get(a.user_id).add(sps.get(a.service_point_id).branch_id);
+  const docs = await Doctor.find({ user_id: { $in: userIds } }, { user_id: 1, department_id: 1 }).session(s).lean();
+  const depts = await byIds(db, Department, docs.map((d) => d.department_id), { branch_id: 1 });
+  for (const d of docs) if (depts.has(d.department_id)) map.get(d.user_id).add(depts.get(d.department_id).branch_id);
   return map;
 }
 
@@ -699,23 +714,14 @@ async function userBranchMap(db, userIds) {
 async function serializeUsers(db, rows) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.user_id);
-  const out = new Map();
-  const CHUNK = 400;
   const doctorsByUser = new Map();
   const assignmentsByUser = new Map();
+  const CHUNK = 1000;
   for (let i = 0; i < ids.length; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK);
-    const ph = placeholders(chunk.length);
-    const docs = await db.query(`SELECT doctor_id, user_id FROM doctors WHERE user_id IN (${ph})`, chunk);
-    docs.forEach((d) => doctorsByUser.set(d.user_id, d.doctor_id));
-    const assigns = await db.query(
-      `SELECT sa.user_id, sa.service_point_id, sp.name, sp.type, sp.branch_id, b.name AS branch_name
-         FROM staff_assignments sa JOIN service_points sp ON sp.service_point_id = sa.service_point_id
-         JOIN branches b ON b.branch_id = sp.branch_id
-        WHERE sa.user_id IN (${ph}) ORDER BY sa.assignment_id`,
-      chunk
-    );
-    for (const a of assigns) {
+    const docs = await Doctor.find({ user_id: { $in: chunk } }, { user_id: 1 }).session(sess(db)).lean();
+    docs.forEach((d) => doctorsByUser.set(d.user_id, d._id));
+    for (const a of await userService.assignmentRows(db, chunk)) {
       if (!assignmentsByUser.has(a.user_id)) assignmentsByUser.set(a.user_id, []);
       assignmentsByUser.get(a.user_id).push({
         servicePointId: a.service_point_id,
@@ -726,31 +732,26 @@ async function serializeUsers(db, rows) {
       });
     }
   }
-  const branchNames = new Map(
-    (await db.query('SELECT branch_id, name FROM branches', [])).map((b) => [b.branch_id, b.name])
-  );
-  for (const row of rows) {
-    out.set(row.user_id, {
-      id: row.user_id,
-      fullName: row.full_name,
-      email: row.email,
-      phone: row.phone,
-      role: row.role,
-      dateOfBirth: time.toApiDate(row.date_of_birth),
-      priorityCategory: row.priority_category,
-      adminBranchId: row.admin_branch_id || null,
-      adminBranchName: row.admin_branch_id ? branchNames.get(row.admin_branch_id) || null : null,
-      isActive: Boolean(row.is_active),
-      doctorId: doctorsByUser.get(row.user_id) || null,
-      assignments: assignmentsByUser.get(row.user_id) || [],
-      createdAt: time.toApi(row.created_at),
-    });
-  }
-  return rows.map((r) => out.get(r.user_id));
+  const branchNames = new Map((await Branch.find({}, { name: 1 }).session(sess(db)).lean()).map((b) => [b._id, b.name]));
+  return rows.map((row) => ({
+    id: row.user_id,
+    fullName: row.full_name,
+    email: row.email,
+    phone: row.phone,
+    role: row.role,
+    dateOfBirth: time.toApiDate(row.date_of_birth),
+    priorityCategory: row.priority_category,
+    adminBranchId: row.admin_branch_id || null,
+    adminBranchName: row.admin_branch_id ? branchNames.get(row.admin_branch_id) || null : null,
+    isActive: Boolean(row.is_active),
+    doctorId: doctorsByUser.get(row.user_id) || null,
+    assignments: assignmentsByUser.get(row.user_id) || [],
+    createdAt: time.toApi(row.created_at),
+  }));
 }
 
 async function requireUser(db, id) {
-  const row = await db.get('SELECT * FROM users WHERE user_id = ?', [id]);
+  const row = asRow(User, await User.findById(id).session(sess(db)).lean());
   if (!row) throw notFound('User not found');
   return row;
 }
@@ -777,6 +778,8 @@ async function serializeOne(db, row) {
   return (await serializeUsers(db, [row]))[0];
 }
 
+const ROLE_ORDER = { HOSPITAL_ADMIN: 0, BRANCH_ADMIN: 1, STAFF: 2 };
+
 const users = {
   async list(db, user, query) {
     const scope = listScope(user, query);
@@ -787,25 +790,19 @@ const users = {
       if (roles.some((r) => r !== 'STAFF')) throw forbidden('Branch administrators can only list staff accounts');
       roles = ['STAFF'];
     }
-    const where = [];
-    const params = [];
-    if (roles.length) {
-      where.push(`u.role IN (${roles.map(() => '?').join(', ')})`);
-      params.push(...roles);
-    }
+    const filter = {};
+    if (roles.length) filter.role = { $in: roles };
     if (scope) {
-      where.push(`(u.admin_branch_id = ?
-        OR u.user_id IN (SELECT sa.user_id FROM staff_assignments sa
-                           JOIN service_points sp ON sp.service_point_id = sa.service_point_id WHERE sp.branch_id = ?)
-        OR u.user_id IN (SELECT d.user_id FROM doctors d
-                           JOIN departments dp ON dp.department_id = d.department_id WHERE dp.branch_id = ?))`);
-      params.push(scope, scope, scope);
+      const spIds = await ServicePoint.distinct('_id', { branch_id: scope }).session(sess(db));
+      const deptIds = await Department.distinct('_id', { branch_id: scope }).session(sess(db));
+      const assigned = await StaffAssignment.distinct('user_id', { service_point_id: { $in: spIds } }).session(sess(db));
+      const doctorUsers = await Doctor.distinct('user_id', { department_id: { $in: deptIds } }).session(sess(db));
+      filter.$or = [{ admin_branch_id: scope }, { _id: { $in: [...new Set([...assigned, ...doctorUsers])] } }];
     }
-    const rows = await db.query(
-      `SELECT u.* FROM users u ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY CASE u.role WHEN 'HOSPITAL_ADMIN' THEN 0 WHEN 'BRANCH_ADMIN' THEN 1 WHEN 'STAFF' THEN 2 ELSE 3 END,
-                 u.full_name, u.user_id`,
-      params
+    const rows = asRows(User, await User.find(filter).session(sess(db)).lean());
+    rows.sort(
+      (a, b) =>
+        (ROLE_ORDER[a.role] ?? 3) - (ROLE_ORDER[b.role] ?? 3) || cmp(a.full_name, b.full_name) || a.user_id - b.user_id
     );
     return serializeUsers(db, rows);
   },
@@ -836,12 +833,19 @@ const users = {
     if (adminBranchId) await requireBranch(db, adminBranchId);
     await userService.assertUnique(db, { email, phone });
     const hash = await userService.hashPassword(password);
-    const { insertId } = await db.run(
-      `INSERT INTO users (full_name, email, phone, password_hash, role, date_of_birth, priority_category,
-                          admin_branch_id, fcm_token, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, NULL, 'NONE', ?, NULL, ?, ?)`,
-      [fullName, email, phone, hash, role, adminBranchId, isActive ? 1 : 0, time.nowDb()]
-    );
+    const insertId = await insertOne(db, User, {
+      full_name: fullName,
+      email,
+      phone,
+      password_hash: hash,
+      role,
+      date_of_birth: null,
+      priority_category: 'NONE',
+      admin_branch_id: adminBranchId || null,
+      fcm_token: null,
+      is_active: isActive,
+      created_at: time.nowDb(),
+    });
     return serializeOne(db, await requireUser(db, insertId));
   },
   async update(db, user, id, rawBody) {
@@ -864,7 +868,7 @@ const users = {
       if (target.role === 'PATIENT' || role === 'PATIENT') throw badRequest('Patient accounts cannot change role');
       if (!isHospitalAdmin(user)) throw forbidden('Branch administrators cannot change roles');
       if (isSelf) throw conflict('You cannot change your own role');
-      const doctor = await db.get('SELECT doctor_id FROM doctors WHERE user_id = ?', [id]);
+      const doctor = await Doctor.exists({ user_id: id }).session(sess(db));
       if (doctor) throw conflict('Doctor accounts must keep the STAFF role');
     }
     if (isSelf && isActive === false) throw conflict('You cannot deactivate your own account');
@@ -880,7 +884,7 @@ const users = {
     if (!finalEmail && !finalPhone) throw badRequest('An account needs an e-mail address or a phone number');
     await userService.assertUnique(db, { email: email || null, phone: phone || null }, id);
     const hash = password ? await userService.hashPassword(password) : undefined;
-    await updateColumns(db, 'users', 'user_id', id, {
+    await updateColumns(db, User, id, {
       full_name: fullName,
       email,
       phone,
@@ -895,7 +899,7 @@ const users = {
     const target = await requireUser(db, id);
     await assertUserManageable(db, user, target);
     if (target.user_id === user.user_id) throw conflict('You cannot deactivate your own account');
-    await db.run('UPDATE users SET is_active = 0 WHERE user_id = ?', [id]);
+    await User.updateOne({ _id: id }, { $set: { is_active: false } }, { session: sess(db) });
     return serializeOne(db, await requireUser(db, id));
   },
 };
@@ -904,13 +908,30 @@ const users = {
 // Staff assignments (hard delete)
 // =============================================================================================
 
-const ASSIGNMENT_SQL = `
-  SELECT sa.assignment_id, sa.user_id, u.full_name AS user_name, u.role, sa.service_point_id,
-         sp.name AS service_point_name, sp.type, sp.branch_id, b.name AS branch_name
-    FROM staff_assignments sa
-    JOIN users u ON u.user_id = sa.user_id
-    JOIN service_points sp ON sp.service_point_id = sa.service_point_id
-    JOIN branches b ON b.branch_id = sp.branch_id`;
+/** Assignment rows with user name/role, service point name/type/branch and branch name. */
+async function assignmentRows(db, filter) {
+  const docs = await StaffAssignment.find(filter).session(sess(db)).lean();
+  const usersById = await byIds(db, User, docs.map((a) => a.user_id), { full_name: 1, role: 1 });
+  const sps = await byIds(db, ServicePoint, docs.map((a) => a.service_point_id), { name: 1, type: 1, branch_id: 1 });
+  const branchNames = await byIds(db, Branch, [...sps.values()].map((s) => s.branch_id), { name: 1 });
+  return docs
+    .filter((a) => usersById.has(a.user_id) && sps.has(a.service_point_id) && branchNames.has(sps.get(a.service_point_id).branch_id))
+    .map((a) => {
+      const u = usersById.get(a.user_id);
+      const sp = sps.get(a.service_point_id);
+      return {
+        assignment_id: a._id,
+        user_id: a.user_id,
+        user_name: u.full_name,
+        role: u.role,
+        service_point_id: a.service_point_id,
+        service_point_name: sp.name,
+        type: sp.type,
+        branch_id: sp.branch_id,
+        branch_name: branchNames.get(sp.branch_id).name,
+      };
+    });
+}
 
 function toAssignment(r) {
   return {
@@ -926,7 +947,7 @@ function toAssignment(r) {
 }
 
 async function requireAssignment(db, id) {
-  const row = await db.get(`${ASSIGNMENT_SQL} WHERE sa.assignment_id = ?`, [id]);
+  const row = (await assignmentRows(db, { _id: id }))[0];
   if (!row) throw notFound('Assignment not found');
   return row;
 }
@@ -936,25 +957,11 @@ const assignments = {
     const scope = listScope(user, query);
     const userId = v.int(query.userId, 'userId', { min: 1 });
     const servicePointId = v.int(query.servicePointId, 'servicePointId', { min: 1 });
-    const where = [];
-    const params = [];
-    if (scope) {
-      where.push('sp.branch_id = ?');
-      params.push(scope);
-    }
-    if (userId) {
-      where.push('sa.user_id = ?');
-      params.push(userId);
-    }
-    if (servicePointId) {
-      where.push('sa.service_point_id = ?');
-      params.push(servicePointId);
-    }
-    const rows = await db.query(
-      `${ASSIGNMENT_SQL} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY sp.branch_id, u.full_name, sp.name`,
-      params
-    );
+    const filter = {};
+    if (userId) filter.user_id = userId;
+    if (servicePointId) filter.service_point_id = servicePointId;
+    const rows = (await assignmentRows(db, filter)).filter((r) => !scope || r.branch_id === scope);
+    rows.sort((a, b) => a.branch_id - b.branch_id || cmp(a.user_name, b.user_name) || cmp(a.service_point_name, b.service_point_name));
     return rows.map(toAssignment);
   },
   async get(db, user, id) {
@@ -972,21 +979,16 @@ const assignments = {
     access.assertBranchAccess(user, sp.branch_id);
     await assertUserManageable(db, user, target);
     if (!sp.is_active) throw badRequest('The service point is inactive');
-    const dup = await db.get('SELECT assignment_id FROM staff_assignments WHERE user_id = ? AND service_point_id = ?', [
-      userId,
-      servicePointId,
-    ]);
+    const dup = await StaffAssignment.exists({ user_id: userId, service_point_id: servicePointId }).session(sess(db));
     if (dup) throw conflict('This staff member is already assigned to that service point');
-    const { insertId } = await db.run('INSERT INTO staff_assignments (user_id, service_point_id) VALUES (?, ?)', [
-      userId,
-      servicePointId,
-    ]);
+    // The unique index uq_assignment backs this check (duplicate key -> 409).
+    const insertId = await insertOne(db, StaffAssignment, { user_id: userId, service_point_id: servicePointId });
     return toAssignment(await requireAssignment(db, insertId));
   },
   async remove(db, user, id) {
     const current = await requireAssignment(db, id);
     access.assertBranchAccess(user, current.branch_id);
-    await db.run('DELETE FROM staff_assignments WHERE assignment_id = ?', [id]);
+    await StaffAssignment.deleteOne({ _id: id }, { session: sess(db) });
     return toAssignment(current);
   },
 };

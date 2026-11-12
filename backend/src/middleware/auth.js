@@ -6,7 +6,7 @@
  */
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const { getDb } = require('../db');
+const { getDb, models, asRow, sess } = require('../db');
 const { unauthorized, forbidden } = require('../utils/errors');
 
 function signToken(user) {
@@ -22,7 +22,9 @@ async function userFromToken(db, token) {
   } catch (_) {
     throw unauthorized('Invalid or expired token');
   }
-  const user = await db.get('SELECT * FROM users WHERE user_id = ?', [Number(payload.sub)]);
+  const userId = Number(payload && payload.sub);
+  if (!Number.isSafeInteger(userId)) throw unauthorized('Invalid or expired token');
+  const user = asRow(models.User, await models.User.findById(userId).session(sess(db)).lean());
   if (!user) throw unauthorized('User no longer exists');
   if (!user.is_active) throw unauthorized('Account is deactivated');
   return user;

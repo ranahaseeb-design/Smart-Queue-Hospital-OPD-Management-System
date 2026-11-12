@@ -1,9 +1,9 @@
 'use strict';
 /**
- * Local-time helpers. The database stores hospital local time as
- * "YYYY-MM-DD HH:mm:ss" strings (portable between MySQL DATETIME and SQLite TEXT);
- * the API serialises them as "YYYY-MM-DDTHH:mm:ss" without a zone suffix.
- * All date arithmetic is done in JavaScript (no NOW()/DATE() in SQL).
+ * Local-time helpers. MongoDB stores datetimes as BSON Date (an absolute instant, UTC on the
+ * wire) with whole-second precision (dbDate); conversion to hospital local time (TZ, default
+ * Asia/Karachi) happens only at the API edge: toApi() serialises "YYYY-MM-DDTHH:mm:ss" without a
+ * zone suffix. Calendar values (token_date, visit_date) are hospital-local "YYYY-MM-DD" strings.
  */
 
 // Overridable clock so tests (and the seed) can run at a fixed point in time.
@@ -148,8 +148,32 @@ function today() {
   return formatDate(clock.now());
 }
 
+/** Hospital time zone (IANA name) for server-side date grouping in aggregation pipelines. */
+function tzName() {
+  return process.env.TZ || 'Asia/Karachi';
+}
+
+/** A Date truncated to whole seconds: the precision every stored datetime has. */
+function dbDate(d) {
+  if (d === null || d === undefined) return null;
+  const ms = d instanceof Date ? d.getTime() : new Date(d).getTime();
+  return new Date(Math.floor(ms / 1000) * 1000);
+}
+
+/** "Now" as stored in the database (clock time, whole seconds). */
 function nowDb() {
-  return formatDateTime(clock.now());
+  return dbDate(clock.now());
+}
+
+/** Local midnight Date of a "YYYY-MM-DD" day (for range queries on Date fields). */
+function dayStart(dateStr) {
+  return parseDate(dateStr);
+}
+
+/** [start, end) Dates of a local calendar day. */
+function dayRange(dateStr) {
+  const start = parseDate(dateStr);
+  return { $gte: start, $lt: addDays(start, 1) };
 }
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -206,6 +230,10 @@ module.exports = {
   minutesBetween,
   today,
   nowDb,
+  tzName,
+  dbDate,
+  dayStart,
+  dayRange,
   dayName,
   round,
 };
