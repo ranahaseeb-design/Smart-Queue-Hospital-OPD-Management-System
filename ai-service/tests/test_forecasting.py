@@ -15,8 +15,10 @@ THRESHOLDS = {"high": 0.5, "critical": 0.9}  # seeded in the settings table
 
 
 def _forecast_rows() -> pd.DataFrame:
-    frame = db.fetch_df("SELECT * FROM forecasts ORDER BY forecast_hour, department_id")
-    frame["forecast_hour"] = db.to_datetime_series(frame["forecast_hour"])
+    """All forecasts documents, ``forecast_hour`` converted from stored UTC to hospital local time."""
+    docs = list(db.get_db()["forecasts"].find({}, sort=[("forecast_hour", 1), ("department_id", 1)]))
+    frame = pd.DataFrame(docs)
+    frame["forecast_hour"] = db.utc_series_to_local(frame["forecast_hour"])
     return frame
 
 
@@ -26,7 +28,7 @@ def test_congestion_level_boundaries():
     assert congestion_level(1.0, {"high": 0.85, "critical": 1.0}) == "CRITICAL"
 
 
-def test_forecast_job_writes_scheduled_hours(engine, seed_forecast_history, forecast_expectations):
+def test_forecast_job_writes_scheduled_hours(mongo, seed_forecast_history, forecast_expectations):
     now = datetime(2026, 10, 28, 10, 30)  # a Wednesday
     today = now.replace(hour=0, minute=0)
     seed_forecast_history(today)
@@ -81,7 +83,7 @@ def test_forecast_job_writes_scheduled_hours(engine, seed_forecast_history, fore
     assert other_days["is_peak"].astype(int).mean() <= 0.25
 
 
-def test_forecast_job_is_idempotent(engine, seed_forecast_history, forecast_expectations):
+def test_forecast_job_is_idempotent(mongo, seed_forecast_history, forecast_expectations):
     now = datetime(2026, 10, 28, 10, 30)
     today = now.replace(hour=0, minute=0)
     seed_forecast_history(today)
@@ -113,3 +115,32 @@ def test_forecast_without_history_or_schedules(client):
     assert response.status_code == 200, response.text
     assert response.json()["generated"] == 0
     assert response.json()["modelVersion"] == SOURCE_BASELINE
+
+
+def test_forecast_documents_follow_the_mongodb_design(mongo, seed_forecast_history):
+    """Integer _id values reserved from counters (never reusing existing ids), UTC dates, booleans."""
+    now = datetime(2026, 10, 28, 10, 30)
+    today = now.replace(hour=0, minute=0)
+    seed_forecast_history(today)
+    result = run_forecast(days=2, now=now)
+
+    docs = list(mongo["forecasts"].find({"forecast_hour": {"$gte": db.to_utc(today)}}))
+    assert len(docs) == result["generated"] > 0
+    ids = sorted(doc["_id"] for doc in docs)
+    assert all(isinstance(i, int) for i in ids)
+    assert ids[0] > 3  # the seeded documents had _id 1..3 and no counters entry
+    assert ids == list(range(ids[0], ids[0] + len(ids)))  # one reserved block
+    assert mongo["counters"].find_one({"_id": "forecasts"})["seq"] == ids[-1]
+    for doc in docs:
+        assert isinstance(doc["forecast_hour"], datetime) and isinstance(doc["generated_at"], datetime)
+        assert isinstance(doc["is_peak"], bool)
+        assert set(doc) == {"_id", "branch_id", "department_id", "forecast_hour", "expected_arrivals", "capacity",
+                            "congestion_level", "is_peak", "source", "generated_at"}
+    # Asia/Karachi is UTC+5: the first Cardiology hour (09:00 local) is stored as 04:00 UTC.
+    first = min(doc["forecast_hour"] for doc in docs if doc["department_id"] == 1)
+    assert first == db.to_utc(today.replace(hour=9)) == datetime(2026, 10, 28, 4, 0)
+    assert docs[0]["generated_at"] == datetime(2026, 10, 28, 5, 30)
+
+    run_forecast(days=2, now=now)  # a second run continues the counter
+    later = mongo["forecasts"].find({"forecast_hour": {"$gte": db.to_utc(today)}})
+    assert min(doc["_id"] for doc in later) > ids[-1]

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import joblib
 import pytest
-from sqlalchemy import text
 
 from app import db, predictor
 from app.config import settings
@@ -36,10 +37,9 @@ PREDICT_BODY = {
 }
 
 
-def _model_rows(engine) -> dict[str, dict]:
-    with engine.connect() as conn:
-        rows = conn.execute(text("SELECT version, status, is_active, data_source, training_rows FROM model_versions")).mappings().all()
-    return {row["version"]: dict(row) for row in rows}
+def _model_rows(mongo) -> dict[str, dict]:
+    """model_versions documents keyed by their _id (= the version string)."""
+    return {doc["_id"]: doc for doc in mongo["model_versions"].find({})}
 
 
 def test_health_without_model(client):
@@ -63,7 +63,7 @@ def test_retrain_refused_below_200_rows(client, seed_wait_history):
     assert client.get("/ai/models").json() == []
 
 
-def test_training_set_uses_first_prediction_per_called_token(engine, seed_wait_history):
+def test_training_set_uses_first_prediction_per_called_token(mongo, seed_wait_history):
     summary = seed_wait_history(days=10)
     data = load_training_data()
     assert len(data) == summary["called"]  # uncalled (cancelled) tokens are excluded
@@ -78,7 +78,7 @@ def _no_reload(version):
     raise AssertionError(f"model {version} was reloaded from disk instead of served from the cache")
 
 
-def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, monkeypatch):
+def test_retrain_predict_and_activate_flow(client, mongo, seed_wait_history, monkeypatch):
     seed_wait_history(days=40)
 
     # --- first model: must beat the Eq. 6.2 baseline and becomes ACTIVE
@@ -93,10 +93,15 @@ def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, mo
     assert metrics["mae"] < metrics["baselineMae"]
     assert first["accepted"] is True and first["activated"] is True
 
-    rows = _model_rows(engine)
+    rows = _model_rows(mongo)
     assert rows[version]["status"] == "ACTIVE"
     assert db.to_bool(rows[version]["is_active"])
     assert rows[version]["data_source"] == "synthetic"
+    # MONGODB_DESIGN.md: _id = version, real boolean, embedded metrics object, trained_at a UTC Date.
+    assert rows[version]["is_active"] is True
+    assert rows[version]["metrics"]["baselineMae"] == metrics["baselineMae"]
+    assert isinstance(rows[version]["trained_at"], datetime)
+    assert set(rows[version]) == {"_id", "trained_at", "training_rows", "data_source", "metrics", "status", "is_active"}
     # The accepted model is served from memory at once (no file reload on the first prediction,
     # which could exceed the backend's 1.5 s timeout for a large forest).
     assert registry.cached_version() == version
@@ -139,7 +144,7 @@ def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, mo
     assert second["version"] != version
     assert second["activeModelMae"] is not None
     assert second["accepted"] is False and second["activated"] is False
-    rows = _model_rows(engine)
+    rows = _model_rows(mongo)
     assert rows[second["version"]]["status"] == "REJECTED"
     assert db.to_bool(rows[version]["is_active"])
 
@@ -147,18 +152,17 @@ def test_retrain_predict_and_activate_flow(client, engine, seed_wait_history, mo
     response = client.post(f"/ai/models/{second['version']}/activate")
     assert response.status_code == 409, response.text
     assert "REJECTED" in response.json()["detail"]
-    rows = _model_rows(engine)
+    rows = _model_rows(mongo)
     assert rows[second["version"]]["status"] == "REJECTED"
     assert db.to_bool(rows[version]["is_active"])
 
     # --- manual activation / rollback of a version that passed acceptance (here: marked RETIRED,
     # as after an earlier rollback): the previous active version is retired
-    with engine.begin() as conn:
-        conn.execute(text("UPDATE model_versions SET status = 'RETIRED' WHERE version = :v"), {"v": second["version"]})
+    mongo["model_versions"].update_one({"_id": second["version"]}, {"$set": {"status": "RETIRED"}})
     response = client.post(f"/ai/models/{second['version']}/activate")
     assert response.status_code == 200, response.text
     assert response.json() == {"version": second["version"], "activated": True}
-    rows = _model_rows(engine)
+    rows = _model_rows(mongo)
     assert rows[second["version"]]["status"] == "ACTIVE" and db.to_bool(rows[second["version"]]["is_active"])
     assert rows[version]["status"] == "RETIRED" and not db.to_bool(rows[version]["is_active"])
     assert registry.cached_version() == second["version"]  # activation warms the cache
@@ -198,7 +202,7 @@ def test_department_check_rejects_only_major_departments():
         settings.department_min_rows, settings.department_tolerance = original
 
 
-def test_major_department_regression_rejects_the_model(client, engine, seed_wait_history, monkeypatch):
+def test_major_department_regression_rejects_the_model(client, mongo, seed_wait_history, monkeypatch):
     from app import training
 
     seed_wait_history(days=40)
@@ -218,7 +222,7 @@ def test_major_department_regression_rejects_the_model(client, engine, seed_wait
     assert body["accepted"] is False and body["activated"] is False  # ... but a major department regressed
     assert "major department" in body["reason"]
     assert any(d["rejects"] for d in body["departmentCheck"])
-    assert _model_rows(engine)[body["version"]]["status"] == "REJECTED"
+    assert _model_rows(mongo)[body["version"]]["status"] == "REJECTED"
     assert client.get("/health").json()["activeModel"] is None
 
     response = client.post(f"/ai/models/{body['version']}/activate")
@@ -239,28 +243,24 @@ def test_data_source_label_and_synthetic_share():
     assert synthetic_share(pd.Series([], dtype=bool)) == 0.0
 
 
-def test_retrain_with_pilot_rows_is_mixed_and_stores_shares(client, engine, seed_wait_history):
-    import json
+def test_retrain_with_pilot_rows_is_mixed_and_stores_shares(client, mongo, seed_wait_history):
 
     seed_wait_history(days=40)
     # The newest tokens (test period) come from the pilot deployment, not the synthetic history.
-    with engine.begin() as conn:
-        cutoff = conn.execute(text("SELECT MAX(issued_at) FROM tokens")).scalar()
-        conn.execute(text("UPDATE tokens SET is_synthetic = 0 WHERE issued_at >= date(:c, '-3 day')"), {"c": cutoff})
+    newest = mongo["tokens"].find_one({}, sort=[("issued_at", -1)])["issued_at"]
+    cutoff_day = (db.to_local(newest) - timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)
+    mongo["tokens"].update_many({"issued_at": {"$gte": db.to_utc(cutoff_day)}}, {"$set": {"is_synthetic": False}})
     response = client.post("/ai/models/retrain")
     assert response.status_code == 200, response.text
     body = response.json()
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT data_source, metrics_json FROM model_versions WHERE version = :v"), {"v": body["version"]}
-        ).mappings().one()
+    row = mongo["model_versions"].find_one({"_id": body["version"]})
     assert row["data_source"] == "mixed"
-    stored = json.loads(row["metrics_json"])
+    stored = row["metrics"]  # embedded object (MONGODB_DESIGN.md)
     assert stored["syntheticShareTrain"] == 1.0
     assert 0.0 <= stored["syntheticShareTest"] < 1.0
 
 
-def test_old_raw_id_bundle_still_loads_and_predicts(engine):
+def test_old_raw_id_bundle_still_loads_and_predicts(mongo):
     """A bundle saved before the one-hot encoding (bare forest on the raw 14 columns) keeps working."""
     from sklearn.ensemble import RandomForestRegressor
 

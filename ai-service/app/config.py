@@ -42,15 +42,20 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0"
+
+
 @dataclass
 class Settings:
-    database_url: str
+    mongodb_uri: str  # MONGODB_URI (database/MONGODB_DESIGN.md)
+    mongodb_db: str  # MONGODB_DB; empty = the database named in the URI path (else smart_opd)
+    mongodb_timeout_ms: int  # server selection / connect timeout, so /health and requests fail fast
     models_dir: Path
     n_jobs: int  # parallel jobs for scikit-learn forests (-1 = all cores)
     search_iter: int  # RandomizedSearchCV iterations during retraining
     min_training_rows: int  # retraining is refused below this many labelled tokens
     forecast_lookback_days: int  # history window used by the forecasting job
-    hospital_tz: str  # hospital local time zone (all DB datetimes are naive local time)
+    hospital_tz: str  # hospital local time zone (DB datetimes are UTC; hours and weekdays use this zone)
     log_level: str
     ai_service_token: str = ""  # shared secret expected in the X-AI-Service-Token header
     allow_unauthenticated: bool = False  # dev only: accept /ai/* calls when no token is configured
@@ -60,7 +65,9 @@ class Settings:
 
 def load_settings() -> Settings:
     return Settings(
-        database_url=os.getenv("DATABASE_URL", "sqlite:///../backend/data/smart_opd.db"),
+        mongodb_uri=os.getenv("MONGODB_URI", "").strip() or DEFAULT_MONGODB_URI,
+        mongodb_db=os.getenv("MONGODB_DB", "").strip(),
+        mongodb_timeout_ms=max(500, _int_env("MONGODB_TIMEOUT_MS", 3000)),
         models_dir=Path(os.getenv("MODELS_DIR", "./models")),
         n_jobs=_int_env("AI_N_JOBS", -1),
         search_iter=max(1, _int_env("AI_SEARCH_ITER", 8)),
@@ -80,7 +87,7 @@ settings = load_settings()
 
 
 def local_now() -> datetime:
-    """Current hospital local time as a naive datetime (matches how the DB stores datetimes)."""
+    """Current hospital local time as a naive datetime (db.to_utc converts it before it is stored)."""
     try:
         from zoneinfo import ZoneInfo
 
