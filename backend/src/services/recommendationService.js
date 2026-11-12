@@ -18,6 +18,19 @@ const scheduleService = require('./scheduleService');
 const predictionService = require('./predictionService');
 const settingsService = require('./settingsService');
 const queueService = require('./queueService');
+const { models, sess, byIds } = require('../db');
+
+const { Branch, Department, Doctor, User } = models;
+
+/** Ids of active doctors (active user account) of a department, ascending. */
+async function activeDoctorIds(db, departmentId) {
+  const doctors = await Doctor.find({ department_id: departmentId, is_active: true }, { user_id: 1 })
+    .sort({ _id: 1 })
+    .session(sess(db))
+    .lean();
+  const users = await byIds(db, User, doctors.map((d) => d.user_id), { is_active: 1 });
+  return doctors.filter((d) => users.get(d.user_id) && users.get(d.user_id).is_active).map((d) => d._id);
+}
 
 /** Min-max normalise; all equal -> 0. */
 function normalise(values) {
@@ -83,25 +96,19 @@ async function recommend(db, { specialty, lat = null, lng = null, excludeDoctorI
   const priorityLevel = user && user.role === 'PATIENT' ? queueService.priorityFromCategory(user.priority_category, user.date_of_birth) : 0;
   const date = time.formatDate(now);
 
+  const activeBranchIds = await Branch.distinct('_id', { status: 'ACTIVE' }).session(sess(db));
   const departments = (
-    await db.query(
-      `SELECT dp.department_id, dp.specialty, dp.name, b.branch_id, b.name AS branch_name, b.address, b.latitude, b.longitude
-         FROM departments dp JOIN branches b ON b.branch_id = dp.branch_id
-        WHERE dp.is_active = 1 AND b.status = 'ACTIVE'`,
-      []
-    )
-  ).filter((d) => d.specialty.trim().toLowerCase() === specialty.trim().toLowerCase());
+    await Department.find({ is_active: true, branch_id: { $in: activeBranchIds } }).sort({ _id: 1 }).session(sess(db)).lean()
+  )
+    .map((d) => ({ ...d, department_id: d._id }))
+    .filter((d) => d.specialty.trim().toLowerCase() === specialty.trim().toLowerCase());
 
   const canonicalSpecialty = departments.length ? departments[0].specialty : specialty;
   const accepting = [];
   let referenceDoctor = null;
   for (const dept of departments) {
-    const doctors = await db.query(
-      `SELECT d.doctor_id FROM doctors d JOIN users u ON u.user_id = d.user_id
-        WHERE d.department_id = ? AND d.is_active = 1 AND u.is_active = 1`,
-      [dept.department_id]
-    );
-    for (const { doctor_id: doctorId } of doctors) {
+    const doctors = await activeDoctorIds(db, dept.department_id);
+    for (const doctorId of doctors) {
       const doctor = await scheduleService.getDoctor(db, doctorId);
       const avail = await scheduleService.availability(db, doctor, date, now);
       if (doctorId === excludeDoctorId) {
@@ -187,4 +194,4 @@ async function recommend(db, { specialty, lat = null, lng = null, excludeDoctorI
   return { specialty: canonicalSpecialty, weights, items };
 }
 
-module.exports = { recommend, scoreCandidates, normalise, effectiveWeights, buildReason, config };
+module.exports = { recommend, scoreCandidates, normalise, effectiveWeights, buildReason, activeDoctorIds, config };

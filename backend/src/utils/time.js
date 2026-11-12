@@ -148,6 +148,11 @@ function today() {
   return formatDate(clock.now());
 }
 
+/** Hospital time zone (IANA name) for server-side date grouping in aggregation pipelines. */
+function tzName() {
+  return process.env.TZ || 'Asia/Karachi';
+}
+
 /** A Date truncated to whole seconds: the precision every stored datetime has. */
 function dbDate(d) {
   if (d === null || d === undefined) return null;
@@ -225,6 +230,7 @@ module.exports = {
   minutesBetween,
   today,
   nowDb,
+  tzName,
   dbDate,
   dayStart,
   dayRange,

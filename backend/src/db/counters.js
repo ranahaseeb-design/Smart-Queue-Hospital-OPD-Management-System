@@ -89,9 +89,15 @@ async function nextTokenNumber(servicePointId, date, session) {
 /** Write the lock documents of service points (ascending id, inside the transaction). */
 async function lockServicePoints(ids, session) {
   const unique = [...new Set(ids.map(Number))].sort((a, b) => a - b);
-  for (const id of unique) {
-    await Counter.updateOne({ _id: `lock:service_point:${id}` }, { $inc: { seq: 1 } }, { upsert: true, session });
-  }
+  for (const id of unique) await lockKey(`service_point:${id}`, session);
+}
+
+/**
+ * Write the lock document 'lock:<key>' inside the transaction (e.g. 'doctor:7' serialises the
+ * bookings of one doctor, like the former SELECT ... FOR UPDATE on the doctors row).
+ */
+async function lockKey(key, session) {
+  await Counter.updateOne({ _id: `lock:${key}` }, { $inc: { seq: 1 } }, { upsert: true, session });
 }
 
 /** Set every id counter to the highest existing _id (after bulk inserts with explicit ids). */
@@ -103,4 +109,4 @@ async function syncIdCounters() {
   }
 }
 
-module.exports = { nextId, nextIds, reserveIds, nextTokenNumber, lockServicePoints, syncIdCounters };
+module.exports = { nextId, nextIds, reserveIds, nextTokenNumber, lockServicePoints, lockKey, syncIdCounters };
