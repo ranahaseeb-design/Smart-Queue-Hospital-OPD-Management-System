@@ -6,99 +6,131 @@ System for Hospital OPD with AI-Based Waiting Time Prediction and Branch Recomme
 - REST under `http://localhost:4000/api`, Socket.IO on the same port.
 - The shared contract is [`docs/API_CONTRACT.md`](../docs/API_CONTRACT.md); every endpoint, JSON
   shape and socket event in it is implemented here.
-- Canonical database schema: [`database/schema.mysql.sql`](../database/schema.mysql.sql).
-  `src/db/schema.sqlite.sql` mirrors it table for table and column for column for development.
+- Data design: [`database/MONGODB_DESIGN.md`](../database/MONGODB_DESIGN.md) (collections, field
+  names, integer ids, indexes, concurrency rules), shared with the AI service.
 
-Stack: Node ≥ 22.13 (developed on Node 24), Express 4, socket.io 4, jsonwebtoken, bcryptjs,
-mysql2/promise, built-in `node:sqlite`, cors, dotenv, morgan, nodemailer (optional channel),
-CommonJS. Tests use `node:test`, supertest and socket.io-client.
+## Architecture (MERN)
+
+```
+ React dashboards (staff 5173, admin 5174) ─┐
+ Flutter patient app ───────────────────────┼── REST /api + Socket.IO ──> Express backend (4000) ──> MongoDB (smart_opd)
+                                            │                                 │   Mongoose            ^
+                                            │                                 └── HTTP ──> FastAPI AI service (8000) ──┘ pymongo
+```
+
+- **M**ongoDB — the only database. The backend uses **Mongoose 8** (`src/db/models.js`); the AI
+  service reads the same database with pymongo.
+- **E**xpress 4 + Socket.IO 4 — REST API and real-time channel (`src/app.js`, `src/server.js`).
+- **R**eact — the staff and admin dashboards (`staff-dashboard/`, `admin-dashboard/`).
+- **N**ode ≥ 22.13 (developed on Node 24), CommonJS. Also: jsonwebtoken, bcryptjs, cors, dotenv,
+  morgan, nodemailer (optional channel). Tests: `node:test`, supertest, socket.io-client.
+
+The REST API is unchanged by the move from MySQL/SQLite to MongoDB: same paths, same JSON, integer
+ids, `"YYYY-MM-DDTHH:mm:ss"` hospital-local datetimes (the only visible difference is
+`GET /api/health` answering `"db": "mongodb"`).
 
 ---
 
-## Quick start (SQLite, zero install)
+## MongoDB
+
+The backend needs **MongoDB 6.0 or newer running as a replica set**: every status change is written
+together with its `queue_events` document in one multi-document transaction (FR-21), and
+transactions only exist on replica sets. A single-node replica set is enough for development.
+
+### Windows: MongoDB Community Server as a single-node replica set
+
+1. Install **MongoDB Community Server** (MSI from mongodb.com, "Complete", *Install MongoD as a
+   Service* ticked) and, optionally, **mongosh** (MongoDB Shell).
+2. Open `C:\Program Files\MongoDB\Server\<version>\bin\mongod.cfg` in an editor started *as
+   administrator* and enable replication (YAML, two spaces of indentation):
+
+   ```yaml
+   replication:
+     replSetName: rs0
+   ```
+
+3. Restart the service (administrator PowerShell):
+
+   ```powershell
+   Restart-Service MongoDB
+   ```
+
+4. Initiate the replica set once, in `mongosh`:
+
+   ```js
+   rs.initiate()        // answers { ok: 1 }; the prompt becomes rs0 [direct: primary]
+   rs.status().ok       // 1
+   ```
+
+   If the member is registered under the computer name and the backend cannot resolve it, use
+   `rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '127.0.0.1:27017' }] })` instead.
+
+5. Connection string (the `.env.example` default):
+   `MONGODB_URI=mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0`
+
+On macOS/Linux the same works with `mongod --replSet rs0 --dbpath <dir>` followed by `rs.initiate()`.
+
+### MongoDB Atlas (alternative)
+
+Create a free cluster (it is already a replica set), add a database user and your IP address, and
+set `MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/smart_opd?retryWrites=true&w=majority`.
+
+---
+
+## Quick start
 
 ```bash
 cd backend
 npm install
-cp .env.example .env        # then set JWT_SECRET (required, see below)
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"   # paste as JWT_SECRET in .env
-npm run seed                # drop + recreate data/smart_opd.db with ~60 days of demo history (~15-30 s)
-npm start                   # http://localhost:4000/api/health
+npm run setup     # creates backend/.env from .env.example with a random JWT_SECRET and AI_SERVICE_TOKEN
+npm run seed      # DROPS the smart_opd database and fills it with ~60 days of demo history (~15-60 s)
+npm start         # http://localhost:4000/api/health
 ```
 
-`npm run dev` starts the same server with `node --watch`.
+`npm run dev` starts the same server with `node --watch`. Copy the generated `AI_SERVICE_TOKEN`
+into `ai-service/.env` so the AI service accepts the backend's calls.
 
 `JWT_SECRET` is mandatory in **every** environment (development included): the backend refuses to
 start when it is missing, shorter than 32 characters or a published placeholder (for example the
 `.env.example` value). There is no built-in fallback secret, so tokens cannot be forged with a
-value from the repository.
+value from the repository. `npm run setup` fills it in; it never overwrites a real value.
 
-The AI service (`ai-service/`, port 8000) reads the same SQLite file by default
-(`DATABASE_URL=sqlite:///../backend/data/smart_opd.db`). The backend works without it (see
-[AI fallback behaviour](#ai-service-and-fallback-behaviour)).
-
-## Production (MySQL 8)
-
-```bash
-# backend/.env
-DB_CLIENT=mysql
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=opd_user
-DB_PASSWORD=...
-DB_NAME=smart_opd
-JWT_SECRET=<48 random bytes as hex>    # mandatory in every environment (>= 32 chars)
-NODE_ENV=production
-DEMO_ALWAYS_OPEN=false
-```
-
-- `npm run db:init` creates the schema from `../database/schema.mysql.sql` if it does not exist
-  (the database name is adjusted to `DB_NAME`), and writes the default settings.
-- `npm run seed` **drops the database `DB_NAME`** and recreates it with demo data — development only.
-- The MySQL adapter uses a `mysql2` pool with `dateStrings` (DATETIME values stay hospital local
-  time strings, exactly like SQLite) and `SELECT … FOR UPDATE` row locks inside transactions.
-
-All SQL is portable between MySQL 8 and SQLite: `?` placeholders, every date computed in JS
-(no `NOW()`/`DATE()`), no `ON DUPLICATE KEY`/`INSERT OR`, booleans as 0/1, JSON stored as strings.
-Datetimes are stored as local `YYYY-MM-DD HH:mm:ss` (`TZ`, default `Asia/Karachi`) and serialised
-in the API as `YYYY-MM-DDTHH:mm:ss` without a zone suffix.
-
-> The automated tests and the smoke tests were run on SQLite. The MySQL driver is written against
-> the canonical schema but has not been exercised against a live MySQL server in this repository.
-
----
+The AI service (`ai-service/`, port 8000) uses the same `MONGODB_URI`. The backend works without
+it (see [AI fallback behaviour](#ai-service-and-fallback-behaviour)).
 
 ## Scripts
 
 | Script | What it does |
 |---|---|
-| `npm start` | API + Socket.IO + scheduled jobs (`src/server.js`) |
+| `npm start` | API + Socket.IO + scheduled jobs (`src/server.js`); creates missing collections/indexes and default settings on start |
 | `npm run dev` | Same with `node --watch` |
-| `npm run db:init` | Create the schema for the configured driver if missing (+ default settings) |
-| `npm run seed` | **Drop**, recreate and fill the database with demo data (honours `SQLITE_PATH` / `DB_*`, `SEED_HISTORY_DAYS`) |
-| `npm test` | Full test suite (`node --test`), each file on its own temporary SQLite database |
+| `npm run setup` | `scripts/setup-env.js`: create `backend/.env` from `.env.example` if missing and fill `JWT_SECRET` (48 random bytes, hex) and `AI_SERVICE_TOKEN` (24 random bytes, hex) when empty or placeholders; never overwrites real values; prints what it did |
+| `npm run db:init` | Create the collections, **synchronise the indexes** with `models.js`, align the id counters and write missing default settings. Never deletes data |
+| `npm run seed` | **Drop** the database of `MONGODB_URI`, recreate collections and indexes and fill them with demo data (`SEED_HISTORY_DAYS`, default 60) |
+| `npm test` | Full test suite (`node --test`); every test file uses its own uniquely named database (dropped afterwards) |
 
-Tests write their temporary databases to `$TEST_TMPDIR` (or the OS temp directory) and delete them
-afterwards. They need no running services: the AI service is replaced by a closed port or by a fake
-HTTP server inside the test.
+Tests need a reachable MongoDB replica set: `TEST_MONGODB_URI`, else `MONGODB_URI` from the
+environment, else `mongodb://127.0.0.1:27017/?replicaSet=rs0`. Each file creates
+`smart_opd_test_<file>_<pid>_<random>` and drops it at the end. The AI service is replaced by a closed
+port or by a fake HTTP server inside the test. `test/datalayer.test.js`, `test/setup.test.js` and
+`test/config.test.js` run without a database.
 
 ## Environment variables
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `4000` | HTTP + Socket.IO port |
-| `TZ` | `Asia/Karachi` | Hospital time zone for every stored/served datetime |
+| `TZ` | `Asia/Karachi` | Hospital time zone: API datetimes, calendar days (`token_date`), weekday of schedules |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:5174` (+ `127.0.0.1` variants) | Allowed browser origins (`*` = any). Requests without `Origin` (mobile app, curl) are always allowed |
-| `JWT_SECRET` | none (required) | JWT signing secret; **required in every environment**, at least 32 characters, placeholders rejected. Generate: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+| `JWT_SECRET` | none (required) | JWT signing secret; **required in every environment**, at least 32 characters, placeholders rejected. `npm run setup` generates one |
 | `JWT_EXPIRES_IN` | `7d` | Token lifetime |
 | `BCRYPT_ROUNDS` | `10` | Password hashing cost |
-| `DB_CLIENT` | `sqlite` | `sqlite` or `mysql` |
-| `SQLITE_PATH` | `data/smart_opd.db` | SQLite file (relative to `backend/`) |
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | `localhost`, `3306`, `root`, empty, `smart_opd` | MySQL connection |
+| `MONGODB_URI` | `mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0` | MongoDB connection string; the path is the database name (`smart_opd` when omitted). Must point at a replica set (local `rs0` or Atlas) |
+| `MONGODB_TIMEOUT_MS` | `10000` | Server selection timeout when connecting |
 | `AI_SERVICE_URL` | `http://localhost:8000` | Internal AI service; empty = disabled |
 | `AI_SERVICE_TOKEN` | empty | Shared secret sent as `X-AI-Service-Token` on every `/ai/*` call; must equal the AI service's `AI_SERVICE_TOKEN` (otherwise the AI service answers 401/503 and the backend uses its fallbacks) |
 | `AI_TIMEOUT_MS` | `1500` | Timeout of prediction / ranking calls |
-| `AI_JOB_TIMEOUT_MS` | `600000` | Timeout of the forecast job and model retraining proxies (a retrain on 60 days of data can take minutes). A job timeout does not trip the prediction circuit breaker |
+| `AI_JOB_TIMEOUT_MS` | `600000` | Timeout of the forecast job and model retraining proxies. A job timeout does not trip the prediction circuit breaker |
 | `DEMO_ALWAYS_OPEN` | `false` (`.env.example`: `true`) | Ignore the clock for `acceptingNow` (a schedule for the weekday is still required) |
 | `JOBS_ENABLED` | `true` (false in tests) | Background jobs |
 | `AUTO_SEED` | `false` | Seed automatically when the server starts on an empty database |
@@ -106,6 +138,55 @@ HTTP server inside the test.
 | `LOG_REQUESTS` | `true` (false in tests) | morgan request log |
 | `FIREBASE_SERVICE_ACCOUNT` | empty | Path to / inline JSON of a Firebase service account → push notifications (requires `npm install firebase-admin`, not a default dependency) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | empty / `587` / `false` | E-mail notifications via nodemailer (disabled while `SMTP_HOST` is empty) |
+
+---
+
+## Collection map
+
+One collection per former table, same snake_case field names as the old SQL columns
+(see `database/MONGODB_DESIGN.md`). Every document has an integer `_id` from `counters`; the API
+maps `_id` → `id`.
+
+| Collection | Holds | Key indexes / constraints |
+|---|---|---|
+| `branches` | hospital branches (name, address, latitude, longitude, status) | |
+| `users` | patients, staff, administrators (bcrypt `password_hash`, role, priority category) | unique `email`, unique `phone` (where set) |
+| `departments` | specialty per branch | `{branch_id, specialty}`, `specialty` |
+| `service_points` | OPD rooms, LAB and PHARMACY counters | `branch_id` |
+| `doctors` | doctor profile of a STAFF user (department, `avg_consult_minutes`) | unique `user_id` |
+| `doctor_schedules` | weekly sessions (`day_of_week` 1–7, `"HH:mm:ss"` times, `max_patients`) | `{doctor_id, day_of_week}`, `{service_point_id, day_of_week}` |
+| `staff_assignments` | staff ↔ service point | unique `{user_id, service_point_id}` |
+| `visits` | one hospital visit per patient, branch and day (`visit_date` "YYYY-MM-DD") | **partial unique** `{patient_id, branch_id, visit_date}` where `status: 'OPEN'` |
+| `appointments` | booked slots (`slot_start` Date) | **partial unique** `{doctor_id, slot_start}` where status ∈ BOOKED/CHECKED_IN |
+| `tokens` | queue tokens (`token_date`, `token_number`, status, `issued_at`/`called_at`/`completed_at`, `is_synthetic`) | unique `{service_point_id, token_date, token_number}`, unique `appointment_id` (where set), `{service_point_id, token_date, status}`, `{doctor_id, token_date}`, `visit_id` |
+| `queue_events` | audit trail of every status change (FR-21) | `{token_id, event_time}`, `event_time` |
+| `wait_predictions` | every prediction with its `features` object (14 contract keys) | `{token_id, created_at}` |
+| `notifications` | IN_APP / PUSH / EMAIL deliveries | `{user_id, sent_at}` |
+| `feedback` | rating + comment per visit | unique `visit_id` |
+| `forecasts` | hourly arrivals / capacity / congestion per department | `{branch_id, department_id, forecast_hour}` |
+| `model_versions` | AI model registry (`_id` = version string) | `is_active` |
+| `settings` | administrator settings (`_id` = key, `value`) | |
+| `counters` | `_id` = collection name → id sequence; `token:<sp>:<date>` → token numbers; `lock:...` → transaction lock documents | |
+
+### Concurrency (replaces the SQL row locks)
+
+- **Transactions:** `withTransaction(fn)` (`src/db/index.js`) runs `session.withTransaction()`, which
+  retries the whole callback on write conflicts and transient errors. Services keep a `db` first
+  argument: the root context has no session, `db.transaction(tx => …)` passes a context whose
+  `session` every query of that transaction uses.
+- **Token numbers:** per queue-day counter `token:<service_point_id>:<YYYY-MM-DD>`, incremented inside
+  the transaction (an aborted transaction gives its number back); the unique index is the backstop.
+- **One open token per service point, call next, recall, transfer, issue:** the transaction first
+  writes the service point's lock document (`lock:service_point:<id>`), then checks and changes the
+  queue. Two such transactions on one service point cannot both commit; the loser is retried and
+  then sees the winner's data (e.g. the second simultaneous call-next answers 409). Status changes
+  are conditional (`updateOne({ _id, status: <expected> })`, 0 matches → 409).
+- **Bookings:** `lock:doctor:<id>` plus the partial unique slot index (no double booking).
+- **One open visit:** partial unique index; a concurrent insert makes the transaction retry, and
+  the retry reuses the other request's visit.
+- **Ids:** allocated from `counters` outside the transaction (no contention; an aborted transaction
+  only leaves a gap).
+- **Duplicate key (E11000)** that reaches the error middleware → `409 CONFLICT`.
 
 ---
 
@@ -120,7 +201,7 @@ HTTP server inside the test.
 | Pharmacy staff (Model Town pharmacy counter) | `pharmacy1@opd.test` | `Staff@123` |
 | Patient | `patient@opd.test` or phone `03001234567` | `Patient@123` |
 
-What `npm run seed` generates (`src/db/seed.js`):
+What `npm run seed` generates (`src/db/seed.js`, bulk `insertMany` in batches with `ordered: false`):
 
 - **Branches** (Lahore): Model Town (31.4834, 74.3255), Gulberg (31.5204, 74.3587), DHA (31.4697, 74.4091).
 - **Departments**: Model Town — General Medicine, Cardiology, Pediatrics, ENT, Orthopedics;
@@ -130,18 +211,18 @@ What `npm run seed` generates (`src/db/seed.js`):
 - **Schedules** Monday–Sunday: every doctor works one session a day, alternating between
   08:00–14:00 and 14:00–22:00 (the two doctors of a department are on opposite shifts), max 40 patients.
 - **Staff assignments**: each doctor → own room; `lab1` / `pharmacy1` → the Model Town counters.
-- **~60 days of synthetic history** (every token `is_synthetic = 1`), produced by a discrete-event
+- **~60 days of synthetic history** (every token `is_synthetic: true`), produced by a discrete-event
   simulation of each room and counter: morning and Monday peaks, consultation times scattered around
   each doctor's own average, elderly / differently-abled patients (priority 1), emergencies
   (`PRIORITY_SET` → 2), skips and recalls, cancellations, appointment check-ins, linked LAB/PHARMACY
   tokens, end-of-day no-shows, all matching `queue_events`, feedback on ~30 % of completed visits and
-  one `wait_predictions` row per token (`model_version = 'baseline'`). Doctors'
+  one `wait_predictions` document per token (`model_version = 'baseline'`). Doctors'
   `avg_consult_minutes` evolve day by day exactly like the nightly job (rolling mean of the last 30
   consultations).
-- `features_json` of every synthetic prediction is what the live feature builder would have stored
-  at issue time: `src/db/history.js` replays each day "as of" every token's issue instant through
-  the same `featureBuilder` functions, and `test/seed.test.js` proves the replay reproduces live
-  API predictions exactly (so the AI service trains on realistic, consistent features).
+- `features` of every synthetic prediction is what the live feature builder would have stored at
+  issue time: `src/db/history.js` replays each day "as of" every token's issue instant through the
+  same `featureBuilder` functions, and `test/seed.test.js` proves the replay reproduces live API
+  predictions exactly (so the AI service trains on realistic, consistent features).
 - **Today**: 5 WAITING tokens of synthetic patients (3 in doctor1's room, 2 in Gulberg General
   Medicine) so the dashboards are not empty, plus baseline forecasts for the next 7 days.
 - `patient@opd.test` (priority NONE) has one past completed visit without feedback.
@@ -155,6 +236,7 @@ About 1,500 synthetic patients exist (phone-only accounts with an unusable rando
 | Module | Files | Requirements |
 |---|---|---|
 | Bootstrap | `src/app.js` (Express, CORS, errors), `src/server.js` (HTTP + Socket.IO + jobs), `src/config.js` | NFR-02, NFR-04 |
+| Database | `src/db/connection.js` (Mongoose connect/close), `models.js` (one model per collection, indexes), `counters.js` (ids, token numbers, lock documents), `index.js` (DB context, `withTransaction`, helpers), `init.js`, `seed.js`, `history.js` | Section 4.9 |
 | Auth | `routes/auth.js`, `services/userService.js`, `middleware/auth.js` (JWT, role guard), `services/accessService.js` (branch scoping, service-point assignment) | FR-01, Section 3.2 |
 | Browse | `routes/browse.js`, `services/scheduleService.js` (sessions, `acceptingNow`) | FR-02 |
 | Queue & tokens | `services/queueService.js`, `routes/tokens.js`, `routes/staff.js` — numbering per service point per day, order `priority DESC, issued_at ASC`, transitions, `queue_events` in the same transaction, re-prediction after every change, `recentlyCompleted` | FR-03, FR-05, FR-12, FR-13, FR-21 |
@@ -162,7 +244,7 @@ About 1,500 synthetic patients exist (phone-only accounts with an unusable rando
 | Prediction | `services/featureBuilder.js` (Section 6.3 features, Eq. 6.2 baseline, Eq. 6.4/6.5), `services/predictionService.js`, `services/aiClient.js` | FR-06, FR-07 |
 | Recommendations | `services/recommendationService.js` (Eq. 6.3, haversine, reasons; location never stored) | FR-08, FR-09 |
 | Appointments | `services/appointmentService.js` (slots from schedule, no double booking, reschedule, cancel, check-in → token; check-in window = `CHECK_IN_EARLY_MINUTES` (60) before `slot_start` until the end of the session containing the slot, token issued to that session's room) | FR-10 |
-| Notifications | `services/notificationService.js` (IN_APP row + socket always; PUSH / EMAIL optional) | FR-11 |
+| Notifications | `services/notificationService.js` (IN_APP document + socket always; PUSH / EMAIL optional) | FR-11 |
 | Visits & feedback | `routes/patient.js` | FR-19, FR-20 |
 | Administration | `routes/admin.js`, `services/adminService.js` (CRUD + soft deactivate + scoping) | FR-14 |
 | Analytics | `services/analyticsService.js` (dashboard, alerts, 5 reports + CSV, workload & resource recommendations, feedback summary), `services/forecastService.js` | FR-15, FR-16, FR-17, FR-18, FR-20 |
@@ -170,9 +252,8 @@ About 1,500 synthetic patients exist (phone-only accounts with an unusable rando
 | Model management | `aiClient.listModels / retrain / activate` behind `/admin/models*` | FR-22 |
 | Real-time | `services/realtime.js` | FR-05, NFR-01 |
 | Jobs | `src/jobs.js` | FR-07, FR-17 |
-| Database | `src/db/index.js` (adapter factory), `sqlite.js`, `mysql.js`, `schema.sqlite.sql`, `init.js`, `seed.js`, `history.js` | Section 4.9 |
 
-Every status change writes its `queue_events` row inside the same DB transaction as the token
+Every status change writes its `queue_events` document inside the same transaction as the token
 update (FR-21). Afterwards the affected queue is re-predicted (FR-07), patients are notified (the
 called patient, those within `notifyPositionsAhead` positions, large estimate changes — FR-11) and
 socket events are emitted: `queue:updated` to `sp:<id>` + `admin`, `token:updated` for every
@@ -213,13 +294,13 @@ The backend talks to the internal FastAPI service (`AI_SERVICE_URL`) and never d
 |---|---|---|
 | Waiting-time prediction for every WAITING token of an affected queue, and the hypothetical "join now" estimate shown when browsing doctors | `POST /ai/predict-wait` with the 14 contract feature keys, 1.5 s timeout | Eq. 6.2 baseline `W = patients_ahead × doctor_avg_consult + minutes_to_start` (priority tokens ahead are already counted in `patients_ahead`) (`model_version = 'baseline'`) |
 | Branch ranking | `POST /ai/rank-branches` | Same Eq. 6.3 scoring in JS (min-max normalisation; without location the distance weight is redistributed) |
-| Forecasts (`POST /admin/forecasts/run`, hourly job) | `POST /ai/jobs/forecast` | JS seasonal baseline: mean arrivals at the same weekday + hour over the last 4 weeks, capacity from schedules and average consultation time, levels from the settings thresholds, `is_peak` above the 80th percentile, next 7 days |
+| Forecasts (`POST /admin/forecasts/run`, hourly job) | `POST /ai/jobs/forecast` | JS seasonal baseline: mean arrivals at the same weekday + hour over the last 4 weeks (hourly counts grouped in hospital time by an aggregation pipeline), capacity from schedules and average consultation time, levels from the settings thresholds, `is_peak` above the 80th percentile, next 7 days |
 | Model list / retrain / activate | proxied | `503 AI_UNAVAILABLE` |
 
 Every prediction (AI or baseline) is bounded (non-negative, at most the session end + 60 min) and
-stored in `wait_predictions` with its `features_json`; the first prediction of each token joined
-with its actual wait (`called_at − issued_at`) is the AI training set. After a network failure or
-timeout a 15-second circuit breaker skips further AI calls so requests never wait repeatedly.
+stored in `wait_predictions` with its `features`; the first prediction of each token joined with its
+actual wait (`called_at − issued_at`) is the AI training set. After a network failure or timeout a
+15-second circuit breaker skips further AI calls so requests never wait repeatedly.
 `GET /api/health` reports `ai: true` when the AI service answers its `/health`.
 
 ---
@@ -234,16 +315,14 @@ timeout a 15-second circuit breaker skips further AI calls so requests never wai
   confirmed by staff"), and `QueueToken.priorityDeclared` is `true` while that priority rests only on
   the declaration — until a staff member confirms or overrides it with `POST /tokens/:id/priority`
   (any `PRIORITY_SET` in the visit clears the flag).
-
+- **Datetimes** are stored as BSON `Date` with whole-second precision and converted to hospital
+  local time only at the API edge (`utils/time.js`). Calendar values (`token_date`, `visit_date`) are
+  hospital-local `"YYYY-MM-DD"` strings; schedule times are `"HH:mm:ss"` strings.
 - **Errors** always have the contract shape `{ "error": { "code", "message" } }` with
-  `VALIDATION_ERROR` 400, `UNAUTHORIZED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409,
-  `AI_UNAVAILABLE` 503 (unexpected failures: 500 `INTERNAL_ERROR`). All input is validated server-side
-  (`src/utils/validate.js`); `password_hash` is never serialised.
-- **Concurrency**: SQLite transactions are serialised by the adapter; on MySQL the service point /
-  doctor row is locked (`FOR UPDATE`) while numbering tokens, calling the next patient or booking a
-  slot, so numbers stay unique and slots cannot be double-booked.
-- **SQLite indexes**: InnoDB indexes every foreign-key column automatically; `schema.sqlite.sql`
-  creates the same indexes explicitly so both drivers have the same access paths.
+  `VALIDATION_ERROR` 400, `UNAUTHORIZED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409
+  (also for a MongoDB duplicate key), `AI_UNAVAILABLE` 503 (unexpected failures: 500
+  `INTERNAL_ERROR`). All input is validated server-side (`src/utils/validate.js`); `password_hash` is
+  never serialised.
 - **Additive response fields** beyond the contract (clients may ignore them): `TokenDetail.appointmentId`,
   `recentlyCompleted[].completedAt`, `User.createdAt` / `adminBranchName` (admin lists),
   `branchName` / `isActive` on several admin rows, `aiActiveModel` on `/health`.

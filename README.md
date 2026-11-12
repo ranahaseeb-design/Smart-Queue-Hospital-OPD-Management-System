@@ -36,21 +36,25 @@ SDK for the patient app are optional for a dashboard-only demo.
 
 ### 1. Backend
 
+> **MongoDB.** The backend stores everything in MongoDB 6.0+ (Mongoose) and needs a **replica set**
+> for its transactions. Locally: install MongoDB Community Server, add `replication: replSetName: rs0`
+> to `mongod.cfg`, restart the MongoDB service and run `rs.initiate()` once in `mongosh`; or use a
+> MongoDB Atlas cluster. Default connection string:
+> `MONGODB_URI=mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0`. Step-by-step:
+> [backend/README.md](backend/README.md#mongodb).
+
 ```bash
 cd backend
 npm install
-cp .env.example .env
+npm run setup
 ```
 
-Edit `backend/.env` and set a real `JWT_SECRET`. The server refuses to start with a missing,
-short or placeholder secret. Generate one with:
+`npm run setup` creates `backend/.env` from `.env.example` and fills in a random `JWT_SECRET` and
+`AI_SERVICE_TOKEN` (it never overwrites real values). The server refuses to start with a missing,
+short or placeholder `JWT_SECRET`.
 
-```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-```
-
-Then seed the demo data (3 Lahore branches, 28 doctors, about 60 days of synthetic history) and
-start the API:
+Then seed the demo data (3 Lahore branches, 28 doctors, about 60 days of synthetic history; this
+drops and recreates the `smart_opd` database) and start the API:
 
 ```bash
 npm run seed

@@ -94,7 +94,14 @@ if (require.main === module) {
       process.on('SIGTERM', () => shutdown('SIGTERM'));
     })
     .catch(async (err) => {
-      console.error('[server] Failed to start:', err && err.stack ? err.stack : err);
+      if (err && err.name === 'MongooseServerSelectionError') {
+        console.error(
+          `[server] Failed to start: MongoDB is not reachable at MONGODB_URI (${err.message}). ` +
+            'Start MongoDB as a replica set (see backend/README.md, "MongoDB") or point MONGODB_URI at Atlas.'
+        );
+      } else {
+        console.error('[server] Failed to start:', err && err.stack ? err.stack : err);
+      }
       await closeDb().catch(() => {});
       process.exit(1);
     });

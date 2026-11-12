@@ -1,12 +1,13 @@
 {
   "name": "smart-opd-backend",
   "version": "1.0.0",
-  "description": "Smart Digital Queue Management System for Hospital OPD - REST API + Socket.IO real-time channel",
+  "description": "Smart Digital Queue Management System for Hospital OPD - REST API + Socket.IO real-time channel (Express + MongoDB/Mongoose)",
   "main": "src/server.js",
   "private": true,
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "setup": "node scripts/setup-env.js",
     "db:init": "node src/db/init.js",
     "seed": "node src/db/seed.js",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
