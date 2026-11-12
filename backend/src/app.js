@@ -16,7 +16,7 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const config = require('./config');
-const { getDb } = require('./db');
+const { ping } = require('./db');
 const { ApiError, isUniqueViolation } = require('./utils/errors');
 const { authenticate, requireRole } = require('./middleware/auth');
 const ai = require('./services/aiClient');
@@ -84,7 +84,7 @@ function createApp() {
   app.get('/api/health', async (req, res) => {
     let dbOk = true;
     try {
-      await getDb().get('SELECT 1 AS ok', []);
+      await ping();
     } catch (_) {
       dbOk = false;
     }

@@ -33,7 +33,7 @@ const KNOWN_PLACEHOLDER_SECRETS = new Set([
   'changeme',
 ]);
 const JWT_SECRET_HINT =
-  'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))" ' +
+  'Run `npm run setup` in backend/ (creates backend/.env with a generated JWT_SECRET), or generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))" ' +
   'and set JWT_SECRET in backend/.env or the environment.';
 
 /**
@@ -68,17 +68,12 @@ const config = {
     .map((s) => s.trim())
     .filter(Boolean),
   db: {
-    client: (process.env.DB_CLIENT || 'sqlite').toLowerCase(),
-    sqlitePath: path.resolve(BACKEND_ROOT, process.env.SQLITE_PATH || 'data/smart_opd.db'),
-    host: process.env.DB_HOST || 'localhost',
-    port: int(process.env.DB_PORT, 3306),
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'smart_opd',
-    mysqlSchemaPath: path.resolve(
-      BACKEND_ROOT,
-      process.env.MYSQL_SCHEMA_PATH || '../database/schema.mysql.sql'
-    ),
+    client: 'mongodb',
+    // Transactions need a replica set: a local single-node replica set (replSetName rs0) or
+    // MongoDB Atlas. The database name is the URI path (default smart_opd).
+    uri: (process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0').trim(),
+    name: 'smart_opd',
+    serverSelectionTimeoutMS: int(process.env.MONGODB_TIMEOUT_MS, 10000),
   },
   ai: {
     url: (process.env.AI_SERVICE_URL === undefined ? 'http://localhost:8000' : process.env.AI_SERVICE_URL)
