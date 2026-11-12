@@ -2,7 +2,7 @@
 
 MongoDB replaces MySQL/SQLite as the only database. The backend uses **Mongoose**, and the
 AI service uses **pymongo** against the same database. This file is the shared contract between
-the two, in the way that `database/schema.mysql.sql` was before.
+the two; it replaces the former MySQL schema (`database/schema.mysql.sql`, still in git history).
 
 **The REST API does not change** (`docs/API_CONTRACT.md`): same paths, same JSON, and ids stay
 **integers**, so the dashboards and the Flutter app work unchanged.

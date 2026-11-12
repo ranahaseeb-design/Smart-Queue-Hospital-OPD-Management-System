@@ -82,7 +82,7 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 ### Health / auth (FR-01)
 | Method | Path | Body / query | Response |
 |---|---|---|---|
-| GET | `/health` | – | `{ status: "ok", db: "mysql|sqlite", ai: true|false }` |
+| GET | `/health` | – | `{ status: "ok", db: "mongodb", ai: true|false }` |
 | POST | `/auth/register` | `{ fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }` (≥1 of email/phone, password ≥ 6) | 201 `{ token, user }` — role is always PATIENT. `ELDERLY` is derived from `dateOfBirth` (age ≥ 60, set automatically); declaring it without a qualifying `dateOfBirth` → 400. `DIFFERENTLY_ABLED` may be declared (staff confirm per token) |
 | POST | `/auth/login` | `{ identifier, password }` (identifier = email or phone) | `{ token, user }` |
 | GET | `/auth/me` | – | `{ user }` |

@@ -9,20 +9,22 @@ manage branches, monitor live load and read reports, forecasts and resource reco
 
 ## Components
 
+A **MERN** stack (MongoDB, Express, React, Node.js), plus a Python AI service and a Flutter app.
+
 | Folder | What it is | Stack | Port |
 |---|---|---|---|
-| [backend/](backend/README.md) | REST API + real-time channel | Node.js, Express, Socket.IO, MySQL (SQLite for local dev) | 4000 |
+| [backend/](backend/README.md) | REST API + real-time channel | Node.js, Express, Socket.IO, MongoDB (Mongoose) | 4000 |
 | [ai-service/](ai-service/README.md) | Internal AI service: wait prediction, branch ranking, forecasting, retraining | Python, FastAPI, scikit-learn (Random Forest), pandas | 8000 |
 | [staff-dashboard/](staff-dashboard/README.md) | Doctors, OPD, lab and pharmacy staff | React, Vite | 5173 |
 | [admin-dashboard/](admin-dashboard/README.md) | Branch admins, hospital admins, management | React, Vite, Recharts | 5174 |
 | [mobile_app/](mobile_app/README.md) | Patient app (Android) | Flutter (Dart) | — |
-| [database/schema.mysql.sql](database/schema.mysql.sql) | Canonical MySQL 8 schema (Section 4.9) | | |
+| [database/MONGODB_DESIGN.md](database/MONGODB_DESIGN.md) | MongoDB collections, fields, indexes and concurrency rules | | |
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | Every REST endpoint, JSON shape and socket event all components follow | | |
 
 ```
 Patient app ──┐                         ┌── AI service (FastAPI, :8000, internal only)
 Staff dash  ──┼── HTTPS/JSON + Socket.IO ┤
-Admin dash  ──┘     Backend (:4000)      └── MySQL / SQLite
+Admin dash  ──┘     Backend (:4000)      └── MongoDB (replica set)
 ```
 
 If the AI service is down or has no trained model, the backend falls back to the queueing
@@ -119,10 +121,10 @@ of a scheduled weekday, so the demo works outside clinic hours.
 
 | Component | Command | Suite |
 |---|---|---|
-| Backend | `cd backend && npm test` | 99 integration tests (node:test, temporary SQLite DBs) |
-| AI service | `cd ai-service && pytest` | 39 tests |
-| Staff Dashboard | `cd staff-dashboard && npx vitest run` | 52 tests |
-| Admin Dashboard | `cd admin-dashboard && npx vitest run` | 32 tests |
+| Backend | `cd backend && npm test` | 109 tests (node:test; integration tests use temporary MongoDB databases) |
+| AI service | `cd ai-service && pytest` | 45 tests (mongomock) |
+| Staff Dashboard | `cd staff-dashboard && npx vitest run` | 57 tests |
+| Admin Dashboard | `cd admin-dashboard && npx vitest run` | 38 tests |
 | Patient app | `cd mobile_app && flutter test` | widget and model tests |
 
 ## Requirements coverage
@@ -147,9 +149,12 @@ of a scheduled weekday, so the demo works outside clinic hours.
 
 - **Synthetic data.** The seed history is simulated and flagged `is_synthetic`. Model metrics on
   it only show that the pipeline works; they say nothing about real-world accuracy (Section 6.11).
-- **Not yet run:** the Flutter app has not been compiled or run on a device, the backend has
-  only been run on SQLite (the MySQL driver and schema are written but untested on a real
-  server), and the AI service has only been tested in Pyodide, not native CPython.
+- **Not yet run:** the Flutter app compiles (`flutter analyze`, `flutter test`) but has not run on
+  a device; the MongoDB backend and AI service have not yet run against a real MongoDB server;
+  and the AI service has only been tested in Pyodide, not native CPython.
+- **Database choice:** the FYP documentation (Section 3.8) specifies MySQL. This MERN version
+  uses MongoDB instead, so the documentation's database design and deployment sections need
+  updating to match.
 - **Push notifications:** in-app notifications work; Firebase Cloud Messaging is documented in
   the mobile README but not wired in, and SMS is optional and not implemented.
 - **Production hardening:** see the "Security notes for production" sections in each client
