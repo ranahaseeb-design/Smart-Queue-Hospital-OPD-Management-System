@@ -9,15 +9,15 @@ reach it directly. Whenever this service is down or returns an error, the backen
 silently to its own logic: the Eq. 6.2 baseline, JS scoring or the JS seasonal forecast. For this
 reason every endpoint fails fast and answers with a plain `{"detail": "..."}` error.
 
-Stack: FastAPI + uvicorn, scikit-learn `RandomForestRegressor`, pandas, numpy, SQLAlchemy 2
-(PyMySQL for MySQL), joblib. Python 3.11+.
+Stack: FastAPI + uvicorn, scikit-learn `RandomForestRegressor`, pandas, numpy, **pymongo 4**
+(MongoDB, shared with the backend), joblib. Python 3.11+.
 
 > **Training-data caveat (Sections 6.2, 6.9, 6.11).** The development database is seeded with
-> **synthetic** history (`tokens.is_synthetic = 1`). Models trained on it only show that the pipeline
+> **synthetic** history (`tokens.is_synthetic: true`). Models trained on it only show that the pipeline
 > works end to end. Their metrics are **not** real-world accuracy and must not be reported as such.
 > Each model version records its `data_source` over all labelled rows used (training + test period):
 > `synthetic` when every token is synthetic, `pilot` when none is, `mixed` otherwise; the synthetic
-> shares are stored in `metrics_json` as `syntheticShareTrain` / `syntheticShareTest` (0-1). Real accuracy can only come from pilot or partner-hospital data, evaluated with
+> shares are stored in `model_versions.metrics` as `syntheticShareTrain` / `syntheticShareTest` (0-1). Real accuracy can only come from pilot or partner-hospital data, evaluated with
 > the procedure below. This README makes no accuracy claim.
 
 ---
@@ -29,7 +29,7 @@ ai-service/
 ├── app/
 │   ├── main.py          FastAPI app, routes, error mapping
 │   ├── config.py        environment settings, hospital local time
-│   ├── db.py            SQLAlchemy engine + portable query/parse helpers (MySQL & SQLite)
+│   ├── db.py            pymongo client, counters ids, transactions, UTC <-> hospital time helpers
 │   ├── features.py      FEATURES (Section 6.3, contract order) + Eq. 6.2 baseline
 │   ├── predictor.py     active-model loading/caching and prediction (FR-06, FR-07)
 │   ├── ranking.py       Eq. 6.3 branch scoring (FR-08, FR-09)
@@ -37,9 +37,9 @@ ai-service/
 │   ├── forecasting.py   arrivals/congestion forecast job (FR-17, Eq. 6.5)
 │   └── schemas.py       pydantic v2 request/response models (camelCase aliases)
 ├── scripts/train_cli.py retrain / list / activate / forecast from the command line
-├── tests/               pytest suite (in-memory SQLite, FastAPI TestClient)
+├── tests/               pytest suite (mongomock in-memory MongoDB, FastAPI TestClient)
 ├── models/              <version>.joblib files (git-ignored)
-├── requirements.txt     runtime pins;  requirements-dev.txt adds pytest + httpx
+├── requirements.txt     runtime pins;  requirements-dev.txt adds pytest + httpx + mongomock
 ├── Dockerfile, .env.example, pytest.ini
 ```
 
@@ -50,17 +50,55 @@ cd ai-service
 python -m venv .venv
 # Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt        # or requirements-dev.txt to run the tests
-cp .env.example .env                   # then set AI_SERVICE_TOKEN (and DATABASE_URL if needed)
+cp .env.example .env                   # then set AI_SERVICE_TOKEN (and MONGODB_URI if needed)
 python -c "import secrets; print(secrets.token_hex(32))"   # same value in backend/.env AI_SERVICE_TOKEN
 
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 # interactive docs: http://localhost:8000/docs
 ```
 
-Start the backend first, or at least create and seed its database. The service reads the same
-tables as the backend (`database/schema.mysql.sql`). On a fresh database `/ai/predict-wait` returns
-503 until a model has been trained. Train one with `POST /ai/models/retrain` (from the Admin
-Dashboard through the backend) or with `python scripts/train_cli.py`.
+Start MongoDB and the backend first, or at least create and seed the backend's database. The
+service uses the same MongoDB database as the backend (`database/MONGODB_DESIGN.md`). On a fresh
+database `/ai/predict-wait` returns 503 until a model has been trained. Train one with
+`POST /ai/models/retrain` (from the Admin Dashboard through the backend) or with
+`python scripts/train_cli.py`.
+
+### MongoDB
+
+- **Connection:** `MONGODB_URI`, default `mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0`. The
+  database is `MONGODB_DB` when set, otherwise the name in the URI path, otherwise `smart_opd`.
+  Locally, run MongoDB as a **single-node replica set** `rs0` (as for the backend): the service's
+  delete+insert of forecasts and its model switch run in a multi-document transaction. On a
+  standalone server it logs a warning and writes without a transaction. `MONGODB_TIMEOUT_MS`
+  (default 3000) bounds server selection, so `/health` and requests fail fast when MongoDB is down;
+  any driver error answers **503** `{"detail": "Database unavailable: ..."}` and the backend falls back.
+- **Data shape** follows the design document: one collection per former table with the same
+  snake_case field names, integer `_id`, `model_versions._id` = version string, `settings._id` = key
+  with a `value` object, `wait_predictions.features` an embedded object with the 14 contract keys,
+  schedule times `"HH:mm:ss"` strings, datetimes BSON Date in **UTC**.
+- **Time zones:** pymongo returns UTC dates as naive `datetime` values. The service converts them to
+  `HOSPITAL_TZ` before deriving hours and weekdays (forecast arrivals), and converts hospital-local
+  times back to UTC for query bounds and writes (`forecast_hour`, `generated_at`, `trained_at`).
+  `trainedAt` in `/ai/models` is hospital-local `YYYY-MM-DDTHH:mm:ss`, as before.
+
+| Collection | Read | Written |
+|---|---|---|
+| `wait_predictions` | first document per token (lowest `_id`): `features` | – |
+| `tokens` | `issued_at`, `called_at`, `is_synthetic` (training label); `queue_type`, `doctor_id`, `issued_at` (OPD arrivals) | – |
+| `doctors` | `department_id`, `avg_consult_minutes`, `user_id`, `is_active` | – |
+| `departments` / `branches` | `branch_id`, `is_active` / `status = 'ACTIVE'` | – |
+| `users` / `service_points` | `is_active` (only doctors who can take patients add capacity) | – |
+| `doctor_schedules` | `doctor_id`, `service_point_id`, `day_of_week`, `start_time`, `end_time` | – |
+| `settings` | `{_id: 'congestionThresholds', value: {high, critical}}` | – |
+| `forecasts` | – | all documents with `forecast_hour` ≥ today 00:00 are replaced on every forecast run |
+| `model_versions` | registry, active version (`is_active: true`) | one document per retrain; `status` / `is_active` on activation |
+| `counters` | – | `{_id: 'forecasts'}`: one atomic `$inc` reserves the block of `_id` values for a forecast run |
+
+The aggregation for the training set is `$sort {token_id, _id}` → `$group {$first: features}` →
+`$lookup tokens` → `$match called_at != null` (`allowDiskUse`). The arrival and schedule joins are
+done in Python over the small lookup collections (`doctors`, `departments`, `branches`, `users`,
+`service_points`). Before reserving forecast ids the counter is lifted with `$max` to the highest
+existing `forecasts._id`, so ids written without the counter (e.g. by a seed) are never reused.
 
 **Authentication.** Every `/ai/*` endpoint requires the header `X-AI-Service-Token` to equal
 `AI_SERVICE_TOKEN` (401 otherwise); the backend sends it from its own `AI_SERVICE_TOKEN`. If the
@@ -75,9 +113,11 @@ live in each process.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///../backend/data/smart_opd.db` | Backend's SQLite dev DB (relative to `ai-service/`) or `mysql+pymysql://user:pass@localhost:3306/smart_opd` |
+| `MONGODB_URI` | `mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0` | The backend's MongoDB database (Atlas: `mongodb+srv://…`) |
+| `MONGODB_DB` | empty | Database name; empty = the name in the URI path, else `smart_opd` |
+| `MONGODB_TIMEOUT_MS` | `3000` | Server selection / connect timeout (min 500) |
 | `MODELS_DIR` | `./models` | Where `<version>.joblib` files are written and loaded |
-| `HOSPITAL_TZ` | `Asia/Karachi` | Hospital local time. DB datetimes are naive local time |
+| `HOSPITAL_TZ` | `Asia/Karachi` | Hospital local time. MongoDB stores UTC; hours and weekdays are derived in this zone |
 | `AI_N_JOBS` | `-1` | CPU cores used to train forests |
 | `AI_SEARCH_ITER` | `8` | RandomizedSearchCV iterations during retraining |
 | `AI_MIN_TRAINING_ROWS` | `200` | Retraining is refused (400) below this many labelled tokens |
@@ -93,8 +133,12 @@ live in each process.
 ```bash
 docker build -t smart-opd-ai ./ai-service
 docker run -p 8000:8000 -v opd-models:/app/models \
-  -e DATABASE_URL="mysql+pymysql://opd_user:secret@host.docker.internal:3306/smart_opd" smart-opd-ai
+  -e AI_SERVICE_TOKEN=... \
+  -e MONGODB_URI="mongodb://host.docker.internal:27017/smart_opd?replicaSet=rs0&directConnection=true" smart-opd-ai
 ```
+With a replica-set URI the driver connects to the member host names stored in the replica-set
+configuration. If `rs0` was initiated as `127.0.0.1:27017` on the host, that name is wrong inside
+the container: add `directConnection=true` (single node) or initiate `rs0` with a reachable host name.
 
 ### Command line (Section 6.8: scheduled or manual retraining)
 
@@ -104,7 +148,8 @@ python scripts/train_cli.py retrain --search-iter 4
 python scripts/train_cli.py list
 python scripts/train_cli.py activate rf-20261030-0915
 python scripts/train_cli.py forecast --days 7    # same as POST /ai/jobs/forecast
-python scripts/train_cli.py --database-url sqlite:///path/to.db --models-dir ./models list
+python scripts/train_cli.py --mongodb-uri "mongodb://127.0.0.1:27017/smart_opd?replicaSet=rs0" --models-dir ./models list
+python scripts/train_cli.py --mongodb-db smart_opd_copy list   # another database on the same server
 ```
 
 The CLI prints JSON. It exits with 1 when a job is refused (for example, fewer than 200 rows). That makes
@@ -118,8 +163,13 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The suite builds a small **in-memory SQLite** database inside each test. Its table and column names
-match the canonical schema, with datetimes stored as text and JSON as text, as in the backend's dev DB. It covers:
+The suite needs no MongoDB server: each test gets a fresh **mongomock** database (pure-Python,
+in-memory) injected with `db.set_client`. Its collections follow `database/MONGODB_DESIGN.md`
+(integer `_id`, embedded `features` / `metrics` / `value` objects, UTC dates; the generators work in
+hospital time and convert to UTC, so the time-zone handling is exercised too). pymongo is imported
+only when a real client is created, so the suite also runs where pymongo cannot be installed.
+mongomock does not implement transactions; on it the writes run without one (the code path used on
+a standalone server). It covers:
 - feature order and the Eq. 6.2 baseline formula;
 - Eq. 6.3 normalisation (all-equal → 0), redistribution of the distance weight, and ordering;
 - `/ai/rank-branches`;
@@ -128,7 +178,13 @@ match the canonical schema, with datetimes stored as text and JSON as text, as i
 - the full train → accept → predict → reject-equal → activate/retire → 404 flow;
 - the forecast job: scheduled hours only, Eq. 6.5 capacity including partial hours, congestion levels
   from the `settings` thresholds, Monday peaks, replacement of stale horizon rows, idempotency, horizons
-  longer than 7 days, and an empty database.
+  longer than 7 days, and an empty database;
+- the department rule, the REJECTED-cannot-be-activated rule, mixed/pilot data sources, old bundles,
+  and the start-delay cap from `feature_max`;
+- authentication (401 / 503 without a configured token, open `/health`);
+- MongoDB specifics: `counters` id blocks (never reusing existing ids), forecast and model-version
+  document shapes, UTC ↔ `HOSPITAL_TZ` conversion, database name selection, and 503 + `db: false` on
+  database errors.
 
 ---
 
@@ -149,7 +205,7 @@ reports whether the database answered.
 // response
 { "modelVersion": "rf-20261030-0915", "predictions": [ { "tokenId": 42, "predictedMinutes": 31.4 } ] }
 ```
-- Loads the model flagged `model_versions.is_active = 1` from `MODELS_DIR/<version>.joblib`. The
+- Loads the model whose `model_versions` document has `is_active: true` (its `_id` is the version) from `MODELS_DIR/<version>.joblib`. The
   model is cached in memory and reloaded automatically when another version becomes active (for
   example through the CLI). A model accepted by retraining or activated through the API is put into
   the cache straight away, so the first prediction after a model change does not reload the file and
@@ -191,11 +247,11 @@ additions `horizonStart`, `horizonEnd` and `evaluation {rfMae, baselineMae, trai
    ratio, only doctors who can take patients count: active doctor, active user account and active room
    (`service_points.is_active`).
 4. `ρ = expected / capacity`, computed from the values as stored (both rounded to 0.1), so a reader who
-   recomputes ρ from the row gets the same level. The level is NORMAL < `high` ≤ HIGH < `critical` ≤
-   CRITICAL, with the thresholds read from the `settings` row `congestionThresholds` (defaults 0.85 / 1.0).
+   recomputes ρ from the document gets the same level. The level is NORMAL < `high` ≤ HIGH < `critical` ≤
+   CRITICAL, with the thresholds read from the `settings` document `{_id: "congestionThresholds", value: {high, critical}}` (defaults 0.85 / 1.0).
 5. `is_peak` is set when the forecast exceeds the 80th percentile of that branch-department's
    historical hourly arrivals, counting operating hours only.
-6. Every `forecasts` row from today 00:00 onwards is deleted, so a run replaces all future forecasts,
+6. Every `forecasts` document with `forecast_hour` from today 00:00 (hospital time, compared in UTC) onwards is deleted, so a run replaces all future forecasts,
    including rows past its own horizon (the backend's JS fallback writes now … now + 7 days, which
    would otherwise leave `baseline` rows beside the AI rows on the last day). New rows are inserted
    **only for hours with at least one scheduled doctor** in active departments of ACTIVE branches. The horizon covers whole
@@ -206,9 +262,9 @@ additions `horizonStart`, `horizonEnd` and `evaluation {rfMae, baselineMae, trai
 `→ {"version", "metrics": {mae, rmse, r2, within10, baselineMae, testRows}, "accepted", "activated"}`,
 plus additions `reason`, `activeModelMae` and `departmentCheck[]`.
 
-- **Training set:** the **first** `wait_predictions` row of each token (`features_json`, which is the
+- **Training set:** the **first** `wait_predictions` document of each token (lowest `_id`; its embedded `features` object is the
   state when the token was issued) joined with `tokens` where `called_at` is not null, for any queue
-  type. The target is the number of minutes from `issued_at` to `called_at`. Rows with unparseable JSON,
+  type. The target is the number of minutes from `issued_at` to `called_at`. Rows with missing or malformed features,
   negative waits or waits above 12 h are dropped as data-quality filters.
 - **Refused with 400** when fewer than 200 labelled rows exist, and **409** while another retrain runs.
 - **Split:** chronological 80/20 by `issued_at`. A random split would leak future data (Section 6.7.1).
@@ -235,7 +291,7 @@ plus additions `reason`, `activeModelMae` and `departmentCheck[]`.
   through to the forest; feature importances are summed back onto the 14 contract keys. The bundle
   records `feature_encoding = "onehot-ids-v1"`; bundles saved before this change have no such key,
   are reported as `"raw"` and still load and predict unchanged (same feature keys and predict API). A
-  `model_versions` row is written: `ACTIVE`/`is_active = 1` when accepted (the previous active model
+  `model_versions` document (`_id` = version, `metrics` object, `trained_at` UTC) is written: `ACTIVE`/`is_active: true` when accepted (the previous active model
   becomes `RETIRED`), otherwise `REJECTED`.
 
 ### `GET /ai/models` — FR-22
@@ -264,14 +320,16 @@ for an unknown version and 409 when the version's model file is missing.
 
 ## Notes and limitations
 - Features must be computed identically at prediction time and training time. This service trusts
-  `features_json` as written by the backend.
-- The forest is trained on raw numeric IDs (doctor, department, branch). This is a simple encoding;
-  one-hot or target encoding can be evaluated once real data exist (Section 6.3).
-- Public-holiday flags (Section 6.6.1) are not modelled because there is no holiday calendar table.
+  `wait_predictions.features` as written by the backend.
+- Doctor, department and branch ids are one-hot encoded (see Versioning above); target encoding can
+  be evaluated once real data exist (Section 6.3).
+- Public-holiday flags (Section 6.6.1) are not modelled because there is no holiday collection.
 - Capacity uses the **current** weekly schedules for every forecast hour. Historical schedule
   changes are not reconstructed.
-- `DELETE … WHERE forecast_hour >= :start` compares against `'YYYY-MM-DD HH:MM:SS'` strings. That is
-  correct for MySQL DATETIME and for SQLite text in the same format, as the backend writes it.
+- The forecast replacement compares BSON dates (`forecast_hour >= today 00:00` converted to UTC), so it
+  relies on the backend storing `forecast_hour` as a Date in UTC, as the design requires.
+- The MongoDB code has been tested against mongomock only (no server was available while it was
+  ported); transactions and the pymongo driver path are untested until it runs against a real `rs0`.
 - Retraining time grows with the history. On the seeded development database (about 73,500 labelled
   tokens) a retrain fits `3 × AI_SEARCH_ITER + 1` forests (25 with the default 8). The backend's
   `/api/admin/models/retrain` proxy waits `AI_JOB_TIMEOUT_MS` (default 120 s). On a slow machine, lower
