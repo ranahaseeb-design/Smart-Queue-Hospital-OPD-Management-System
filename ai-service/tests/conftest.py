@@ -241,12 +241,14 @@ def _seed_forecast_history(database, today: datetime, weeks: int = 9) -> None:
     )
 
     tokens = []
+    newest = database["tokens"].find_one({}, sort=[("_id", -1)])  # may follow _seed_wait_history (CLI demo)
+    first_id = (newest["_id"] if newest else 0) + 1
 
     def add(issued: datetime, doctor_id, queue_type: str = "OPD") -> None:
         number = len(tokens) + 1
         tokens.append(
             {
-                "_id": number,
+                "_id": first_id + len(tokens),
                 "visit_id": number,
                 "service_point_id": doctor_id or 99,
                 "doctor_id": doctor_id,
