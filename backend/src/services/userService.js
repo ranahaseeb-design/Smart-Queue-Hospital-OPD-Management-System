@@ -8,6 +8,9 @@ const config = require('../config');
 const time = require('../utils/time');
 const v = require('../utils/validate');
 const { badRequest, conflict, unauthorized, forbidden } = require('../utils/errors');
+const { models, sess, asRow, insertOne, byIds } = require('../db');
+
+const { User, Doctor, StaffAssignment, ServicePoint, Branch } = models;
 
 const PRIORITY_CATEGORIES = ['NONE', 'ELDERLY', 'DIFFERENTLY_ABLED'];
 
@@ -17,14 +20,8 @@ async function hashPassword(password) {
 
 /** Contract User shape (with doctorId and service point assignments). */
 async function serializeUser(db, row) {
-  const doctor = await db.get('SELECT doctor_id FROM doctors WHERE user_id = ?', [row.user_id]);
-  const assignments = await db.query(
-    `SELECT sa.service_point_id, sp.name, sp.type, sp.branch_id, b.name AS branch_name
-       FROM staff_assignments sa JOIN service_points sp ON sp.service_point_id = sa.service_point_id
-       JOIN branches b ON b.branch_id = sp.branch_id
-      WHERE sa.user_id = ? ORDER BY sa.assignment_id`,
-    [row.user_id]
-  );
+  const doctor = await Doctor.findOne({ user_id: row.user_id }, { _id: 1 }).session(sess(db)).lean();
+  const assignments = await assignmentRows(db, [row.user_id]);
   return {
     id: row.user_id,
     fullName: row.full_name,
@@ -35,7 +32,7 @@ async function serializeUser(db, row) {
     priorityCategory: row.priority_category,
     adminBranchId: row.admin_branch_id || null,
     isActive: Boolean(row.is_active),
-    doctorId: doctor ? doctor.doctor_id : null,
+    doctorId: doctor ? doctor._id : null,
     assignments: assignments.map((a) => ({
       servicePointId: a.service_point_id,
       servicePointName: a.name,
@@ -47,17 +44,42 @@ async function serializeUser(db, row) {
   };
 }
 
+/**
+ * Service-point assignments of users with service point and branch names, ordered by assignment
+ * id: [{ user_id, service_point_id, name, type, branch_id, branch_name }].
+ */
+async function assignmentRows(db, userIds) {
+  const list = await StaffAssignment.find({ user_id: { $in: userIds } }).sort({ _id: 1 }).session(sess(db)).lean();
+  const sps = await byIds(db, ServicePoint, list.map((a) => a.service_point_id));
+  const branches = await byIds(db, Branch, [...sps.values()].map((s) => s.branch_id));
+  return list
+    .filter((a) => sps.has(a.service_point_id))
+    .map((a) => {
+      const sp = sps.get(a.service_point_id);
+      const b = branches.get(sp.branch_id);
+      return {
+        assignment_id: a._id,
+        user_id: a.user_id,
+        service_point_id: a.service_point_id,
+        name: sp.name,
+        type: sp.type,
+        branch_id: sp.branch_id,
+        branch_name: b ? b.name : null,
+      };
+    });
+}
+
 async function getUserRow(db, userId) {
-  return db.get('SELECT * FROM users WHERE user_id = ?', [userId]);
+  return asRow(User, await User.findById(userId).session(sess(db)).lean());
 }
 
 async function assertUnique(db, { email, phone }, excludeUserId = 0) {
   if (email) {
-    const e = await db.get('SELECT user_id FROM users WHERE email = ? AND user_id <> ?', [email, excludeUserId]);
+    const e = await User.exists({ email, _id: { $ne: excludeUserId } }).session(sess(db));
     if (e) throw conflict('An account with this e-mail already exists');
   }
   if (phone) {
-    const p = await db.get('SELECT user_id FROM users WHERE phone = ? AND user_id <> ?', [phone, excludeUserId]);
+    const p = await User.exists({ phone, _id: { $ne: excludeUserId } }).session(sess(db));
     if (p) throw conflict('An account with this phone number already exists');
   }
 }
@@ -113,12 +135,19 @@ async function register(db, body) {
   );
   await assertUnique(db, { email, phone });
   const hash = await hashPassword(password);
-  const { insertId } = await db.run(
-    `INSERT INTO users (full_name, email, phone, password_hash, role, date_of_birth, priority_category, admin_branch_id,
-                        fcm_token, is_active, created_at)
-     VALUES (?, ?, ?, ?, 'PATIENT', ?, ?, NULL, NULL, 1, ?)`,
-    [fullName, email, phone, hash, dateOfBirth, priorityCategory, time.nowDb()]
-  );
+  const insertId = await insertOne(db, User, {
+    full_name: fullName,
+    email,
+    phone,
+    password_hash: hash,
+    role: 'PATIENT',
+    date_of_birth: dateOfBirth,
+    priority_category: priorityCategory,
+    admin_branch_id: null,
+    fcm_token: null,
+    is_active: true,
+    created_at: time.nowDb(),
+  });
   return getUserRow(db, insertId);
 }
 
@@ -128,9 +157,9 @@ async function login(db, body) {
   const password = v.str(body.password, 'password', { required: true, trim: false, max: 128 });
   let row;
   if (identifier.includes('@')) {
-    row = await db.get('SELECT * FROM users WHERE email = ?', [identifier.toLowerCase()]);
+    row = asRow(User, await User.findOne({ email: identifier.toLowerCase() }).session(sess(db)).lean());
   } else {
-    row = await db.get('SELECT * FROM users WHERE phone = ?', [identifier.replace(/[\s-]/g, '')]);
+    row = asRow(User, await User.findOne({ phone: identifier.replace(/[\s-]/g, '') }).session(sess(db)).lean());
   }
   if (!row || !(await bcrypt.compare(password, row.password_hash))) {
     throw unauthorized('Invalid credentials');
@@ -184,7 +213,11 @@ async function updateMe(db, user, body) {
     params.push(await hashPassword(v.password(body.password, 'password', { required: true })));
   }
   if (fields.length) {
-    await db.run(`UPDATE users SET ${fields.join(', ')} WHERE user_id = ?`, [...params, user.user_id]);
+    const set = {};
+    fields.forEach((f, i) => {
+      set[f.replace(' = ?', '')] = params[i];
+    });
+    await User.updateOne({ _id: user.user_id }, { $set: set }, { session: sess(db) });
   }
   return getUserRow(db, user.user_id);
 }
@@ -197,6 +230,7 @@ module.exports = {
   resolvePriorityCategory,
   hashPassword,
   serializeUser,
+  assignmentRows,
   getUserRow,
   assertUnique,
   register,

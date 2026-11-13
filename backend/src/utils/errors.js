@@ -40,14 +40,17 @@ function createRouter() {
   return router;
 }
 
-/** True when a DB error is a unique-constraint violation (MySQL or SQLite). */
+/**
+ * True when a DB error is a unique-constraint violation: MongoDB duplicate key E11000 (also inside
+ * bulk-write errors). The error middleware answers it with 409 CONFLICT.
+ */
 function isUniqueViolation(err) {
   if (!err) return false;
-  return (
-    err.code === 'ER_DUP_ENTRY' ||
-    err.code === 'DB_UNIQUE' ||
-    /UNIQUE constraint failed/i.test(err.message || '')
-  );
+  if (err.code === 11000 || err.code === 11001) return true;
+  if (Array.isArray(err.writeErrors) && err.writeErrors.some((e) => e && (e.code === 11000 || (e.err && e.err.code === 11000)))) {
+    return true;
+  }
+  return Boolean(err.cause && err.cause !== err && isUniqueViolation(err.cause));
 }
 
 module.exports = {

@@ -12,7 +12,10 @@
  * Forecasts are generated hourly for the next 7 days.
  */
 const time = require('../utils/time');
-const { insertMany } = require('../db');
+const { models, sess, byIds, nextIds } = require('../db');
+const scheduleService = require('./scheduleService');
+
+const { Department, Branch, Doctor, Token, Forecast } = models;
 const fb = require('./featureBuilder');
 const ai = require('./aiClient');
 const { conflict } = require('../utils/errors');
@@ -30,15 +33,8 @@ function percentile(values, p) {
 
 /** Doctor-capacity (patients/hour) of each department for weekday+hour. */
 async function loadCapacity(db) {
-  const rows = await db.query(
-    `SELECT ds.day_of_week, ds.start_time, ds.end_time, d.department_id, d.avg_consult_minutes
-       FROM doctor_schedules ds
-       JOIN doctors d ON d.doctor_id = ds.doctor_id
-       JOIN users u ON u.user_id = d.user_id
-       JOIN service_points sp ON sp.service_point_id = ds.service_point_id
-      WHERE d.is_active = 1 AND u.is_active = 1 AND sp.is_active = 1`,
-    []
-  );
+  // Every weekday's schedules of active doctors (active account) in active service points.
+  const rows = await scheduleService.activeSchedules(db, null);
   // capacity[deptId][dow][hour] = patients per hour
   const capacity = new Map();
   for (const r of rows) {
@@ -66,28 +62,47 @@ async function runBaselineForecast(db, { now = time.clock.now(), days = 7 } = {}
   const todayStr = time.formatDate(now);
   const histStartStr = time.addDaysStr(todayStr, -7 * HISTORY_WEEKS);
 
-  const departments = await db.query(
-    `SELECT dp.department_id, dp.branch_id FROM departments dp JOIN branches b ON b.branch_id = dp.branch_id
-      WHERE dp.is_active = 1 AND b.status = 'ACTIVE'`,
-    []
-  );
-  const arrivals = await db.query(
-    `SELECT t.issued_at, d.department_id FROM tokens t JOIN doctors d ON d.doctor_id = t.doctor_id
-      WHERE t.queue_type = 'OPD' AND t.issued_at >= ? AND t.issued_at < ?`,
-    [`${histStartStr} 00:00:00`, `${todayStr} 00:00:00`]
-  );
+  const activeBranchIds = await Branch.distinct('_id', { status: 'ACTIVE' }).session(sess(db));
+  const departments = (
+    await Department.find({ is_active: true, branch_id: { $in: activeBranchIds } }, { branch_id: 1 })
+      .sort({ _id: 1 })
+      .session(sess(db))
+      .lean()
+  ).map((d) => ({ department_id: d._id, branch_id: d.branch_id }));
+  // Hourly OPD arrivals per doctor over the history window, grouped by the server in hospital
+  // local time (aggregation pipeline), then mapped to departments.
+  const arrivals = await Token.aggregate([
+    {
+      $match: {
+        queue_type: 'OPD',
+        doctor_id: { $ne: null },
+        issued_at: { $gte: time.dayStart(histStartStr), $lt: time.dayStart(todayStr) },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          doctor: '$doctor_id',
+          date: { $dateToString: { format: '%Y-%m-%d', date: '$issued_at', timezone: time.tzName() } },
+          hour: { $hour: { date: '$issued_at', timezone: time.tzName() } },
+        },
+        n: { $sum: 1 },
+      },
+    },
+  ]).session(sess(db));
+  const doctorDept = await byIds(db, Doctor, arrivals.map((a) => a._id.doctor), { department_id: 1 });
   // counts[dept]["YYYY-MM-DD|h"] = n ; daysWithData = set of dates seen in history
   const counts = new Map();
   const datesWithData = new Set();
   for (const a of arrivals) {
-    const s = String(a.issued_at);
-    const date = s.slice(0, 10);
-    const hour = Number(s.slice(11, 13));
+    const d = doctorDept.get(a._id.doctor);
+    if (!d) continue;
+    const { date, hour } = a._id;
     datesWithData.add(date);
-    if (!counts.has(a.department_id)) counts.set(a.department_id, new Map());
-    const m = counts.get(a.department_id);
+    if (!counts.has(d.department_id)) counts.set(d.department_id, new Map());
+    const m = counts.get(d.department_id);
     const k = `${date}|${hour}`;
-    m.set(k, (m.get(k) || 0) + 1);
+    m.set(k, (m.get(k) || 0) + a.n);
   }
   const earliest = [...datesWithData].sort()[0] || todayStr;
 
@@ -106,7 +121,7 @@ async function runBaselineForecast(db, { now = time.clock.now(), days = 7 } = {}
   // instead of leaving earlier AI rows mixed in.
   const start = time.parseDate(todayStr);
   const end = new Date(start.getTime() + days * time.DAY);
-  const generatedAt = time.formatDateTime(now);
+  const generatedAt = time.dbDate(now);
   const rows = [];
 
   for (const dept of departments) {
@@ -124,28 +139,30 @@ async function runBaselineForecast(db, { now = time.clock.now(), days = 7 } = {}
       const cap = capRow && capRow.get(dow) ? capRow.get(dow)[h] : 0;
       if (expected <= 0 && cap <= 0) continue;
       const ratio = cap > 0 ? expected / cap : null;
-      rows.push([
-        dept.branch_id,
-        dept.department_id,
-        time.formatDateTime(hourDate),
-        time.round(expected, 1),
-        time.round(cap, 1),
-        fb.classifyCongestion(ratio, thresholds),
-        expected > p80 && expected > 0 ? 1 : 0,
-        'baseline',
-        generatedAt,
-      ]);
+      rows.push({
+        branch_id: dept.branch_id,
+        department_id: dept.department_id,
+        forecast_hour: hourDate,
+        expected_arrivals: time.round(expected, 1),
+        capacity: time.round(cap, 1),
+        congestion_level: fb.classifyCongestion(ratio, thresholds),
+        is_peak: expected > p80 && expected > 0,
+        source: 'baseline',
+        generated_at: generatedAt,
+      });
     }
   }
 
+  // Ids first (outside the transaction), then replace the horizon atomically.
+  const ids = await nextIds('forecasts', rows.length);
   await db.transaction(async (tx) => {
-    await tx.run('DELETE FROM forecasts WHERE forecast_hour >= ?', [time.formatDateTime(start)]);
-    await insertMany(
-      tx,
-      'forecasts',
-      ['branch_id', 'department_id', 'forecast_hour', 'expected_arrivals', 'capacity', 'congestion_level', 'is_peak', 'source', 'generated_at'],
-      rows
-    );
+    await Forecast.deleteMany({ forecast_hour: { $gte: start } }, { session: sess(tx) });
+    for (let i = 0; i < rows.length; i += 1000) {
+      await Forecast.insertMany(
+        rows.slice(i, i + 1000).map((r, k) => ({ ...r, _id: ids[i + k] })),
+        { session: sess(tx), ordered: true }
+      );
+    }
   });
   return rows.length;
 }
@@ -166,8 +183,9 @@ async function runForecasts(db, { now = time.clock.now(), days = 7, preferAi = t
 }
 
 function toForecast(r) {
-  const expected = r.expected_arrivals === null ? null : Number(r.expected_arrivals);
-  const capacity = r.capacity === null ? null : Number(r.capacity);
+  // == null: documents written by the AI service may omit an unknown value instead of storing null.
+  const expected = r.expected_arrivals == null ? null : Number(r.expected_arrivals);
+  const capacity = r.capacity == null ? null : Number(r.capacity);
   return {
     id: r.forecast_id,
     branchId: r.branch_id,
@@ -185,35 +203,37 @@ function toForecast(r) {
 }
 
 /** GET /admin/forecasts */
+/**
+ * Forecast rows matching `filter`, joined with department (name, specialty, is_active) and branch
+ * name (inner-join semantics), sorted by `sort`.
+ */
+async function forecastRows(db, filter, sort, { activeDepartmentsOnly = false } = {}) {
+  const docs = await Forecast.find(filter).sort(sort).session(sess(db)).lean();
+  const depts = await byIds(db, Department, docs.map((f) => f.department_id));
+  const branches = await byIds(db, Branch, docs.map((f) => f.branch_id), { name: 1 });
+  const out = [];
+  for (const f of docs) {
+    const dp = depts.get(f.department_id);
+    const b = branches.get(f.branch_id);
+    if (!dp || !b || (activeDepartmentsOnly && !dp.is_active)) continue;
+    out.push({ ...f, forecast_id: f._id, department_name: dp.name, specialty: dp.specialty, branch_name: b.name });
+  }
+  return out;
+}
+
+/** GET /admin/forecasts */
 async function listForecasts(db, { branchId = null, departmentId = null, date = null, now = time.clock.now() }) {
-  const where = [];
-  const params = [];
+  const filter = {};
   if (date) {
-    where.push('f.forecast_hour >= ? AND f.forecast_hour < ?');
-    params.push(`${date} 00:00:00`, `${time.addDaysStr(date, 1)} 00:00:00`);
+    filter.forecast_hour = time.dayRange(date);
   } else {
     const todayStr = time.formatDate(now);
-    where.push('f.forecast_hour >= ? AND f.forecast_hour < ?');
-    params.push(`${todayStr} 00:00:00`, `${time.addDaysStr(todayStr, 7)} 00:00:00`);
+    filter.forecast_hour = { $gte: time.dayStart(todayStr), $lt: time.dayStart(time.addDaysStr(todayStr, 7)) };
   }
-  if (branchId) {
-    where.push('f.branch_id = ?');
-    params.push(branchId);
-  }
-  if (departmentId) {
-    where.push('f.department_id = ?');
-    params.push(departmentId);
-  }
-  const rows = await db.query(
-    `SELECT f.*, dp.name AS department_name, dp.specialty, b.name AS branch_name
-       FROM forecasts f
-       JOIN departments dp ON dp.department_id = f.department_id
-       JOIN branches b ON b.branch_id = f.branch_id
-      WHERE ${where.join(' AND ')}
-      ORDER BY f.forecast_hour, f.branch_id, f.department_id`,
-    params
-  );
+  if (branchId) filter.branch_id = branchId;
+  if (departmentId) filter.department_id = departmentId;
+  const rows = await forecastRows(db, filter, { forecast_hour: 1, branch_id: 1, department_id: 1 });
   return rows.map(toForecast);
 }
 
-module.exports = { runBaselineForecast, runForecasts, listForecasts, toForecast, percentile, loadCapacity };
+module.exports = { runBaselineForecast, runForecasts, listForecasts, forecastRows, toForecast, percentile, loadCapacity };

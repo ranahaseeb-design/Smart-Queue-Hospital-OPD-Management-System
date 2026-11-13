@@ -141,29 +141,34 @@ test('check-in only inside its window: creates a token linked to the appointment
   const q = await ctx.api.get(`/service-points/${room.id}/queue`, doctorToken);
   const token = q.body.waiting.find((w) => w.id === res.body.id);
   assert.equal(token.fromAppointment, true);
-  const issued = await ctx.db.get(`SELECT note FROM queue_events WHERE token_id = ? AND event_type = 'ISSUED'`, [res.body.id]);
+  const issued = await ctx.models.QueueEvent.findOne({ token_id: res.body.id, event_type: 'ISSUED' }).lean();
   assert.equal(issued.note, `Checked in for appointment #${appt.body.id}`);
 });
 
 test('check-in goes to the session containing the slot; closed before slot-60 min and after that session', async () => {
   // A second, later session for doctor1 today in another OPD room of the same branch.
-  const doc = await ctx.db.get(
-    `SELECT sp.branch_id, ds.service_point_id FROM doctors d
-       JOIN doctor_schedules ds ON ds.doctor_id = d.doctor_id
-       JOIN service_points sp ON sp.service_point_id = ds.service_point_id
-      WHERE d.doctor_id = ? AND ds.day_of_week = ?`,
-    [doctorId, ctx.time.isoDow(ctx.time.clock.now())]
-  );
-  const other = await ctx.db.get(
-    `SELECT service_point_id FROM service_points WHERE branch_id = ? AND type = 'OPD' AND is_active = 1 AND service_point_id <> ?
-      ORDER BY service_point_id LIMIT 1`,
-    [doc.branch_id, doc.service_point_id]
-  );
-  await ctx.db.run(
-    `INSERT INTO doctor_schedules (doctor_id, service_point_id, day_of_week, start_time, end_time, max_patients)
-     VALUES (?, ?, ?, '22:00:00', '23:30:00', NULL)`,
-    [doctorId, other.service_point_id, ctx.time.isoDow(ctx.time.clock.now())]
-  );
+  const { DoctorSchedule, ServicePoint, Appointment, Token } = ctx.models;
+  const { insertOne } = ctx.dbLayer;
+  const schedule = await DoctorSchedule.findOne({ doctor_id: doctorId, day_of_week: ctx.time.isoDow(ctx.time.clock.now()) }).lean();
+  const room = await ServicePoint.findById(schedule.service_point_id).lean();
+  const doc = { branch_id: room.branch_id, service_point_id: room._id };
+  const otherRoom = await ServicePoint.findOne({
+    branch_id: doc.branch_id,
+    type: 'OPD',
+    is_active: true,
+    _id: { $ne: doc.service_point_id },
+  })
+    .sort({ _id: 1 })
+    .lean();
+  const other = { service_point_id: otherRoom._id };
+  await insertOne(ctx.db, DoctorSchedule, {
+    doctor_id: doctorId,
+    service_point_id: other.service_point_id,
+    day_of_week: ctx.time.isoDow(ctx.time.clock.now()),
+    start_time: '22:00:00',
+    end_time: '23:30:00',
+    max_patients: null,
+  });
   const P = await ctx.newPatient();
   const slotStart = `${ctx.time.today()}T22:30:00`;
   const appt = await ctx.api.post('/appointments', P.token, { doctorId, slotStart });
@@ -180,12 +185,16 @@ test('check-in goes to the session containing the slot; closed before slot-60 mi
   assert.equal(res.body.servicePoint.id, other.service_point_id);
 
   // An appointment whose session already ended cannot be checked in any more.
-  const late = await ctx.db.run(
-    `INSERT INTO appointments (patient_id, doctor_id, slot_start, status, updated_at) VALUES (?, ?, ?, 'BOOKED', ?)`,
-    [P.user.id, doctorId, `${ctx.time.today()} 23:00:00`, `${ctx.time.today()} 10:00:00`]
-  );
-  await ctx.db.run(`UPDATE appointments SET status = 'COMPLETED' WHERE appointment_id = ?`, [appt.body.id]);
-  await ctx.db.run(`UPDATE tokens SET status = 'COMPLETED' WHERE token_id = ?`, [res.body.id]);
+  const lateId = await insertOne(ctx.db, Appointment, {
+    patient_id: P.user.id,
+    doctor_id: doctorId,
+    slot_start: ctx.time.combine(ctx.time.today(), '23:00:00'),
+    status: 'BOOKED',
+    updated_at: ctx.time.combine(ctx.time.today(), '10:00:00'),
+  });
+  const late = { insertId: lateId };
+  await Appointment.updateOne({ _id: appt.body.id }, { $set: { status: 'COMPLETED' } });
+  await Token.updateOne({ _id: res.body.id }, { $set: { status: 'COMPLETED' } });
   ctx.time.clock.set(ctx.time.combine(ctx.time.today(), '23:31:00'));
   const closed = await ctx.api.post(`/appointments/${late.insertId}/check-in`, P.token);
   assert.equal(closed.status, 409);

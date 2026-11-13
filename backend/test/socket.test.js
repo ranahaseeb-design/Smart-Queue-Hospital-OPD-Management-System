@@ -7,12 +7,11 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { io: connect } = require('socket.io-client');
-const { configureEnv } = require('./helpers');
+const { configureEnv, freshDatabase } = require('./helpers');
 
 let server;
 let baseUrl;
 let time;
-let tmpDir;
 const sockets = [];
 const tokens = {};
 
@@ -75,15 +74,13 @@ function arrives(socket, event, ms = 600) {
 }
 
 before(async () => {
-  tmpDir = configureEnv('socket');
+  configureEnv('socket'); // unique test database, dropped in after()
   time = require('../src/utils/time');
   const now = new Date();
   time.clock.set(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 10, 0, 0));
-  const { getDb, createSchema } = require('../src/db');
+  const dbLayer = await freshDatabase();
   const { seed } = require('../src/db/seed');
-  const db = getDb();
-  await createSchema(db);
-  await seed(db, { historyDays: 2, logger: null });
+  await seed(dbLayer.getDb(), { historyDays: 2, logger: null });
   const { startServer } = require('../src/server');
   server = await startServer({ port: 0, host: '127.0.0.1', jobsEnabled: false, logger: { log() {}, error() {} } });
   baseUrl = `http://127.0.0.1:${server.port}`;
@@ -102,12 +99,13 @@ before(async () => {
 
 after(async () => {
   for (const s of sockets) s.close();
-  if (server) await server.stop();
-  time.clock.reset();
+  const dbLayer = require('../src/db');
   try {
-    require('node:fs').rmSync(tmpDir, { recursive: true, force: true });
-  } catch (_) {
-    /* best effort */
+    if (dbLayer.isConnected()) await dbLayer.dropDatabase();
+  } finally {
+    if (server) await server.stop();
+    await dbLayer.closeDb();
+    time.clock.reset();
   }
 });
 
@@ -135,8 +133,8 @@ test('subscribe re-checks the account: a deactivated user is refused and disconn
   });
   const socket = open(reg.body.token);
   await connected(socket);
-  const { getDb } = require('../src/db');
-  await getDb().run('UPDATE users SET is_active = 0 WHERE user_id = ?', [reg.body.user.id]);
+  const { models } = require('../src/db');
+  await models.User.updateOne({ _id: reg.body.user.id }, { $set: { is_active: false } });
   const gone = new Promise((resolve) => socket.once('disconnect', resolve));
   const ack = await subscribe(socket, 'token:1');
   assert.equal(ack.ok, false);

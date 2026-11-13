@@ -5,7 +5,7 @@
  * (403 for any other branch); HOSPITAL_ADMIN sees everything with an optional ?branchId= filter.
  */
 const { createRouter, badRequest, forbidden } = require('../utils/errors');
-const { getDb } = require('../db');
+const { getDb, models, sess } = require('../db');
 const v = require('../utils/validate');
 const { toCsv } = require('../utils/csv');
 const admin = require('../services/adminService');
@@ -83,7 +83,7 @@ router.get('/forecasts', async (req, res) => {
   const departmentId = v.int(req.query.departmentId, 'departmentId', { min: 1 });
   const date = v.date(req.query.date, 'date');
   if (departmentId && req.user.role === 'BRANCH_ADMIN') {
-    const dept = await db.get('SELECT branch_id FROM departments WHERE department_id = ?', [departmentId]);
+    const dept = await models.Department.findById(departmentId, { branch_id: 1 }).session(sess(db)).lean();
     if (dept && dept.branch_id !== req.user.admin_branch_id) {
       throw forbidden('Branch administrators can only access their own branch');
     }

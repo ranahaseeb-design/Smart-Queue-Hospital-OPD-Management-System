@@ -1,15 +1,15 @@
 'use strict';
 /**
  * Test helpers. Each test file runs in its own process (node:test), so every file configures
- * the environment once, seeds a fresh temporary SQLite database and builds the Express app.
+ * the environment once, seeds a fresh, uniquely named MongoDB database and builds the Express app.
  *
- * Temporary databases go to $TEST_TMPDIR (if set) or the OS temp directory and are removed
- * when the context is closed. The clock is fixed at 10:00 today (hospital time) so results do
- * not depend on when the suite runs; tests advance it explicitly with ctx.advance(minutes).
+ * MongoDB: TEST_MONGODB_URI, else MONGODB_URI, else mongodb://127.0.0.1:27017/?replicaSet=rs0
+ * (transactions need a replica set: a local single-node replica set or Atlas). The database name
+ * in the URI is replaced by smart_opd_test_<file>_<pid>_<random>; the database is dropped when the
+ * context is closed. The clock is fixed at 10:00 today (hospital time) so results do not depend on
+ * when the suite runs; tests advance it explicitly with ctx.advance(minutes).
  */
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const crypto = require('node:crypto');
 
 const ACCOUNTS = Object.freeze({
   admin: ['admin@opd.test', 'Admin@123'],
@@ -26,16 +26,29 @@ const ACCOUNTS = Object.freeze({
 const AI_DOWN_URL = 'http://127.0.0.1:9';
 /** Shared secret the backend sends to the (fake) AI service as X-AI-Service-Token. */
 const AI_TEST_SERVICE_TOKEN = 'test-ai-service-token';
+const DEFAULT_TEST_URI = 'mongodb://127.0.0.1:27017/?replicaSet=rs0';
+
+/** Replace (or add) the database name of a MongoDB URI. */
+function withDbName(uri, dbName) {
+  const m = /^(mongodb(?:\+srv)?:\/\/[^/?]+)(\/[^?]*)?(\?.*)?$/.exec(uri);
+  if (!m) throw new Error(`Unsupported MongoDB URI for tests: ${uri}`);
+  return `${m[1]}/${dbName}${m[3] || ''}`;
+}
+
+/** Unique, valid database name for a test file (MongoDB names are limited to 63 bytes). */
+function testDbName(name) {
+  const safe = String(name).replace(/[^A-Za-z0-9_]/g, '_').slice(0, 20);
+  return `smart_opd_test_${safe}_${process.pid}_${crypto.randomBytes(3).toString('hex')}`;
+}
 
 function configureEnv(name, { aiUrl = AI_DOWN_URL, env = {} } = {}) {
-  const base = process.env.TEST_TMPDIR || os.tmpdir();
-  fs.mkdirSync(base, { recursive: true });
-  const dir = fs.mkdtempSync(path.join(base, `smart-opd-${name}-`));
+  const base = process.env.TEST_MONGODB_URI || process.env.MONGODB_URI || DEFAULT_TEST_URI;
+  const dbName = testDbName(name);
   Object.assign(process.env, {
     NODE_ENV: 'test',
     TZ: 'Asia/Karachi',
-    DB_CLIENT: 'sqlite',
-    SQLITE_PATH: path.join(dir, `${name}.db`),
+    MONGODB_URI: withDbName(base, dbName),
+    MONGODB_TIMEOUT_MS: '5000',
     DEMO_ALWAYS_OPEN: 'true',
     JOBS_ENABLED: 'false',
     LOG_REQUESTS: 'false',
@@ -49,7 +62,16 @@ function configureEnv(name, { aiUrl = AI_DOWN_URL, env = {} } = {}) {
     AUTO_SEED: 'false',
     ...env,
   });
-  return dir;
+  return dbName;
+}
+
+/** Connect to the test database, drop anything left in it and create collections + indexes. */
+async function freshDatabase() {
+  const dbLayer = require('../src/db');
+  await dbLayer.connect();
+  await dbLayer.dropDatabase();
+  await dbLayer.syncIndexes();
+  return dbLayer;
 }
 
 /**
@@ -58,18 +80,17 @@ function configureEnv(name, { aiUrl = AI_DOWN_URL, env = {} } = {}) {
  * @param {{ historyDays?: number, aiUrl?: string, env?: object, clockHour?: number }} [opts]
  */
 async function createContext(name, { historyDays = 3, aiUrl, env, clockHour = 10 } = {}) {
-  const dir = configureEnv(name, { aiUrl, env });
+  const dbName = configureEnv(name, { aiUrl, env });
   const request = require('supertest');
   const time = require('../src/utils/time');
   const real = new Date();
   time.clock.set(new Date(real.getFullYear(), real.getMonth(), real.getDate(), clockHour, 0, 0));
 
-  const { getDb, closeDb, createSchema } = require('../src/db');
+  const dbLayer = await freshDatabase();
   const { seed } = require('../src/db/seed');
   const { createApp } = require('../src/app');
   const settingsService = require('../src/services/settingsService');
-  const db = getDb();
-  await createSchema(db);
+  const db = dbLayer.getDb();
   const summary = await seed(db, { historyDays, logger: null });
   settingsService.invalidate();
   const app = createApp();
@@ -109,9 +130,11 @@ async function createContext(name, { historyDays = 3, aiUrl, env, clockHour = 10
   return {
     app,
     db,
+    models: dbLayer.models,
+    dbLayer,
+    dbName,
     time,
     api,
-    dir,
     summary,
     login,
     newPatient,
@@ -119,12 +142,11 @@ async function createContext(name, { historyDays = 3, aiUrl, env, clockHour = 10
       time.clock.advance(minutes * 60 * 1000);
     },
     async close() {
-      await closeDb();
-      time.clock.reset();
       try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch (_) {
-        /* Windows may still hold the file briefly; the OS temp cleaner will remove it */
+        await dbLayer.dropDatabase();
+      } finally {
+        await dbLayer.closeDb();
+        time.clock.reset();
       }
     },
   };
@@ -136,4 +158,14 @@ function assertNoSecrets(assert, body) {
   assert.ok(!/password_hash|passwordHash|\$2[aby]\$/.test(text), 'response must not contain password hashes');
 }
 
-module.exports = { ACCOUNTS, AI_DOWN_URL, AI_TEST_SERVICE_TOKEN, configureEnv, createContext, assertNoSecrets };
+module.exports = {
+  ACCOUNTS,
+  AI_DOWN_URL,
+  AI_TEST_SERVICE_TOKEN,
+  DEFAULT_TEST_URI,
+  withDbName,
+  configureEnv,
+  freshDatabase,
+  createContext,
+  assertNoSecrets,
+};

@@ -31,26 +31,31 @@ before(async () => {
   scheduleService = require('../src/services/scheduleService');
   const token = await ctx.login('doctor3');
   const me = await ctx.api.get('/auth/me', token);
-  const d = await ctx.db.get('SELECT doctor_id, department_id FROM doctors WHERE doctor_id = ?', [me.body.user.doctorId]);
+  const { Doctor, Token, DoctorSchedule } = ctx.models;
+  const d = await Doctor.findById(me.body.user.doctorId).lean();
   const room = (await ctx.api.get('/staff/service-points', token)).body.find((s) => s.type === 'OPD');
-  doc = { doctorId: d.doctor_id, departmentId: d.department_id, roomId: room.id };
+  doc = { doctorId: d._id, departmentId: d.department_id, roomId: room.id };
   const now = ctx.time.clock.now();
   const date = ctx.time.formatDate(now);
-  const row = await ctx.db.get(
-    `SELECT COUNT(*) AS n FROM tokens WHERE doctor_id = ? AND token_date = ? AND queue_type = 'OPD'
-       AND status NOT IN ('CANCELLED', 'TRANSFERRED') AND issued_at < ?`,
-    [doc.doctorId, date, `${date} ${S1.end}`]
-  );
-  base = Number(row.n);
+  base = await Token.countDocuments({
+    doctor_id: doc.doctorId,
+    token_date: date,
+    queue_type: 'OPD',
+    status: { $nin: ['CANCELLED', 'TRANSFERRED'] },
+    issued_at: { $lt: ctx.time.combine(date, S1.end) },
+  });
   // Two sessions today: S1 holds the seeded tokens + 1 more, S2 the same number.
   const dow = ctx.time.isoDow(now);
-  await ctx.db.run('DELETE FROM doctor_schedules WHERE doctor_id = ? AND day_of_week = ?', [doc.doctorId, dow]);
+  await DoctorSchedule.deleteMany({ doctor_id: doc.doctorId, day_of_week: dow });
   for (const s of [S1, S2]) {
-    await ctx.db.run(
-      `INSERT INTO doctor_schedules (doctor_id, service_point_id, day_of_week, start_time, end_time, max_patients)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [doc.doctorId, doc.roomId, dow, s.start, s.end, base + 1]
-    );
+    await ctx.dbLayer.insertOne(ctx.db, DoctorSchedule, {
+      doctor_id: doc.doctorId,
+      service_point_id: doc.roomId,
+      day_of_week: dow,
+      start_time: s.start,
+      end_time: s.end,
+      max_patients: base + 1,
+    });
   }
 });
 after(async () => {
@@ -61,14 +66,15 @@ test('session windows partition the day like pickSession', async () => {
   const date = ctx.time.formatDate(ctx.time.clock.now());
   const sessions = await scheduleService.doctorSessions(ctx.db, doc.doctorId, date);
   assert.equal(sessions.length, 2);
+  const t = ctx.time;
   assert.deepEqual(scheduleService.sessionWindow(sessions, sessions[0], date), {
-    from: `${date} 00:00:00`,
-    to: `${date} ${S1.end}`,
+    from: t.combine(date, '00:00:00'),
+    to: t.combine(date, S1.end),
   });
-  const next = ctx.time.addDaysStr(date, 1);
+  const next = t.addDaysStr(date, 1);
   assert.deepEqual(scheduleService.sessionWindow(sessions, sessions[1], date), {
-    from: `${date} ${S1.end}`,
-    to: `${next} 00:00:00`,
+    from: t.combine(date, S1.end),
+    to: t.combine(next, '00:00:00'),
   });
 });
 

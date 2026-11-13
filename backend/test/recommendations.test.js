@@ -68,8 +68,8 @@ test('with location: haversine distance, nearest branch flagged in the reason; l
   const expected = expectedScores(res.body.items, res.body.weights);
   res.body.items.forEach((i, k) => assert.ok(Math.abs(i.score - expected[k]) < 1e-3));
   // NFR-05: coordinates are not persisted anywhere
-  const rows = await ctx.db.query("SELECT COUNT(*) AS n FROM notifications WHERE message LIKE '%31.4697%'", []);
-  assert.equal(rows[0].n, 0);
+  const n = await ctx.models.Notification.countDocuments({ message: { $regex: '31\\.4697' } });
+  assert.equal(n, 0);
 });
 
 test('a congested branch drops to the bottom; excludeDoctorId produces comparative reasons (FR-09)', async () => {

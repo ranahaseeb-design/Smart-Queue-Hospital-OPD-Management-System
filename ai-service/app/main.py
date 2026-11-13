@@ -22,10 +22,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
 
 from . import __version__
 from .config import settings
+from .db import DatabaseError  # pymongo.errors.PyMongoError (a placeholder when pymongo is absent)
 from .forecasting import ForecastBusyError, run_forecast
 from .predictor import NoActiveModelError, active_version, registry
 from .ranking import Candidate, rank_candidates
@@ -98,8 +98,8 @@ async def _forecast_busy(_request: Request, exc: ForecastBusyError) -> JSONRespo
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
-@app.exception_handler(SQLAlchemyError)
-async def _database_error(_request: Request, exc: SQLAlchemyError) -> JSONResponse:
+@app.exception_handler(DatabaseError)
+async def _database_error(_request: Request, exc: DatabaseError) -> JSONResponse:
     log.error("Database error: %s", exc)
     return JSONResponse(status_code=503, content={"detail": f"Database unavailable: {exc.__class__.__name__}"})
 
@@ -112,6 +112,7 @@ ai = APIRouter(prefix="/ai", dependencies=[Depends(require_service_token)])
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
+    # The model_versions query doubles as the MongoDB check (bounded by MONGODB_TIMEOUT_MS).
     try:
         return HealthResponse(status="ok", active_model=active_version(), db=True)
     except Exception as exc:

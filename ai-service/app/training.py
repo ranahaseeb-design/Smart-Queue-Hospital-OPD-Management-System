@@ -1,9 +1,10 @@
 """Offline training, evaluation and registration of waiting-time models (Sections 6.4, 6.7, 6.8) — FR-22.
 
-Training set: the FIRST ``wait_predictions`` row of every token (its ``features_json`` is
-the feature vector known when the token was issued) joined with the token's actual wait
-``called_at - issued_at`` in minutes (Section 6.1). ``called_at`` is the FIRST call: the backend
-never overwrites it on a recall (a recall is only a RECALLED queue_event). All queue types are used.
+Training set: the FIRST ``wait_predictions`` document of every token (lowest integer ``_id``; its
+embedded ``features`` object is the feature vector known when the token was issued) joined with
+the token's actual wait ``called_at - issued_at`` in minutes (Section 6.1). ``called_at`` is the
+FIRST call: the backend never overwrites it on a recall (a recall is only a RECALLED queue_event).
+All queue types are used.
 
 Procedure:
 1. Chronological 80/20 split by ``issued_at`` (Section 6.7.1 — a random split would leak the future).
@@ -16,12 +17,11 @@ Procedure:
    reported but cannot reject the model on their own (too few rows to be meaningful).
    A REJECTED version can never be activated manually (409).
 5. The model file is saved as ``MODELS_DIR/<version>.joblib`` with its metadata and a
-   ``model_versions`` row is written (ACTIVE or REJECTED).
+   ``model_versions`` document is written (``_id`` = version; ACTIVE or REJECTED).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from dataclasses import dataclass
@@ -36,7 +36,6 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
-from sqlalchemy import text
 
 from . import db
 from .config import local_now, settings
@@ -59,20 +58,27 @@ PARAM_DISTRIBUTIONS: dict[str, list[Any]] = {
     "max_features": ["sqrt", 0.5, 1.0],
 }
 
-TRAINING_SQL = """
-SELECT wp.token_id AS token_id,
-       wp.features_json AS features_json,
-       t.issued_at AS issued_at,
-       t.called_at AS called_at,
-       t.is_synthetic AS is_synthetic,
-       t.queue_type AS queue_type
-FROM wait_predictions wp
-JOIN (SELECT token_id, MIN(prediction_id) AS first_id
-      FROM wait_predictions
-      GROUP BY token_id) firsts ON firsts.first_id = wp.prediction_id
-JOIN tokens t ON t.token_id = wp.token_id
-WHERE t.called_at IS NOT NULL
-"""
+# First wait_predictions document per token (lowest _id, ids come from the counters collection in
+# insertion order) joined with its token; only tokens that were called carry a label.
+TRAINING_PIPELINE: list[dict] = [
+    {"$sort": {"token_id": 1, "_id": 1}},
+    {"$group": {"_id": "$token_id", "features": {"$first": "$features"}}},
+    {"$lookup": {"from": "tokens", "localField": "_id", "foreignField": "_id", "as": "token"}},
+    {"$unwind": "$token"},
+    {"$match": {"token.called_at": {"$ne": None}}},
+    {
+        "$project": {
+            "_id": 0,
+            "token_id": "$_id",
+            "features": 1,
+            "issued_at": "$token.issued_at",
+            "called_at": "$token.called_at",
+            "is_synthetic": "$token.is_synthetic",
+            "queue_type": "$token.queue_type",
+        }
+    },
+]
+TRAINING_COLUMNS = ["token_id", "features", "issued_at", "called_at", "is_synthetic", "queue_type"]
 
 _train_lock = threading.Lock()
 
@@ -108,15 +114,16 @@ def _safe_features(value: Any) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def load_training_data(engine=None) -> TrainingData:
-    """Labelled rows sorted chronologically by issue time."""
-    raw = db.fetch_df(TRAINING_SQL, engine=engine)
+def load_training_data() -> TrainingData:
+    """Labelled rows sorted chronologically by issue time (``issued_at`` in hospital local time)."""
+    cursor = db.get_db()["wait_predictions"].aggregate(TRAINING_PIPELINE, allowDiskUse=True)
+    raw = pd.DataFrame(list(cursor)).reindex(columns=TRAINING_COLUMNS)
     if raw.empty:
         empty = pd.Series(dtype=float)
         return TrainingData(prepare_frame([]), empty, pd.Series(dtype="datetime64[ns]"), empty)
 
-    features = raw["features_json"].map(_safe_features)
-    issued = db.to_datetime_series(raw["issued_at"])
+    features = raw["features"].map(_safe_features)
+    issued = db.to_datetime_series(raw["issued_at"])  # UTC: the wait is zone-independent
     called = db.to_datetime_series(raw["called_at"])
     wait = (called - issued).dt.total_seconds() / 60.0
 
@@ -132,7 +139,9 @@ def load_training_data(engine=None) -> TrainingData:
             "token_id": raw.loc[valid, "token_id"],
         }
     )
+    # Sorted on UTC (monotonic even across a DST change), then shown in hospital local time.
     frame = frame.sort_values(["issued_at", "token_id"], kind="mergesort").reset_index(drop=True)
+    frame["issued_at"] = db.utc_series_to_local(frame["issued_at"])
     X = prepare_frame(frame["features"].tolist())
     return TrainingData(X=X, y=frame["wait"], issued_at=frame["issued_at"], is_synthetic=frame["is_synthetic"])
 
@@ -223,6 +232,17 @@ def _department_check(test_X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarr
     return rows
 
 
+def _plain(value: Any) -> Any:
+    """numpy scalars -> Python numbers, recursively (BSON cannot encode numpy types)."""
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def synthetic_share(flags: pd.Series) -> float:
     """Fraction (0-1, 4 decimals) of rows flagged tokens.is_synthetic; 0.0 for no rows."""
     if len(flags) == 0:
@@ -241,9 +261,10 @@ def data_source_label(flags: pd.Series) -> str:
 
 
 def _new_version_name(now: datetime) -> str:
-    base = now.strftime("rf-%Y%m%d-%H%M")  # 16 chars; model_versions.version is VARCHAR(20)
+    base = now.strftime("rf-%Y%m%d-%H%M")  # 16 chars (hospital local time), kept <= 20 as before
     version, suffix = base, 2
-    while db.fetch_scalar("SELECT COUNT(*) FROM model_versions WHERE version = :v", {"v": version}) or model_path(version).exists():
+    versions = db.get_db()["model_versions"]
+    while versions.find_one({"_id": version}, projection={"_id": 1}) is not None or model_path(version).exists():
         version = f"{base}-{suffix}"
         suffix += 1
     return version
@@ -277,7 +298,7 @@ def _retrain_locked(now: datetime) -> dict:
 
     feature_importances = _feature_importances(model)
     version = _new_version_name(now)
-    # Over every labelled row used (training + test period); the shares are stored in metrics_json.
+    # Over every labelled row used (training + test period); the shares are stored in model_versions.metrics.
     data_source = data_source_label(data.is_synthetic)
     share_train = synthetic_share(data.is_synthetic.iloc[:split])
     share_test = synthetic_share(data.is_synthetic.iloc[split:])
@@ -365,29 +386,30 @@ def _retrain_locked(now: datetime) -> dict:
     bundle["department_check"] = department_check
     bundle["accepted"] = accepted
 
-    # Save the file first so that an ACTIVE row always has a model file.
+    # Save the file first so that an ACTIVE document always has a model file.
     models_dir = settings.models_dir
     models_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, model_path(version))
 
-    with db.get_engine().begin() as conn:
+    document = {
+        "_id": version,  # MONGODB_DESIGN.md: model_versions._id is the version string
+        "trained_at": db.to_utc(now),
+        "training_rows": int(len(X_train)),
+        "data_source": data_source,
+        "metrics": _plain(metrics),
+        "status": "ACTIVE" if accepted else "REJECTED",
+        "is_active": bool(accepted),
+    }
+    versions = db.get_db()["model_versions"]
+
+    def register(session) -> None:
         if accepted:
-            conn.execute(text("UPDATE model_versions SET is_active = 0, status = 'RETIRED' WHERE is_active = 1"))
-        conn.execute(
-            text(
-                "INSERT INTO model_versions (version, trained_at, training_rows, data_source, metrics_json, status, is_active) "
-                "VALUES (:version, :trained_at, :training_rows, :data_source, :metrics_json, :status, :is_active)"
-            ),
-            {
-                "version": version,
-                "trained_at": db.fmt_dt(now),
-                "training_rows": int(len(X_train)),
-                "data_source": data_source,
-                "metrics_json": json.dumps(metrics),
-                "status": "ACTIVE" if accepted else "REJECTED",
-                "is_active": 1 if accepted else 0,
-            },
-        )
+            versions.update_many(
+                {"is_active": True}, {"$set": {"is_active": False, "status": "RETIRED"}}, session=session
+            )
+        versions.insert_one(dict(document), session=session)
+
+    db.run_transaction(register)
     if accepted:
         registry.put(version, bundle)  # serve the new model immediately, without reloading the file
     log.info("Model %s trained: %s", version, reason)
@@ -407,24 +429,24 @@ def _retrain_locked(now: datetime) -> dict:
 
 
 def list_models() -> list[dict]:
-    rows = db.fetch_all(
-        "SELECT version, trained_at, training_rows, data_source, metrics_json, status, is_active "
-        "FROM model_versions ORDER BY trained_at DESC, version DESC"
-    )
+    rows = db.get_db()["model_versions"].find({}, sort=[("trained_at", -1), ("_id", -1)])
     out = []
     for row in rows:
         try:
-            metrics = db.parse_json(row["metrics_json"]) or {}
+            metrics = db.parse_json(row.get("metrics")) or {}
         except (ValueError, TypeError):
             metrics = {}
+        if not isinstance(metrics, dict):
+            metrics = {}
+        trained_at = row.get("trained_at")
         out.append(
             {
-                "version": row["version"],
-                "trainedAt": db.iso_dt(row["trained_at"]),
-                "trainingRows": int(row["training_rows"] or 0),
-                "dataSource": row["data_source"],
-                "status": row["status"],
-                "isActive": db.to_bool(row["is_active"]),
+                "version": str(row["_id"]),
+                "trainedAt": db.iso_dt(db.to_local(trained_at) if isinstance(trained_at, datetime) else trained_at),
+                "trainingRows": int(row.get("training_rows") or 0),
+                "dataSource": row.get("data_source"),
+                "status": row.get("status"),
+                "isActive": db.to_bool(row.get("is_active")),
                 "metrics": {
                     "mae": metrics.get("mae"),
                     "rmse": metrics.get("rmse"),
@@ -448,10 +470,11 @@ def activate(version: str) -> dict:
     Only versions that passed the Section 6.7.3 acceptance rules (ACTIVE, or RETIRED for a
     rollback) can be activated; a REJECTED version answers 409 (FR-22).
     """
-    rows = db.fetch_all("SELECT status FROM model_versions WHERE version = :v", {"v": version})
-    if not rows:
+    versions = db.get_db()["model_versions"]
+    row = versions.find_one({"_id": version}, projection={"status": 1})
+    if row is None:
         raise ModelNotFoundError(f"Model version {version} not found.")
-    if str(rows[0]["status"]).upper() == "REJECTED":
+    if str(row.get("status")).upper() == "REJECTED":
         raise TrainingError(
             f"Model version {version} was REJECTED by the acceptance rules (Section 6.7.3: it did not beat the "
             "baseline / active model or was worse for a major department) and cannot be activated. "
@@ -463,11 +486,14 @@ def activate(version: str) -> dict:
     except (FileNotFoundError, ValueError) as exc:
         raise TrainingError(f"Model file for {version} is not usable: {exc}", status_code=409) from exc
 
-    with db.get_engine().begin() as conn:
-        conn.execute(
-            text("UPDATE model_versions SET is_active = 0, status = 'RETIRED' WHERE is_active = 1 AND version <> :v"),
-            {"v": version},
+    def switch(session) -> None:
+        versions.update_many(
+            {"is_active": True, "_id": {"$ne": version}},
+            {"$set": {"is_active": False, "status": "RETIRED"}},
+            session=session,
         )
-        conn.execute(text("UPDATE model_versions SET is_active = 1, status = 'ACTIVE' WHERE version = :v"), {"v": version})
+        versions.update_one({"_id": version}, {"$set": {"is_active": True, "status": "ACTIVE"}}, session=session)
+
+    db.run_transaction(switch)
     registry.put(version, bundle)
     return {"version": version, "activated": True}

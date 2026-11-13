@@ -5,6 +5,9 @@
  */
 const { forbidden, notFound } = require('../utils/errors');
 const time = require('../utils/time');
+const { models, sess, asRow } = require('../db');
+
+const { Doctor, DoctorSchedule, StaffAssignment, ServicePoint, Department, Branch } = models;
 
 const ADMIN_ROLES = ['BRANCH_ADMIN', 'HOSPITAL_ADMIN'];
 
@@ -12,8 +15,10 @@ function isAdmin(user) {
   return ADMIN_ROLES.includes(user.role);
 }
 
+/** { doctor_id, department_id, is_active } of the user's doctor profile, or undefined. */
 async function getDoctorForUser(db, userId) {
-  return db.get('SELECT doctor_id, department_id, is_active FROM doctors WHERE user_id = ?', [userId]);
+  const d = await Doctor.findOne({ user_id: userId }, { department_id: 1, is_active: 1 }).session(sess(db)).lean();
+  return d ? asRow(Doctor, d) : undefined;
 }
 
 /**
@@ -21,15 +26,16 @@ async function getDoctorForUser(db, userId) {
  * doctor is scheduled TODAY (hospital weekday). A schedule on another weekday grants nothing.
  */
 async function staffServicePointIds(db, userId, now = time.clock.now()) {
-  const rows = await db.query(
-    `SELECT sa.service_point_id AS id FROM staff_assignments sa WHERE sa.user_id = ?
-     UNION
-     SELECT ds.service_point_id AS id FROM doctor_schedules ds
-       JOIN doctors d ON d.doctor_id = ds.doctor_id
-      WHERE d.user_id = ? AND ds.day_of_week = ?`,
-    [userId, userId, time.isoDow(now)]
-  );
-  return new Set(rows.map((r) => r.id));
+  const ids = new Set(await StaffAssignment.distinct('service_point_id', { user_id: userId }).session(sess(db)));
+  const doctor = await Doctor.findOne({ user_id: userId }, { _id: 1 }).session(sess(db)).lean();
+  if (doctor) {
+    const scheduled = await DoctorSchedule.distinct('service_point_id', {
+      doctor_id: doctor._id,
+      day_of_week: time.isoDow(now),
+    }).session(sess(db));
+    scheduled.forEach((id) => ids.add(id));
+  }
+  return ids;
 }
 
 /**
@@ -48,17 +54,14 @@ async function assertOwnsOpdToken(db, user, row) {
 
 /** Branches a staff member belongs to (home branch, assignments, doctor's department). */
 async function staffBranchIds(db, user) {
-  const rows = await db.query(
-    `SELECT sp.branch_id AS id FROM staff_assignments sa
-       JOIN service_points sp ON sp.service_point_id = sa.service_point_id
-      WHERE sa.user_id = ?
-     UNION
-     SELECT dp.branch_id AS id FROM doctors d
-       JOIN departments dp ON dp.department_id = d.department_id
-      WHERE d.user_id = ?`,
-    [user.user_id, user.user_id]
+  const spIds = await StaffAssignment.distinct('service_point_id', { user_id: user.user_id }).session(sess(db));
+  const set = new Set(
+    spIds.length ? await ServicePoint.distinct('branch_id', { _id: { $in: spIds } }).session(sess(db)) : []
   );
-  const set = new Set(rows.map((r) => r.id));
+  const deptIds = await Doctor.distinct('department_id', { user_id: user.user_id }).session(sess(db));
+  if (deptIds.length) {
+    (await Department.distinct('branch_id', { _id: { $in: deptIds } }).session(sess(db))).forEach((id) => set.add(id));
+  }
   if (user.admin_branch_id) set.add(user.admin_branch_id);
   return set;
 }
@@ -66,7 +69,7 @@ async function staffBranchIds(db, user) {
 async function canAccessServicePoint(db, user, servicePointId) {
   if (user.role === 'HOSPITAL_ADMIN') return true;
   if (user.role === 'BRANCH_ADMIN') {
-    const sp = await db.get('SELECT branch_id FROM service_points WHERE service_point_id = ?', [servicePointId]);
+    const sp = await ServicePoint.findById(servicePointId, { branch_id: 1 }).session(sess(db)).lean();
     return Boolean(sp && sp.branch_id === user.admin_branch_id);
   }
   if (user.role === 'STAFF') {
@@ -76,14 +79,17 @@ async function canAccessServicePoint(db, user, servicePointId) {
   return false;
 }
 
+/** Service point row with branch_name (null when missing). */
+async function servicePointRow(db, servicePointId) {
+  const sp = await ServicePoint.findById(servicePointId).session(sess(db)).lean();
+  if (!sp) return null;
+  const branch = await Branch.findById(sp.branch_id, { name: 1 }).session(sess(db)).lean();
+  return { ...asRow(ServicePoint, sp), branch_name: branch ? branch.name : null };
+}
+
 /** Throws 404 if the service point does not exist, 403 if the user may not operate it. */
 async function assertServicePointAccess(db, user, servicePointId, { staffOnly = false } = {}) {
-  const sp = await db.get(
-    `SELECT sp.service_point_id, sp.branch_id, sp.type, sp.name, sp.is_active, b.name AS branch_name
-       FROM service_points sp JOIN branches b ON b.branch_id = sp.branch_id
-      WHERE sp.service_point_id = ?`,
-    [servicePointId]
-  );
+  const sp = await servicePointRow(db, servicePointId);
   if (!sp) throw notFound('Service point not found');
   if (staffOnly && user.role !== 'STAFF') throw forbidden('Only staff can perform queue operations');
   if (!(await canAccessServicePoint(db, user, servicePointId))) {
@@ -134,6 +140,7 @@ module.exports = {
   assertOwnsOpdToken,
   staffBranchIds,
   canAccessServicePoint,
+  servicePointRow,
   assertServicePointAccess,
   canViewToken,
   scopeBranch,

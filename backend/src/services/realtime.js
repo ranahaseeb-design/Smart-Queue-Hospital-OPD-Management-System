@@ -16,6 +16,7 @@ const { Server } = require('socket.io');
 const config = require('../config');
 const { userFromToken } = require('../middleware/auth');
 const access = require('./accessService');
+const { models, asRow } = require('../db');
 
 let io = null;
 let dbRef = null;
@@ -34,11 +35,9 @@ async function authorizeRoom(user, room) {
   }
   let m = /^token:(\d+)$/.exec(room);
   if (m) {
-    const token = await dbRef.get(
-      `SELECT t.token_id, v.patient_id, v.branch_id FROM tokens t JOIN visits v ON v.visit_id = t.visit_id
-        WHERE t.token_id = ?`,
-      [Number(m[1])]
-    );
+    const t = await models.Token.findById(Number(m[1]), { visit_id: 1 }).lean();
+    const v = t ? await models.Visit.findById(t.visit_id, { patient_id: 1, branch_id: 1 }).lean() : null;
+    const token = t && v ? { token_id: t._id, patient_id: v.patient_id, branch_id: v.branch_id } : null;
     if (!token) return { ok: false, error: 'Token not found' };
     return (await access.canViewToken(dbRef, user, token))
       ? { ok: true, join: [room] }
@@ -85,7 +84,7 @@ function init(httpServer, db) {
       try {
         // Re-read the user on every subscribe: a deactivated account, or one whose role /
         // branch / assignments changed since the handshake, must not join new rooms.
-        const fresh = await dbRef.get('SELECT * FROM users WHERE user_id = ?', [user.user_id]);
+        const fresh = asRow(models.User, await models.User.findById(user.user_id).lean());
         if (!fresh || !fresh.is_active) {
           deactivated = true;
           result = { ok: false, error: 'Account is deactivated' };
