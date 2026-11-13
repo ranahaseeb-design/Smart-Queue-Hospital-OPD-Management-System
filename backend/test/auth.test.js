@@ -16,7 +16,7 @@ test('GET /health is public and reports the driver and AI status', async () => {
   const res = await ctx.api.get('/health');
   assert.equal(res.status, 200);
   assert.equal(res.body.status, 'ok');
-  assert.equal(res.body.db, 'sqlite');
+  assert.equal(res.body.db, 'mongodb');
   assert.equal(res.body.ai, false);
 });
 

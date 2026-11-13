@@ -150,8 +150,9 @@ of a scheduled weekday, so the demo works outside clinic hours.
 - **Synthetic data.** The seed history is simulated and flagged `is_synthetic`. Model metrics on
   it only show that the pipeline works; they say nothing about real-world accuracy (Section 6.11).
 - **Not yet run:** the Flutter app compiles (`flutter analyze`, `flutter test`) but has not run on
-  a device; the MongoDB backend and AI service have not yet run against a real MongoDB server;
-  and the AI service has only been tested in Pyodide, not native CPython.
+  a device; the AI service has not yet run against a real MongoDB server (its tests use
+  mongomock) and has only been tested in Pyodide, not native CPython. The backend (all 109 tests,
+  seed, API smoke test) and both dashboards have been verified against MongoDB 8.0.16 (`rs0`).
 - **Database choice:** the FYP documentation (Section 3.8) specifies MySQL. This MERN version
   uses MongoDB instead, so the documentation's database design and deployment sections need
   updating to match.
