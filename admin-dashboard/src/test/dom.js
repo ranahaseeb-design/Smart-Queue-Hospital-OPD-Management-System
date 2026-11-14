@@ -30,6 +30,9 @@ afterEach(() => {
   try { window.sessionStorage.clear(); } catch { /* ignore */ }
 });
 
+/** Same future flags as main.jsx, so MemoryRouter in tests does not warn. */
+export const routerFuture = { v7_startTransition: true, v7_relativeSplatPath: true };
+
 /** Minimal useScope() value for pages under test. */
 export function scopeValue(overrides = {}) {
   return {

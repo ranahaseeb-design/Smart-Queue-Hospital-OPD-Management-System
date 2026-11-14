@@ -14,8 +14,15 @@ the UI must degrade gracefully when they are missing. Component tests mock `api/
       (`utils/theme.test.js` incl. the boot script, `components/ThemeToggle.test.jsx`).
       Test infra: jsdom + @testing-library/react (dev only), `src/test/dom.js`.
 
+- [x] 2. Live Overview: `AlertStrip` (one per department, HIGH amber / CRITICAL pulsing crimson,
+      dismiss per department+source+level in sessionStorage, "Simulate staffing fix →"),
+      `LiveKpiTile` (count-up via `useCountUp`, reduced-motion aware) + `Sparkline` from `trend`,
+      `LiveIndicator` (socket status; polling 15 s), `DepartmentMatrix` (utilisation bands,
+      expandable doctors, graceful when `doctors` missing). Pure helpers in `utils/overview.js`.
+      Styles in `src/styles/upgrade.css`. Polling fallback now 15 s (Decision 8).
+      Tests: `utils/overview.test.js`, `pages/OverviewPage.test.jsx`.
+
 ## Remaining
-- [ ] 2. Live Overview: alert strip, animated KPI tiles + sparklines + Live indicator, department load matrix
 - [ ] 3. Forecasts: arrivals vs dashed capacity, crimson peak/shortfall bands, shortfall tooltip
 - [ ] 4. Workload: +1 doctor session what-if (pure util + tests), `?departmentId=` deep link
 - [ ] 5. Sidebar groups LIVE / INSIGHTS / MANAGE; Model Management scorecards, feature importances, retrain stepper

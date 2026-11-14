@@ -49,7 +49,7 @@ const NAV = [
 const STATUS_TEXT = {
   live: { label: 'Live', title: 'Connected to the real-time channel' },
   connecting: { label: 'Reconnecting', title: 'Connecting to the real-time channel' },
-  offline: { label: 'Offline', title: 'Real-time channel unavailable - refreshing every 20 seconds' },
+  offline: { label: 'Offline', title: 'Real-time channel unavailable - refreshing every 15 seconds' },
 };
 
 function currentPage(pathname) {
