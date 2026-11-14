@@ -1,5 +1,6 @@
 /*
- * Smart OPD — Staff Dashboard styles ("Clinical Calm", docs/design-system/DESIGN_SYSTEM.md).
+ * Smart OPD — Staff Dashboard styles ("Clinical Night": dark slate by default, emerald / teal accents;
+ * docs/design-system/DESIGN_SYSTEM.md and docs/UPGRADE_2026.md Decision 5).
  * Uses only the semantic tokens from tokens.css (imported first in main.jsx): no raw colours,
  * shadows, radii or px font sizes here, so light and dark themes come from the same rules.
  * Sections: base · layout · components · pages · utilities.

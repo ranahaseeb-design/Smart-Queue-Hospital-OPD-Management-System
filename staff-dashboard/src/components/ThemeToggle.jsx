@@ -1,32 +1,34 @@
-// Theme switcher (design system "Theming"): cycles System -> Light -> Dark.
-// The choice is stored under `smartopd.theme` and applied as <html data-theme>; System removes the
-// attribute so tokens.css follows prefers-color-scheme. index.html applies it before React renders.
+// Theme switcher (Upgrade 2026, Decision 5 "Clinical Night"): two states, Dark <-> Light.
+// Dark is the default; the choice is stored under `smartopd.theme` ("dark" | "light") and applied as
+// <html data-theme="…">. Anything else, a missing value or blocked storage means dark. The OS colour
+// scheme is no longer followed. index.html applies the same rule before React renders (no flash).
 import { useState } from 'react';
 import Icon from './Icon.jsx';
 
 export const THEME_KEY = 'smartopd.theme';
-const ORDER = ['system', 'light', 'dark'];
-const LABELS = { system: 'system', light: 'light', dark: 'dark' };
-const ICONS = { system: 'monitor', light: 'sun', dark: 'moon' };
+export const DEFAULT_THEME = 'dark';
 
+/** The other theme: dark -> light, light -> dark (unknown values count as dark). */
 export function nextTheme(mode) {
-  const i = ORDER.indexOf(mode);
-  return ORDER[(i + 1) % ORDER.length];
+  return normalizeTheme(mode) === 'dark' ? 'light' : 'dark';
+}
+
+/** "light" stays light; everything else (missing, unknown, legacy "system") is dark. */
+export function normalizeTheme(value) {
+  return value === 'light' ? 'light' : DEFAULT_THEME;
 }
 
 export function readTheme() {
   try {
-    const v = window.localStorage.getItem(THEME_KEY);
-    return v === 'light' || v === 'dark' ? v : 'system';
+    return normalizeTheme(window.localStorage.getItem(THEME_KEY));
   } catch {
-    return 'system';
+    return DEFAULT_THEME;
   }
 }
 
 export function saveTheme(mode) {
   try {
-    if (mode === 'system') window.localStorage.removeItem(THEME_KEY);
-    else window.localStorage.setItem(THEME_KEY, mode);
+    window.localStorage.setItem(THEME_KEY, normalizeTheme(mode));
   } catch {
     /* storage unavailable: the choice lasts for this page only */
   }
@@ -34,9 +36,7 @@ export function saveTheme(mode) {
 
 export function applyTheme(mode) {
   try {
-    const root = document.documentElement;
-    if (mode === 'light' || mode === 'dark') root.dataset.theme = mode;
-    else delete root.dataset.theme;
+    document.documentElement.dataset.theme = normalizeTheme(mode);
   } catch {
     /* no DOM (tests / SSR) */
   }
@@ -46,7 +46,7 @@ export default function ThemeToggle() {
   const [mode, setMode] = useState(readTheme);
   const next = nextTheme(mode);
 
-  function cycle() {
+  function toggle() {
     saveTheme(next);
     applyTheme(next);
     setMode(next);
@@ -56,12 +56,13 @@ export default function ThemeToggle() {
     <button
       type="button"
       className="btn btn--ghost btn--icon theme-toggle"
-      onClick={cycle}
-      aria-label={`Switch to ${LABELS[next]} theme`}
-      title={`Theme: ${LABELS[mode]} (switch to ${LABELS[next]})`}
+      onClick={toggle}
+      aria-label={`Switch to ${next} theme`}
+      title={`Theme: ${mode} (switch to ${next})`}
       data-theme-mode={mode}
     >
-      <Icon name={ICONS[mode]} />
+      {/* The icon shows the theme you switch to. */}
+      <Icon name={next === 'light' ? 'sun' : 'moon'} />
     </button>
   );
 }

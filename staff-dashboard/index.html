@@ -1,21 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#0e6b6b" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0f172a" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Smart OPD · Staff Dashboard</title>
     <script>
-      // Apply the saved theme before React renders (no flash of the wrong theme). Keep in sync with ThemeToggle.jsx.
+      // Apply the saved theme before React renders (no flash of the wrong theme). Keep in sync with
+      // ThemeToggle.jsx: "light" opts in to the light theme; anything else, a missing value or blocked
+      // storage gives the default dark theme (Upgrade 2026, Decision 5). The OS scheme is not followed.
       (function () {
+        var t = 'dark';
         try {
-          var t = localStorage.getItem('smartopd.theme');
-          if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+          if (localStorage.getItem('smartopd.theme') === 'light') t = 'light';
         } catch (e) {
-          /* storage unavailable: follow the OS */
+          /* storage unavailable: dark */
         }
+        document.documentElement.setAttribute('data-theme', t);
       })();
     </script>
   </head>
