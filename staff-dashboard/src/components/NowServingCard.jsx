@@ -1,46 +1,164 @@
-// Hero "Now serving" card: the patient being served, large one-click actions and "Call next" as the
-// single dominant primary button (Section 4.12, FR-12; design system "Staff queue screen").
+// Consultation stage (right side of the staff console, Upgrade 2026 "Staff Dashboard"): the token in the
+// room in oversized type with its priority tag and stage (CALLED / IN_SERVICE), a live pace gauge and the
+// tactile action bar (>= 56 px targets): Call next, Start service, Skip (absent), Recall, Transfer,
+// Issue linked token, Complete consultation. Disabled buttons say why (FR-12, NFR-03).
 import Icon from './Icon.jsx';
-import PriorityBadge, { StatusChip } from './PriorityBadge.jsx';
-import { formatClock, formatMinutes, minutesSince, priorityTone } from '../utils/format.js';
+import PaceGauge from './PaceGauge.jsx';
+import PriorityBadge from './PriorityBadge.jsx';
+import { formatClock, priorityTone, queueBadge } from '../utils/format.js';
+import { ACTION_KEYS, stageActions } from '../utils/stageActions.js';
+
+const ICONS = {
+  'call-next': 'megaphone',
+  start: 'play',
+  skip: 'skip',
+  recall: 'refresh',
+  transfer: 'transfer',
+  linked: 'flask',
+  complete: 'check',
+};
+
+const BUSY_LABELS = {
+  'call-next': 'Calling…',
+  start: 'Starting…',
+  skip: 'Skipping…',
+  recall: 'Recalling…',
+  transfer: 'Transferring…',
+  linked: 'Issuing…',
+  complete: 'Completing…',
+};
+
+function StageIndicator({ status, serviceWord }) {
+  const steps = [
+    { id: 'CALLED', label: 'Called' },
+    { id: 'IN_SERVICE', label: `In ${serviceWord}` },
+  ];
+  const current = steps.findIndex((s) => s.id === status);
+  return (
+    <ol className="stage-steps" aria-label="Stage">
+      {steps.map((s, i) => (
+        <li
+          key={s.id}
+          className={`stage-step${i === current ? ' is-current' : ''}${i < current ? ' is-done' : ''}`}
+          aria-current={i === current ? 'step' : undefined}
+        >
+          <span className="stage-step-dot" aria-hidden="true">
+            {i < current ? <Icon name="check" /> : i + 1}
+          </span>
+          <span className="stage-step-label">{s.id === 'CALLED' ? 'CALLED' : 'IN SERVICE'}</span>
+          <span className="sr-only">{s.label}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
 
 export default function NowServingCard({
   token,
   canIssueLinked, // doctor in an OPD room (canIssueLinkedTokens)
   waitingCount,
+  skipped = [],
   busy,
-  now,
   onCallNext,
   onStart,
   onComplete,
   onSkip,
   onTransfer,
   onIssueLinked,
+  onRecall = () => {},
   servicePointType = 'OPD',
   roomName = null,
+  avgConsultMinutes = null,
+  startedAt = null,
+  canOperate = () => true,
+  now,
 }) {
   const serviceWord = servicePointType === 'OPD' ? 'consultation' : 'service';
-  const anyBusy = Boolean(busy);
-  const hasOpenToken = Boolean(token);
-  const isCalled = token && token.status === 'CALLED';
-  const isInService = token && token.status === 'IN_SERVICE';
-  const callDisabled = anyBusy || hasOpenToken;
   const tone = token ? priorityTone(token.priorityLevel) : 'normal';
-  const elapsed = token && token.calledAt ? minutesSince(token.calledAt, now) : null;
+  const badge = token ? queueBadge(token) : null;
+  const actions = stageActions({
+    token,
+    waitingCount,
+    skipped,
+    busy,
+    canIssueLinked,
+    servicePointType,
+    canOperate,
+  });
+  const dn = token ? token.displayNumber : null;
 
-  let callHint = null;
-  if (hasOpenToken) callHint = 'Complete or skip the current patient before calling the next one.';
-  else if (waitingCount === 0) callHint = 'No patients are waiting right now.';
+  const handlers = {
+    'call-next': onCallNext,
+    start: onStart,
+    skip: onSkip,
+    recall: (a) => a.target && onRecall(a.target),
+    transfer: onTransfer,
+    linked: onIssueLinked,
+    complete: onComplete,
+  };
 
-  const spin = <span className="btn-spinner" aria-hidden="true" />;
+  const ariaLabels = {
+    'call-next': 'Call next patient',
+    start: dn ? `Start ${serviceWord} for ${dn}` : 'Start service',
+    skip: dn ? `Skip ${dn} (patient did not respond)` : 'Skip (absent)',
+    recall: (a) => (a.target ? `Recall ${a.target.displayNumber}` : 'Recall a skipped token'),
+    transfer: dn ? `Transfer ${dn} to another doctor or service point` : 'Transfer',
+    linked: dn ? `Issue a linked laboratory or pharmacy token for ${dn}` : 'Issue linked token',
+    complete: dn ? `Mark ${dn} as completed` : `Complete ${serviceWord}`,
+  };
+
+  const isBusy = (id, a) => (id === 'recall' ? Boolean(a.target) && busy === `recall:${a.target.id}` : busy === id);
+
+  const [callNext, ...rest] = actions;
+
+  function renderAction(a, extraClass = '') {
+    const busyHere = isBusy(a.id, a);
+    const label = typeof ariaLabels[a.id] === 'function' ? ariaLabels[a.id](a) : ariaLabels[a.id];
+    const reasonId = `stage-why-${a.id}`;
+    const describedBy = a.reason || a.hint ? reasonId : undefined;
+    return (
+      <button
+        key={a.id}
+        type="button"
+        className={`action action--${a.id}${a.next ? ' is-next' : ''}${busyHere ? ' is-busy' : ''}${extraClass}`}
+        onClick={() => {
+          const fn = handlers[a.id];
+          if (fn) fn(a);
+        }}
+        disabled={!a.enabled}
+        aria-busy={busyHere ? 'true' : undefined}
+        aria-label={label}
+        aria-describedby={describedBy}
+        aria-keyshortcuts={ACTION_KEYS[a.id]}
+      >
+        <span className="action-main">
+          {busyHere ? <span className="btn-spinner" aria-hidden="true" /> : <Icon name={ICONS[a.id]} />}
+          <span className="action-label">{busyHere ? BUSY_LABELS[a.id] : a.label}</span>
+          {a.id === 'call-next' && (
+            <span className="btn-count" aria-hidden="true">
+              {waitingCount ?? 0} waiting
+            </span>
+          )}
+          <kbd className="action-key" aria-hidden="true">
+            {ACTION_KEYS[a.id]}
+          </kbd>
+        </span>
+        {(a.reason || a.hint) && (
+          <span id={reasonId} className="action-why">
+            {a.reason || a.hint}
+          </span>
+        )}
+      </button>
+    );
+  }
 
   return (
-    <section className={`card card--hero serving serving--${tone}`} aria-labelledby="serving-heading">
-      <div className="serving-head">
+    <section className={`card stage serving serving--${tone}`} aria-labelledby="serving-heading">
+      <div className="stage-head">
         <h2 id="serving-heading" className="overline">
-          Now serving
+          Now serving{roomName ? ` · ${roomName}` : ''}
         </h2>
-        {token && <StatusChip status={token.status} label={isInService ? `In ${serviceWord}` : undefined} />}
+        {token && <StageIndicator status={token.status} serviceWord={serviceWord} />}
       </div>
 
       {!token ? (
@@ -52,136 +170,57 @@ export default function NowServingCard({
           <p className="muted">Press “Call next” to call the next token in the queue.</p>
         </div>
       ) : (
-        <>
-          <div className="serving-body">
-            <div className="serving-token" aria-label={`Token ${token.displayNumber}`}>
-              {token.displayNumber}
+        <div className="stage-body">
+          <div className="stage-token-row">
+            <div className="serving-token stage-token" aria-label={`Token ${dn}`}>
+              {dn}
             </div>
-            <p className="serving-name">{token.patientName || 'Unnamed patient'}</p>
             <div className="serving-meta">
-              <PriorityBadge level={token.priorityLevel} category={token.priorityCategory} large />
-              {token.fromAppointment && <span className="chip">Appointment</span>}
+              <PriorityBadge
+                level={token.priorityLevel}
+                category={token.priorityCategory}
+                fromAppointment={token.fromAppointment}
+                showNormal
+                large
+              />
+              {badge && badge.kind !== 'APPOINTMENT' && token.fromAppointment && (
+                <span className="badge badge--appointment badge--lg">
+                  <Icon name="calendar" />
+                  Appointment
+                </span>
+              )}
             </div>
           </div>
+          <p className="serving-name">{token.patientName || 'Unnamed patient'}</p>
 
           <dl className="serving-facts">
-            {roomName && (
-              <div className="fact">
-                <dt>
-                  <Icon name="door" /> Room
-                </dt>
-                <dd>{roomName}</dd>
-              </div>
-            )}
             <div className="fact">
               <dt>
                 <Icon name="clock" /> Issued
               </dt>
               <dd>{formatClock(token.issuedAt)}</dd>
             </div>
-            {token.calledAt && (
-              <div className="fact">
-                <dt>
-                  <Icon name="megaphone" /> Called
-                </dt>
-                <dd>{formatClock(token.calledAt)}</dd>
-              </div>
-            )}
-            {elapsed != null && (
-              <div className="fact">
-                <dt>
-                  <Icon name="timer" /> Elapsed
-                </dt>
-                <dd>{formatMinutes(elapsed)}</dd>
-              </div>
-            )}
+            <div className="fact">
+              <dt>
+                <Icon name="megaphone" /> Called
+              </dt>
+              <dd>{formatClock(token.calledAt)}</dd>
+            </div>
           </dl>
 
-          <div className="serving-actions" role="group" aria-label={`Actions for token ${token.displayNumber}`}>
-            {isCalled && (
-              <button
-                type="button"
-                className="btn btn--soft btn--lg"
-                onClick={onStart}
-                disabled={anyBusy}
-                aria-busy={busy === 'start' ? 'true' : undefined}
-                aria-label={`Start ${serviceWord} for ${token.displayNumber}`}
-              >
-                {busy === 'start' ? spin : <Icon name="play" />}
-                {busy === 'start' ? 'Starting…' : 'Start'}
-              </button>
-            )}
-            <button
-              type="button"
-              className={`btn ${isInService ? 'btn--soft' : 'btn--secondary'} btn--lg`}
-              onClick={onComplete}
-              disabled={anyBusy}
-              aria-busy={busy === 'complete' ? 'true' : undefined}
-              aria-label={`Mark ${token.displayNumber} as completed`}
-            >
-              {busy === 'complete' ? spin : <Icon name="check" />}
-              {busy === 'complete' ? 'Completing…' : 'Complete'}
-            </button>
-            <button
-              type="button"
-              className="btn btn--secondary btn--lg"
-              onClick={onSkip}
-              disabled={anyBusy || !isCalled}
-              title={isCalled ? undefined : 'Only a called patient who has not started can be skipped'}
-              aria-label={`Skip ${token.displayNumber} (patient did not respond)`}
-            >
-              <Icon name="skip" />
-              Skip
-            </button>
-            <button
-              type="button"
-              className="btn btn--secondary btn--lg"
-              onClick={onTransfer}
-              disabled={anyBusy || !isCalled}
-              title={isCalled ? undefined : `A token in ${serviceWord} cannot be transferred`}
-              aria-label={`Transfer ${token.displayNumber} to another doctor or service point`}
-            >
-              <Icon name="transfer" />
-              Transfer
-            </button>
-            {/* No Priority here: the backend only re-prioritises WAITING or SKIPPED tokens (FR-11). */}
-            {canIssueLinked && (
-              <button
-                type="button"
-                className="btn btn--secondary btn--lg serving-linked"
-                onClick={onIssueLinked}
-                disabled={anyBusy}
-                aria-label={`Issue a linked laboratory or pharmacy token for ${token.displayNumber}`}
-              >
-                <Icon name="flask" />
-                Issue linked token
-              </button>
-            )}
-          </div>
-        </>
+          <PaceGauge
+            calledAt={token.calledAt}
+            startedAt={token.status === 'IN_SERVICE' ? startedAt : null}
+            avgMinutes={avgConsultMinutes}
+            serviceWord={serviceWord}
+            now={now}
+          />
+        </div>
       )}
 
-      <div className="call-next">
-        <button
-          type="button"
-          className="btn btn--primary btn--lg btn--block btn--call"
-          onClick={onCallNext}
-          disabled={callDisabled}
-          aria-busy={busy === 'call-next' ? 'true' : undefined}
-          aria-describedby={callHint ? 'call-next-hint' : undefined}
-          aria-label="Call next patient"
-        >
-          {busy === 'call-next' ? spin : <Icon name="megaphone" />}
-          {busy === 'call-next' ? 'Calling…' : 'Call next'}
-          <span className="btn-count" aria-hidden="true">
-            {waitingCount ?? 0} waiting
-          </span>
-        </button>
-        {callHint && (
-          <p id="call-next-hint" className="hint">
-            {callHint}
-          </p>
-        )}
+      <div className="action-bar" role="group" aria-label={dn ? `Actions for token ${dn}` : 'Queue actions'}>
+        {renderAction(callNext, ' action--primary')}
+        <div className="action-grid">{rest.map((a) => renderAction(a))}</div>
       </div>
     </section>
   );

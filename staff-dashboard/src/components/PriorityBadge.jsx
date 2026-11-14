@@ -1,18 +1,23 @@
 import Icon from './Icon.jsx';
-import { priorityLabel, priorityTone, statusLabel } from '../utils/format.js';
+import { queueBadge, statusLabel } from '../utils/format.js';
 
 /**
- * Visual priority marker (FR-13): emergency = danger, elderly / differently-abled = elevated (warning).
- * Always shows the word, never colour alone.
+ * Queue badge (FR-13, Upgrade 2026 Decision 2): EMERGENCY (pulsing crimson), ELDERLY /
+ * DIFFERENTLY_ABLED (amber), APPOINTMENT (blue), NORMAL (slate). Always shows the word, never colour
+ * alone. NORMAL is hidden unless `showNormal`; APPOINTMENT needs `fromAppointment`.
  */
-export default function PriorityBadge({ level, category, showNormal = false, large = false }) {
-  const label = priorityLabel(level, category);
-  if (!label && !showNormal) return null;
-  const tone = priorityTone(level);
+export default function PriorityBadge({ level, category, fromAppointment = false, showNormal = false, large = false }) {
+  const badge = queueBadge({ priorityLevel: level, priorityCategory: category, fromAppointment });
+  if (badge.kind === 'NORMAL' && !showNormal) return null;
   return (
-    <span className={`badge badge--${tone}${large ? ' badge--lg' : ''}`} title={`Priority level ${Number(level) || 0}`}>
-      {tone === 'emergency' && <Icon name="alert" />}
-      {label || 'Normal'}
+    <span
+      className={`badge badge--${badge.tone}${large ? ' badge--lg' : ''}`}
+      title={`Priority level ${Number(level) || 0}${badge.kind === 'APPOINTMENT' ? ' · checked-in appointment' : ''}`}
+      data-kind={badge.kind}
+    >
+      {badge.tone === 'emergency' && <Icon name="alert" />}
+      {badge.tone === 'appointment' && <Icon name="calendar" />}
+      {badge.label}
     </span>
   );
 }

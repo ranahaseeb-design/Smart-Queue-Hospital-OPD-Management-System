@@ -171,3 +171,77 @@ const TYPE_LABELS = { OPD: 'OPD room', LAB: 'Laboratory', PHARMACY: 'Pharmacy' }
 export function servicePointTypeLabel(type) {
   return TYPE_LABELS[type] || type || '';
 }
+
+/**
+ * Queue badge for a token (Upgrade 2026, Decision 2 — the same mapping in every UI):
+ * level 2 -> EMERGENCY (crimson, pulsing), level 1 -> ELDERLY / DIFFERENTLY_ABLED from `priorityCategory`
+ * (amber; "PRIORITY" when staff raised the level without a category), level 0 + `fromAppointment` ->
+ * APPOINTMENT (blue), else NORMAL (slate). Always text + colour, never colour alone.
+ * @param {{ priorityLevel?: number, priorityCategory?: string, fromAppointment?: boolean }|null} token
+ * @returns {{ kind: string, label: string, tone: 'emergency'|'elevated'|'appointment'|'normal' }}
+ */
+export function queueBadge(token) {
+  const t = token || {};
+  const lvl = Number(t.priorityLevel) || 0;
+  if (lvl >= 2) return { kind: 'EMERGENCY', label: 'Emergency', tone: 'emergency' };
+  if (lvl === 1) {
+    if (t.priorityCategory === 'ELDERLY') return { kind: 'ELDERLY', label: 'Elderly', tone: 'elevated' };
+    if (t.priorityCategory === 'DIFFERENTLY_ABLED') {
+      return { kind: 'DIFFERENTLY_ABLED', label: 'Differently-abled', tone: 'elevated' };
+    }
+    return { kind: 'PRIORITY', label: 'Priority', tone: 'elevated' };
+  }
+  if (t.fromAppointment) return { kind: 'APPOINTMENT', label: 'Appointment', tone: 'appointment' };
+  return { kind: 'NORMAL', label: 'Normal', tone: 'normal' };
+}
+
+/**
+ * Whole seconds elapsed since the contract datetime `value` (never negative), compared in hospital
+ * wall-clock time like `minutesSince`. Null for empty / invalid values.
+ */
+export function secondsSince(value, now = new Date(), timeZone = HOSPITAL_TIME_ZONE) {
+  const then = wallClockMs(value);
+  if (then === null) return null;
+  const current = wallClockInZoneMs(now, timeZone);
+  return Math.max(0, Math.floor((current - then) / 1000));
+}
+
+/** Stopwatch text for elapsed seconds: "07:32", "1:02:05"; "—" when unknown. */
+export function formatElapsed(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return '—';
+  const s = Math.max(0, Math.floor(Number(seconds)));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const pad = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
+}
+
+/** From this multiple of the average a consultation is "well over" (crimson). */
+export const PACE_CRITICAL_RATIO = 1.5;
+
+/**
+ * Pace of the current consultation against the rolling average (staff pace gauge):
+ * 'ok' below the average (emerald), 'over' from the average (amber), 'critical' from 1.5x (crimson),
+ * 'unknown' when there is no average yet. `ratio` = elapsed / average (null when unknown).
+ */
+export function paceState(elapsedSeconds, avgMinutes) {
+  const avg = Number(avgMinutes);
+  if (elapsedSeconds == null || avgMinutes == null || !Number.isFinite(avg) || avg <= 0) {
+    return { level: 'unknown', ratio: null, label: 'No average yet' };
+  }
+  const ratio = Number(elapsedSeconds) / (avg * 60);
+  if (ratio >= PACE_CRITICAL_RATIO) return { level: 'critical', ratio, label: 'Well over average' };
+  if (ratio >= 1) return { level: 'over', ratio, label: 'Over average' };
+  return { level: 'ok', ratio, label: 'On pace' };
+}
+
+/** Date of an instant in the hospital time zone, e.g. "Sat 14 Nov 2026". */
+export function formatInstantDate(instant, timeZone = HOSPITAL_TIME_ZONE) {
+  if (!(instant instanceof Date) || Number.isNaN(instant.getTime())) return '—';
+  const opts = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
+  try {
+    return new Intl.DateTimeFormat('en-GB', { ...opts, timeZone }).format(instant);
+  } catch {
+    return new Intl.DateTimeFormat('en-GB', opts).format(instant);
+  }
+}

@@ -1,8 +1,9 @@
-// "My Queue" — the single-screen staff view (Section 4.12, Table 4.19): now serving with one-click
-// actions, call next, waiting list (priority highlighted), skipped list with recall, recently completed
-// consultations (linked tokens after the consultation) and today's summary.
-// FR-04 linked tokens, FR-05 live updates, FR-12 queue operations, FR-13 priority handling.
-import { useCallback, useEffect, useState } from 'react';
+// Staff console (Upgrade 2026 "Staff Dashboard"; Section 4.12, Table 4.19): a split-screen, touch-first
+// screen. LEFT = the live queue in the backend's order with tabs "Waiting queue" / "Skipped (recallable)";
+// RIGHT = the consultation stage (token, priority tag, stage, pace gauge, action bar), today's summary and
+// recently completed consultations (linked tokens after the consultation). Stacks on narrow screens.
+// FR-04 linked tokens, FR-05 live updates, FR-12 queue operations, FR-13 priority handling, NFR-03.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import AppHeader from '../components/AppHeader.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
@@ -10,14 +11,13 @@ import ConnectionStatus from '../components/ConnectionStatus.jsx';
 import LinkedTokenModal from '../components/LinkedTokenModal.jsx';
 import NowServingCard from '../components/NowServingCard.jsx';
 import PriorityModal from '../components/PriorityModal.jsx';
+import QueuePanel from '../components/QueuePanel.jsx';
 import RecentlyCompletedList from '../components/RecentlyCompletedList.jsx';
-import SkippedList from '../components/SkippedList.jsx';
-import EmptyState from '../components/EmptyState.jsx';
+import ShortcutHelp from '../components/ShortcutHelp.jsx';
 import Icon from '../components/Icon.jsx';
 import { QueueSkeleton } from '../components/Skeleton.jsx';
 import SummaryTiles from '../components/SummaryTiles.jsx';
 import TransferModal from '../components/TransferModal.jsx';
-import WaitingList from '../components/WaitingList.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { useServicePoints } from '../auth/ServicePointsContext.jsx';
@@ -25,7 +25,12 @@ import { useNow } from '../hooks/useNow.js';
 import { useQueue } from '../hooks/useQueue.js';
 import { api } from '../api.js';
 import { PRIORITY_LEVELS, formatInstantClock, servicePointTypeLabel } from '../utils/format.js';
+import { describeQueueChange } from '../utils/queueDiff.js';
 import { canIssueLinkedTokens, canOperateToken } from '../utils/servicePoints.js';
+import { shortcutAction } from '../utils/shortcuts.js';
+import { stageActions } from '../utils/stageActions.js';
+
+const EMPTY = [];
 
 export default function QueuePage() {
   const { servicePointId } = useParams();
@@ -74,7 +79,11 @@ function QueueScreen({ servicePointId, pointInfo }) {
   const now = useNow(30000);
   const { data, error, loading, lastUpdated, connection, refresh } = useQueue(servicePointId);
   const [busy, setBusy] = useState(null); // key of the action in progress, e.g. 'call-next', 'recall:42'
-  const [dialog, setDialog] = useState(null); // { kind: 'skip'|'transfer'|'priority'|'linked', token }
+  const [dialog, setDialog] = useState(null); // { kind: 'skip'|'transfer'|'priority'|'linked'|'help', token }
+  const [tab, setTab] = useState('waiting');
+  const [announcement, setAnnouncement] = useState('');
+  // Instant this screen saw a service start (QueueToken has no start time); the pace gauge uses it.
+  const [startedAt, setStartedAt] = useState({});
 
   const servicePoint = {
     id: servicePointId,
@@ -82,11 +91,14 @@ function QueueScreen({ servicePointId, pointInfo }) {
     ...((data && data.servicePoint) || {}),
   };
   const nowServing = (data && data.nowServing) || null;
-  const waiting = (data && Array.isArray(data.waiting) && data.waiting) || [];
-  const skipped = (data && Array.isArray(data.skipped) && data.skipped) || [];
-  const recentlyCompleted = (data && Array.isArray(data.recentlyCompleted) && data.recentlyCompleted) || [];
+  const waiting = useMemo(() => (data && Array.isArray(data.waiting) ? data.waiting : EMPTY), [data]);
+  const skipped = useMemo(() => (data && Array.isArray(data.skipped) ? data.skipped : EMPTY), [data]);
+  const recentlyCompleted = useMemo(
+    () => (data && Array.isArray(data.recentlyCompleted) ? data.recentlyCompleted : EMPTY),
+    [data],
+  );
   const linkedAllowed = canIssueLinkedTokens(servicePoint.type, user);
-  const canOperate = (t) => canOperateToken(t, servicePoint.type, user);
+  const canOperate = useCallback((t) => canOperateToken(t, servicePoint.type, user), [servicePoint.type, user]);
   const summary = (data && data.summary) || null;
   const doctorName = pointInfo && pointInfo.doctorName;
 
@@ -99,6 +111,15 @@ function QueueScreen({ servicePointId, pointInfo }) {
   useEffect(() => () => {
     document.title = 'Smart OPD · Staff Dashboard';
   }, []);
+
+  // Screen-reader announcement of live queue changes (Decision 7).
+  const previous = useRef(null);
+  useEffect(() => {
+    if (!data) return;
+    const text = describeQueueChange(previous.current, data);
+    previous.current = data;
+    if (text) setAnnouncement(text);
+  }, [data]);
 
   /**
    * Run one queue operation: show progress, report the outcome as a toast and re-fetch the queue.
@@ -135,16 +156,18 @@ function QueueScreen({ servicePointId, pointInfo }) {
           : { type: 'info', text: 'No patients are waiting.' },
     });
 
-  const start = (t) =>
-    run('start', () => api.start(t.id), {
+  const start = async (t) => {
+    const res = await run('start', () => api.start(t.id), {
       success: `${servicePoint.type === 'OPD' ? 'Consultation' : 'Service'} started for ${t.displayNumber}.`,
     });
+    if (res !== undefined) setStartedAt((m) => ({ ...m, [t.id]: new Date() }));
+  };
 
   const complete = (t) => run('complete', () => api.complete(t.id), { success: `${t.displayNumber} completed.` });
 
   const skip = async (t) => {
     await run('skip', () => api.skip(t.id), {
-      success: `${t.displayNumber} skipped. You can recall it from the Skipped list.`,
+      success: `${t.displayNumber} skipped. You can recall it from the Skipped tab.`,
     });
     setDialog(null);
   };
@@ -189,12 +212,74 @@ function QueueScreen({ servicePointId, pointInfo }) {
     refresh();
   };
 
+  // Keyboard shortcuts (documented in ShortcutHelp and the README). The latest state is read through a
+  // ref so the listener is registered once.
+  const latest = useRef({});
+  latest.current = {
+    data,
+    nowServing,
+    waiting,
+    skipped,
+    busy,
+    dialog,
+    linkedAllowed,
+    canOperate,
+    type: servicePoint.type,
+    callNext,
+    start,
+    complete,
+    recall,
+  };
+  useEffect(() => {
+    function onKeyDown(e) {
+      const s = latest.current;
+      const action = shortcutAction(e, { dialogOpen: Boolean(s.dialog) });
+      if (!action) return;
+      if (action === 'help') {
+        e.preventDefault();
+        setDialog({ kind: 'help' });
+        return;
+      }
+      if (action === 'tab-waiting' || action === 'tab-skipped') {
+        e.preventDefault();
+        setTab(action === 'tab-waiting' ? 'waiting' : 'skipped');
+        return;
+      }
+      if (!s.data) return;
+      const model = stageActions({
+        token: s.nowServing,
+        waitingCount: s.waiting.length,
+        skipped: s.skipped,
+        busy: s.busy,
+        canIssueLinked: s.linkedAllowed,
+        servicePointType: s.type,
+        canOperate: s.canOperate,
+      }).find((a) => a.id === action);
+      if (!model) return;
+      e.preventDefault();
+      if (!model.enabled) {
+        if (model.reason) toast.info(`${model.label}: ${model.reason}.`);
+        return;
+      }
+      const t = s.nowServing;
+      if (action === 'call-next') s.callNext();
+      else if (action === 'start') s.start(t);
+      else if (action === 'complete') s.complete(t);
+      else if (action === 'skip') setDialog({ kind: 'skip', token: t });
+      else if (action === 'transfer') setDialog({ kind: 'transfer', token: t });
+      else if (action === 'linked') setDialog({ kind: 'linked', token: t });
+      else if (action === 'recall' && model.target) s.recall(model.target);
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [toast]);
+
   const forbidden = error && error.status === 403;
 
   return (
     <div className="app-shell">
       <AppHeader servicePoint={servicePoint.name ? servicePoint : null} />
-      <main id="main" className="page" aria-busy={loading && !data ? 'true' : undefined}>
+      <main id="main" className="page page--console" aria-busy={loading && !data ? 'true' : undefined}>
         <div className="page-header queue-toolbar">
           <div className="queue-heading">
             <h1 className="page-title">My queue</h1>
@@ -213,15 +298,33 @@ function QueueScreen({ servicePointId, pointInfo }) {
             )}
             <button
               type="button"
-              className="btn btn--secondary btn--sm"
+              className="btn btn--ghost btn--touch"
+              onClick={() => setDialog({ kind: 'help' })}
+              aria-label="Show keyboard shortcuts"
+              aria-keyshortcuts="?"
+            >
+              <Icon name="keyboard" />
+              <span className="hide-sm">Shortcuts</span>
+            </button>
+            <Link to="/display" className="btn btn--ghost btn--touch" aria-label="Open the waiting-room display board">
+              <Icon name="tv" />
+              <span className="hide-sm">Display board</span>
+            </Link>
+            <button
+              type="button"
+              className="btn btn--secondary btn--touch"
               onClick={() => refresh()}
               disabled={Boolean(busy)}
               aria-label="Refresh queue now"
             >
               <Icon name="refresh" />
-              Refresh
+              <span className="hide-sm">Refresh</span>
             </button>
           </div>
+        </div>
+
+        <div className="sr-only" aria-live="polite" aria-atomic="true">
+          {announcement}
         </div>
 
         {forbidden ? (
@@ -255,42 +358,43 @@ function QueueScreen({ servicePointId, pointInfo }) {
               </div>
             )}
 
-            <div className="queue-layout">
-              <div className="queue-main">
+            <div className="console">
+              <div className="console-queue">
+                <QueuePanel
+                  tab={tab}
+                  onTabChange={setTab}
+                  waiting={waiting}
+                  skipped={skipped}
+                  busy={busy}
+                  now={now}
+                  hasOpenToken={Boolean(nowServing)}
+                  onPriority={(t, level) => setDialog({ kind: 'priority', token: t, level })}
+                  onTransfer={(t) => setDialog({ kind: 'transfer', token: t })}
+                  onRecall={recall}
+                  canOperate={canOperate}
+                />
+              </div>
+              <div className="console-stage">
                 <NowServingCard
                   token={nowServing}
                   canIssueLinked={linkedAllowed}
                   servicePointType={servicePoint.type}
                   roomName={servicePoint.name}
                   waitingCount={waiting.length}
+                  skipped={skipped}
                   busy={busy}
-                  now={now}
+                  avgConsultMinutes={summary ? summary.avgConsultMinutes : null}
+                  startedAt={nowServing ? startedAt[nowServing.id] || null : null}
+                  canOperate={canOperate}
                   onCallNext={callNext}
                   onStart={() => start(nowServing)}
                   onComplete={() => complete(nowServing)}
                   onSkip={() => setDialog({ kind: 'skip', token: nowServing })}
                   onTransfer={() => setDialog({ kind: 'transfer', token: nowServing })}
                   onIssueLinked={() => setDialog({ kind: 'linked', token: nowServing })}
-                />
-              </div>
-              <div className="queue-side">
-                <SummaryTiles summary={summary} servicePointType={servicePoint.type} />
-                <WaitingList
-                  tokens={waiting}
-                  busy={busy}
-                  now={now}
-                  onPriority={(t) => setDialog({ kind: 'priority', token: t })}
-                  onTransfer={(t) => setDialog({ kind: 'transfer', token: t })}
-                  canOperate={canOperate}
-                />
-                <SkippedList
-                  tokens={skipped}
-                  busy={busy}
-                  hasOpenToken={Boolean(nowServing)}
                   onRecall={recall}
-                  canOperate={canOperate}
-                  onPriority={(t) => setDialog({ kind: 'priority', token: t })}
                 />
+                <SummaryTiles summary={summary} servicePointType={servicePoint.type} />
                 <RecentlyCompletedList
                   tokens={recentlyCompleted}
                   servicePointType={servicePoint.type}
@@ -307,7 +411,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
       {dialog && dialog.kind === 'skip' && (
         <ConfirmDialog
           title={`Skip ${dialog.token.displayNumber}?`}
-          message={`Mark ${dialog.token.patientName || 'this patient'} as missed. The token moves to the Skipped list and can be recalled later if the patient arrives.`}
+          message={`Mark ${dialog.token.patientName || 'this patient'} as absent. The token moves to the Skipped tab and can be recalled later if the patient arrives.`}
           confirmLabel="Skip patient"
           tone="danger"
           busy={busy === 'skip'}
@@ -324,7 +428,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
         />
       )}
       {dialog && dialog.kind === 'priority' && (
-        <PriorityModal token={dialog.token} onClose={closeDialog} onDone={onPrioritySet} />
+        <PriorityModal token={dialog.token} initialLevel={dialog.level} onClose={closeDialog} onDone={onPrioritySet} />
       )}
       {dialog && dialog.kind === 'linked' && linkedAllowed && (
         <LinkedTokenModal
@@ -334,6 +438,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
           onDone={onLinkedIssued}
         />
       )}
+      {dialog && dialog.kind === 'help' && <ShortcutHelp onClose={closeDialog} />}
     </div>
   );
 }

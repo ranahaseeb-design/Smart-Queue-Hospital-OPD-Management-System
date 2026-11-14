@@ -23,25 +23,32 @@ export function ListSkeleton({ rows = 3, label = 'Loading…' }) {
   );
 }
 
-/** Placeholder in the shape of the queue screen: hero card on the left, tiles and lists on the right. */
+/** Placeholder in the shape of the staff console: queue on the left, consultation stage on the right. */
 export function QueueSkeleton() {
   return (
-    <div className="queue-layout" role="status" aria-live="polite">
+    <div className="console" role="status" aria-live="polite">
       <span className="sr-only">Loading queue…</span>
-      <div className="queue-main" aria-hidden="true">
-        <div className="card card--hero skeleton-hero">
+      <div className="console-queue" aria-hidden="true">
+        <div className="card">
+          <div className="skeleton-actions skeleton-actions--two">
+            <Skeleton variant="button" width="full" />
+            <Skeleton variant="button" width="full" />
+          </div>
+          <ListSkeleton rows={5} label="" />
+        </div>
+      </div>
+      <div className="console-stage" aria-hidden="true">
+        <div className="card stage skeleton-hero">
           <Skeleton variant="sm" width="third" />
           <Skeleton variant="display" width="half" />
           <Skeleton width="wide" />
+          <Skeleton variant="button-lg" width="full" />
           <div className="skeleton-actions">
             <Skeleton variant="button" width="full" />
             <Skeleton variant="button" width="full" />
             <Skeleton variant="button" width="full" />
           </div>
-          <Skeleton variant="button-lg" width="full" />
         </div>
-      </div>
-      <div className="queue-side" aria-hidden="true">
         <div className="kpi-grid">
           {[0, 1, 2, 3, 4].map((i) => (
             <div key={i} className="kpi">
@@ -50,10 +57,23 @@ export function QueueSkeleton() {
             </div>
           ))}
         </div>
-        <div className="card">
-          <ListSkeleton rows={4} label="" />
-        </div>
       </div>
+    </div>
+  );
+}
+
+/** Placeholder cards for the waiting-room display board. */
+export function DisplaySkeleton({ cards = 6 }) {
+  return (
+    <div className="display-grid" role="status" aria-live="polite">
+      <span className="sr-only">Loading the display board…</span>
+      {Array.from({ length: cards }, (_, i) => (
+        <div key={i} className="display-card" aria-hidden="true">
+          <Skeleton width="half" />
+          <Skeleton variant="display" width="wide" />
+          <Skeleton variant="sm" width="third" />
+        </div>
+      ))}
     </div>
   );
 }
