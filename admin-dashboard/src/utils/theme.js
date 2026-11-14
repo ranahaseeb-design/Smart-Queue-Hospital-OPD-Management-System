@@ -1,11 +1,14 @@
-// Theme preference (System -> Light -> Dark). The choice is stored in localStorage under
-// `smartopd.theme` and applied as <html data-theme="light|dark">; "system" removes the attribute
-// so tokens.css follows prefers-color-scheme. Every storage access is wrapped in try/catch
-// (private mode, blocked storage). index.html applies the stored theme before React renders.
+// Theme preference — "Clinical Night" (docs/UPGRADE_2026.md, Decision 5).
+// Two states, Dark <-> Light. Dark is the default; the OS colour scheme is NOT followed.
+// The choice is stored in localStorage["smartopd.theme"] ("dark" | "light"); anything else,
+// nothing stored or blocked storage -> dark. It is applied as <html data-theme="dark|light">.
+// index.html applies the stored theme with an inline script before the first paint (same rules),
+// and every storage access is wrapped in try/catch (private mode, blocked storage).
 
 export const THEME_KEY = 'smartopd.theme';
-export const THEMES = ['system', 'light', 'dark'];
-export const THEME_LABELS = { system: 'system', light: 'light', dark: 'dark' };
+export const THEMES = ['dark', 'light'];
+export const DEFAULT_THEME = 'dark';
+export const THEME_LABELS = { dark: 'Dark', light: 'Light' };
 
 function defaultStorage() {
   try {
@@ -15,33 +18,35 @@ function defaultStorage() {
   }
 }
 
-/** The next theme in the cycle System -> Light -> Dark -> System. */
-export function nextTheme(theme) {
-  const i = THEMES.indexOf(theme);
-  return THEMES[(i + 1) % THEMES.length] || 'system';
+/** Normalises any value to a valid theme: 'light' stays light, everything else is dark. */
+export function normaliseTheme(value) {
+  return value === 'light' ? 'light' : DEFAULT_THEME;
 }
 
-/** Stored preference, or 'system' when nothing (or something invalid) is stored. */
+/** The other theme (Dark <-> Light). Unknown input counts as dark, so the next one is light. */
+export function nextTheme(theme) {
+  return normaliseTheme(theme) === 'dark' ? 'light' : 'dark';
+}
+
+/** Stored preference; 'dark' when nothing valid is stored or storage is unavailable. */
 export function readTheme(storage = defaultStorage()) {
   try {
-    const v = storage?.getItem(THEME_KEY);
-    return v === 'light' || v === 'dark' ? v : 'system';
+    return normaliseTheme(storage?.getItem(THEME_KEY));
   } catch {
-    return 'system';
+    return DEFAULT_THEME;
   }
 }
 
 export function storeTheme(theme, storage = defaultStorage()) {
   try {
-    if (theme === 'light' || theme === 'dark') storage?.setItem(THEME_KEY, theme);
-    else storage?.removeItem(THEME_KEY);
+    storage?.setItem(THEME_KEY, normaliseTheme(theme));
   } catch {
     /* storage unavailable: the choice lasts for this page view only */
   }
 }
 
+/** Sets <html data-theme> (always present, so CSS and the chart observer see every change). */
 export function applyTheme(theme, root = globalThis.document?.documentElement) {
   if (!root) return;
-  if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
-  else delete root.dataset.theme;
+  root.dataset.theme = normaliseTheme(theme);
 }

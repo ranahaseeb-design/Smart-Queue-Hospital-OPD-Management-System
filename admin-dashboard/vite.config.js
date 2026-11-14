@@ -17,5 +17,6 @@ export default defineConfig({
       },
     },
   },
-  test: { environment: 'node', include: ['src/**/*.test.js'] },
+  // Utility tests run in node; component tests opt into jsdom with a `@vitest-environment jsdom` docblock.
+  test: { environment: 'node', include: ['src/**/*.test.{js,jsx}'] },
 });
