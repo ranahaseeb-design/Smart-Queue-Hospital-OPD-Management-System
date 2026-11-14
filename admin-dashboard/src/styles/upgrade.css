@@ -160,6 +160,20 @@
 .util-swatch-mid { background: var(--color-congestion-high); }
 .util-swatch-high { background: var(--color-congestion-critical); }
 
+/* ============================== Forecasts chart ============================== */
+.legend-arrivals { background: var(--chart-1); }
+.legend-shortfall { background: var(--chart-peak); border: var(--border-width) dashed var(--color-danger); }
+.legend-line-dashed {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  border-top: 2px dashed var(--chart-reference);
+}
+.tooltip-shortfall { max-width: 18rem; align-items: flex-start; }
+.tooltip-shortfall .icon { margin-top: 2px; color: var(--color-success-text); }
+.tooltip-shortfall.is-short { color: var(--color-danger-text); font-weight: var(--weight-semibold); }
+.tooltip-shortfall.is-short .icon { color: var(--color-danger-text); }
+
 /* ============================== Animations ============================== */
 @keyframes slide-down { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
 @keyframes rise-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

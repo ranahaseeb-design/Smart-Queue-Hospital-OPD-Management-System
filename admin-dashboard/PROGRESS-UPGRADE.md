@@ -22,8 +22,13 @@ the UI must degrade gracefully when they are missing. Component tests mock `api/
       Styles in `src/styles/upgrade.css`. Polling fallback now 15 s (Decision 8).
       Tests: `utils/overview.test.js`, `pages/OverviewPage.test.jsx`.
 
+- [x] 3. Forecasts: Area (arrivals Âh, dots coloured by congestion) vs dashed step capacity (Ch),
+      `--chart-peak` crimson bands for peak OR shortfall hours, tooltip `ShortfallLine` with exact
+      doctor-hours, "Staffing shortfall" KPI and Shortfall column. `utils/forecast.js` sums
+      per-department shortfalls; falls back to the contract formula with `avgConsultMinutes`, else
+      patients over capacity. Tests: `utils/forecast.test.js`, `pages/ForecastsPage.test.jsx`.
+
 ## Remaining
-- [ ] 3. Forecasts: arrivals vs dashed capacity, crimson peak/shortfall bands, shortfall tooltip
 - [ ] 4. Workload: +1 doctor session what-if (pure util + tests), `?departmentId=` deep link
 - [ ] 5. Sidebar groups LIVE / INSIGHTS / MANAGE; Model Management scorecards, feature importances, retrain stepper
 - [ ] 6. Polish: micro-interactions, skeletons, empty/error states, aria-live, keyboard, 44 px targets, 1280/768 px
