@@ -55,6 +55,13 @@ describe('<ForecastsPage>', () => {
     expect(screen.getByText('patients')).toBeTruthy();
   });
 
+  it('preselects department and date from a Workload deep link', async () => {
+    mockApi();
+    render(<MemoryRouter future={routerFuture} initialEntries={['/forecasts?departmentId=1&date=2026-11-15']}><ForecastsPage /></MemoryRouter>);
+    await screen.findByText('Staffing shortfall');
+    expect(mocks.get).toHaveBeenCalledWith('/admin/forecasts', { departmentId: '1', date: '2026-11-15' }, expect.anything());
+  });
+
   it('shows the empty state when there is no forecast', async () => {
     mockApi([]);
     renderPage();

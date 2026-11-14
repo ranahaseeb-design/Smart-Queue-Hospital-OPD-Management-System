@@ -7,7 +7,7 @@ import { useEffect, useId, useMemo, useState } from 'react';
 import {
   Area, CartesianGrid, ComposedChart, Legend, Line, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
@@ -58,8 +58,10 @@ export default function ForecastsPage() {
   const { permissions } = useAuth();
   const canRun = permissions.runForecasts; // hospital administrators only (hospital-wide job)
   const toast = useToast();
-  const [date, setDate] = useState(today());
-  const [departmentId, setDepartmentId] = useState('');
+  // Deep links from Workload ("View forecast"): ?departmentId=&date=YYYY-MM-DD preselect the filters.
+  const [params] = useSearchParams();
+  const [date, setDate] = useState(() => (/^\d{4}-\d{2}-\d{2}$/.test(params.get('date') || '') ? params.get('date') : today()));
+  const [departmentId, setDepartmentId] = useState(() => (params.get('departmentId') || '').replace(/[^\w-]/g, ''));
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState(null);
   const chart = useChartTheme();

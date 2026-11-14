@@ -28,8 +28,16 @@ the UI must degrade gracefully when they are missing. Component tests mock `api/
       per-department shortfalls; falls back to the contract formula with `avgConsultMinutes`, else
       patients over capacity. Tests: `utils/forecast.test.js`, `pages/ForecastsPage.test.jsx`.
 
+- [x] 4. Workload: `utils/whatIf.js` (parseTimeRange, resolveAvgConsult — forecast field, else
+      mean of active doctors from /admin/doctors — backlogSeries, simulateExtraSession) with unit
+      tests; recommendation cards with a `role="switch"` "+1 extra doctor session", animated mini
+      chart (arrivals, dashed capacity, simulated capacity), count-up wait reduction, "Estimate"
+      label and honest reasons when impossible. Forecasts fetched once per recommendation date.
+      `?departmentId=` scrolls/focuses/highlights (glow), banner + Clear; "no recommendation" note.
+      Forecasts page accepts `?departmentId=&date=` ("View forecast").
+      Tests: `utils/whatIf.test.js`, `pages/WorkloadPage.test.jsx`.
+
 ## Remaining
-- [ ] 4. Workload: +1 doctor session what-if (pure util + tests), `?departmentId=` deep link
 - [ ] 5. Sidebar groups LIVE / INSIGHTS / MANAGE; Model Management scorecards, feature importances, retrain stepper
 - [ ] 6. Polish: micro-interactions, skeletons, empty/error states, aria-live, keyboard, 44 px targets, 1280/768 px
 - [ ] 7. Verify: vitest, build, README
