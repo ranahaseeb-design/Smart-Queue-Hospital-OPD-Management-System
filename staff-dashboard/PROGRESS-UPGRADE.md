@@ -11,7 +11,10 @@ Plan: `docs/UPGRADE_2026.md` (Decisions 1–9, "Staff Dashboard"). Contract: `do
       with disabled reasons), keyboard shortcuts (`utils/shortcuts.js`, `ShortcutHelp`). Verified live on
       doctor1 (call → start → complete via N/S/C) and at 375 px (no overflow, stage first).
 
+- [x] M3 Linked referral drawer: `LinkedReferralDrawer` (Modal `variant="drawer"`), LAB/PHARMACY toggles,
+      optional counter per type, sequential POSTs via `utils/linked.js` with per-type 409/403 messages;
+      replaces `LinkedTokenModal`. Verified live (LAB-001 + PHARMACY-001, then a 409 on LAB).
+
 ## Remaining
-- [ ] M3 Linked referral drawer (LAB + PHARMACY toggles, sequential POSTs, per-type 409/403).
 - [ ] M4 `/display` board (+ admin sign-in for `/display`, branch room socket, 3 s polling fallback).
 - [ ] M5 Verify: vitest, build, README.

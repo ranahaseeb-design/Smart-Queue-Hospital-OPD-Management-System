@@ -1755,6 +1755,175 @@ input[type='checkbox'] {
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
+/* ---- Drawer (slide-over, Modal variant="drawer") ---- */
+.modal-backdrop--drawer {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0;
+}
+
+.drawer {
+  width: min(30rem, 100vw);
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  border-radius: var(--radius-xl) 0 0 var(--radius-xl);
+  border-right: 0;
+  animation: drawer-in var(--duration-slow) var(--ease-emphasized);
+}
+
+.drawer .modal-footer {
+  border-radius: 0 0 0 var(--radius-xl);
+}
+
+.drawer .modal-footer .btn {
+  flex: 1;
+}
+
+/* Referral toggles (LAB / PHARMACY) */
+.referral-grid {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.referral {
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  transition: border-color var(--duration-fast) var(--ease-standard);
+}
+.referral.is-on {
+  border-color: var(--color-primary);
+}
+.referral.is-issued {
+  border-color: var(--color-success);
+  background: var(--color-success-soft);
+}
+.referral.is-failed {
+  border-color: var(--color-danger);
+}
+
+.referral-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--space-16);
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+.referral-toggle:disabled {
+  cursor: default;
+}
+
+.referral-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-10);
+  height: var(--space-10);
+  border-radius: var(--radius-md);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-soft-text);
+  font-size: var(--text-lg);
+  flex-shrink: 0;
+}
+
+.referral-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.referral-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+}
+
+.referral-desc {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.referral-switch {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: calc(var(--space-12) + var(--space-1));
+  height: var(--space-8);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-hover);
+  border: var(--border-width) solid var(--color-border-strong);
+  flex-shrink: 0;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+.referral-knob {
+  position: absolute;
+  left: var(--space-1);
+  width: var(--space-6);
+  height: var(--space-6);
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+  transition: transform var(--duration-base) var(--ease-emphasized);
+}
+.referral.is-on .referral-switch {
+  background: var(--color-primary);
+  border-color: transparent;
+}
+.referral.is-on .referral-knob {
+  background: var(--color-on-primary);
+  transform: translateX(calc(var(--space-4) + var(--space-1)));
+}
+.referral.is-issued .referral-switch {
+  background: var(--color-success);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+
+.referral-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-3);
+  font-size: var(--text-sm);
+}
+.referral-status--ok {
+  font-size: var(--text-md);
+}
+.referral-status--error {
+  display: block;
+  color: var(--color-danger-text);
+}
+.referral-status--error p {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.referral-hint {
+  color: var(--color-text-muted);
+}
+
+.referral-number {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  color: var(--color-success-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.referral-counter {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-3);
+}
+
 /* ---- Toast ---- */
 .toast-region {
   position: fixed;
@@ -2259,6 +2428,12 @@ input[type='checkbox'] {
   100% {
     opacity: 0;
     transform: scale(1.18, 1.4);
+  }
+}
+@keyframes drawer-in {
+  from {
+    opacity: 0.4;
+    transform: translateX(100%);
   }
 }
 @keyframes row-in {

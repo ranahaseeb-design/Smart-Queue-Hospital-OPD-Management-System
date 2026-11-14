@@ -8,7 +8,7 @@ import { Link, useParams } from 'react-router-dom';
 import AppHeader from '../components/AppHeader.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import ConnectionStatus from '../components/ConnectionStatus.jsx';
-import LinkedTokenModal from '../components/LinkedTokenModal.jsx';
+import LinkedReferralDrawer from '../components/LinkedReferralDrawer.jsx';
 import NowServingCard from '../components/NowServingCard.jsx';
 import PriorityModal from '../components/PriorityModal.jsx';
 import QueuePanel from '../components/QueuePanel.jsx';
@@ -25,6 +25,7 @@ import { useNow } from '../hooks/useNow.js';
 import { useQueue } from '../hooks/useQueue.js';
 import { api } from '../api.js';
 import { PRIORITY_LEVELS, formatInstantClock, servicePointTypeLabel } from '../utils/format.js';
+import { summariseIssued } from '../utils/linked.js';
 import { describeQueueChange } from '../utils/queueDiff.js';
 import { canIssueLinkedTokens, canOperateToken } from '../utils/servicePoints.js';
 import { shortcutAction } from '../utils/shortcuts.js';
@@ -203,12 +204,10 @@ function QueueScreen({ servicePointId, pointInfo }) {
     refresh();
   };
 
-  const onLinkedIssued = (issued, type) => {
-    setDialog(null);
-    const where = issued && issued.servicePoint && issued.servicePoint.name;
-    toast.success(
-      `${issued && issued.displayNumber ? issued.displayNumber : `${type} token`} issued${where ? ` at ${where}` : ''}.`,
-    );
+  // The drawer reports what it issued when it closes (it shows each result itself while open).
+  const onLinkedIssued = (tokens) => {
+    const text = summariseIssued(tokens);
+    if (text) toast.success(text);
     refresh();
   };
 
@@ -431,11 +430,11 @@ function QueueScreen({ servicePointId, pointInfo }) {
         <PriorityModal token={dialog.token} initialLevel={dialog.level} onClose={closeDialog} onDone={onPrioritySet} />
       )}
       {dialog && dialog.kind === 'linked' && linkedAllowed && (
-        <LinkedTokenModal
+        <LinkedReferralDrawer
           token={dialog.token}
           servicePointId={servicePointId}
           onClose={closeDialog}
-          onDone={onLinkedIssued}
+          onIssued={onLinkedIssued}
         />
       )}
       {dialog && dialog.kind === 'help' && <ShortcutHelp onClose={closeDialog} />}
