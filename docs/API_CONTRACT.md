@@ -9,8 +9,9 @@ mobile app are built against. Requirement IDs (FR-xx) refer to the FYP documenta
 |---|---|---|
 | Backend API (Node.js/Express + Socket.IO) | `backend/` | 4000, REST under `/api` |
 | AI service (Python/FastAPI, internal only) | `ai-service/` | 8000 |
-| Staff Dashboard (React + Vite) | `staff-dashboard/` | 5173 |
+| Staff Dashboard (React + Vite), incl. the waiting-room board `/display` | `staff-dashboard/` | 5173 |
 | Admin Dashboard (React + Vite) | `admin-dashboard/` | 5174 |
+| Patient Web Portal (React + Vite; same PATIENT API as the mobile app) | `patient-portal/` | 5175 |
 | Patient app (Flutter, Android) | `mobile_app/` | — (emulator reaches backend at `http://10.0.2.2:4000`) |
 
 - JSON bodies, **camelCase** keys in the REST API. DB columns are snake_case.
@@ -19,7 +20,7 @@ mobile app are built against. Requirement IDs (FR-xx) refer to the FYP documenta
   Codes used: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `CONFLICT` (409), `AI_UNAVAILABLE` (503).
 - Datetimes: hospital local time (server `TZ=Asia/Karachi`), serialized as `"YYYY-MM-DDTHH:mm:ss"` **without** a zone suffix. Dates are `"YYYY-MM-DD"`, times `"HH:mm"`. Clients parse them as local time.
 - Roles: `PATIENT`, `STAFF` (doctors, OPD/lab/pharmacy staff), `BRANCH_ADMIN`, `HOSPITAL_ADMIN`.
-- Priority levels: `0` normal, `1` elderly / differently-abled, `2` emergency. Queue order = `priorityLevel DESC, issuedAt ASC` among `WAITING` tokens (FR-13).
+- Priority levels: `0` normal, `1` elderly / differently-abled, `2` emergency ("0 = normal; higher = earlier", data dictionary). Queue order among `WAITING` tokens (FR-13) = `priorityLevel DESC`, then checked-in **appointment** tokens before walk-ins, then `issuedAt ASC`, i.e. EMERGENCY > ELDERLY / DIFFERENTLY_ABLED > APPOINTMENT > NORMAL. Stored as `tokens.from_appointment` (boolean, moves with the appointment link on transfer).
 - Display numbers: `"OPD-007"`, `"LAB-003"`, `"PHARMACY-012"` → `queueType + "-" + zero-padded tokenNumber (3)`.
 
 ### Seed / demo accounts (development only; defined in `backend/src/db/seed.js`)
@@ -33,7 +34,7 @@ mobile app are built against. Requirement IDs (FR-xx) refer to the FYP documenta
 | Pharmacy staff (branch 1) | `pharmacy1@opd.test` | `Staff@123` |
 | Patient | `patient@opd.test` (phone `03001234567`) | `Patient@123` |
 
-Seed: 3 branches in Lahore, 4–5 departments each (standardised specialties: General Medicine, Cardiology, Pediatrics, ENT, Orthopedics, Dermatology), 2 doctors per department, one OPD room per doctor, one LAB and one PHARMACY counter per branch, schedules Mon–Sun, ~60 days of **synthetic** history (tokens, queue events, wait predictions with `features_json`, feedback) flagged `is_synthetic = 1`.
+Seed: 3 Lahore branches — **Gulberg** (branch 1, 31.5160, 74.3429), **Johar Town** (31.4697, 74.2728) and **DHA** (Phase 5, 31.4627, 74.4067) — each with the same 4 standardised specialties (**Cardiology, Gynaecology, General Medicine, Orthopedics**), 2 doctors per department (24 doctors, `doctor1@opd.test` … `doctor24@opd.test`, each with a distinct rolling `avg_consult_minutes`), one OPD room per doctor, one LAB and one PHARMACY counter per branch, schedules Mon–Sun, ~60 days of **synthetic** history (tokens, queue events, wait predictions with `features`, feedback) flagged `is_synthetic`, plus live queues today (WAITING/CALLED/IN_SERVICE tokens, some priority and appointment tokens, linked LAB/PHARMACY tokens) with at least one department at HIGH or CRITICAL live congestion so alerts and recommendations show.
 
 ---
 
@@ -57,7 +58,16 @@ Seed: 3 branches in Lahore, 4–5 departments each (standardised specialties: Ge
   "position": 4,                 // 1-based position among WAITING tokens; null if not WAITING
   "patientsAhead": 3,
   "nowServing": { "tokenId": 39, "displayNumber": "OPD-004" },                      // null if none
-  "estimate": { "minutes": 30, "low": 24, "high": 36, "modelVersion": "baseline" }, // null if not WAITING
+  "estimate": { "minutes": 30, "low": 24, "high": 36, "modelVersion": "baseline",   // null if not WAITING
+    "explain": {                       // FR-06 transparency ("Explain AI estimate"); aggregate counts only
+      "method": "MODEL|BASELINE",
+      "reason": null,                  // BASELINE only: "AI_UNAVAILABLE" | "NO_ACTIVE_MODEL" | "COLD_START" | "NOT_OPD"
+      "patientsAhead": 3, "priorityAhead": 1, "normalAhead": 2,   // normalAhead = patientsAhead - priorityAhead
+      "doctorAvgConsultMinutes": 6.8, "minutesToStart": 0,
+      "baselineMinutes": 20,           // Eq. 6.2 (n_ahead + n_priority) * c_doctor + d_start, n_ahead = normalAhead
+      "modelAdjustmentMinutes": 6,     // minutes - baselineMinutes when method = MODEL, else null
+      "hourOfDay": 10, "isPeakHour": true,   // isPeakHour from today's forecast for the department and hour
+      "departmentLoad": 4.5, "interruptionsLastHour": 1, "appointmentsAhead": 0 } },
   "congestion": { "level": "NORMAL|HIGH|CRITICAL", "suggestAlternatives": false },
   "linkedTokens": [ /* TokenDetail without linkedTokens, same visit, other queues */ ] }
 
@@ -89,9 +99,9 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 | PUT | `/auth/me` | `{ fullName?, email?, phone?, dateOfBirth?, priorityCategory?, password? }` | `{ user }` (same `priorityCategory` rules as register) |
 
 ### Browse (FR-02) — any authenticated role
-| GET | `/branches` | – | `[ { id, name, address, latitude, longitude, status } ]` (ACTIVE only for patients) |
+| GET | `/branches` | – | `[ { id, name, address, latitude, longitude, status, load: { waiting, congestionLevel, estimatedWaitMinutes } } ]` (ACTIVE only for patients). `load` is live: `waiting` = WAITING OPD tokens today, `congestionLevel` = worst department level, `estimatedWaitMinutes` = median over that branch's doctors accepting now of their `estimatedWaitMinutes` (null if none accepting) |
 | GET | `/specialties` | – | `[ "Cardiology", ... ]` |
-| GET | `/branches/:id/departments` | – | `[ { id, branchId, specialty, name, doctorCount } ]` |
+| GET | `/branches/:id/departments` | – | `[ { id, branchId, specialty, name, doctorCount, waiting, congestionLevel, congestionRatio, shortestWaitMinutes } ]` (`shortestWaitMinutes` = minimum `estimatedWaitMinutes` over doctors accepting now, null if none) |
 | GET | `/departments/:id/doctors` | `?date=YYYY-MM-DD` (default today) | `[ { id, fullName, departmentId, specialty, branchId, avgConsultMinutes, servicePointId, servicePointName, session: { startTime, endTime } | null, availableToday, acceptingNow, queueLength, estimatedWaitMinutes } ]` |
 
 `acceptingNow` = scheduled today, session not ended (unless `DEMO_ALWAYS_OPEN=true`, which ignores clock time but still needs a schedule that weekday), and below `max_patients` of the current session (counting only the doctor's OPD tokens issued in that session's window: from the previous session's end, or 00:00, to this session's end; the last session runs to midnight).
@@ -101,6 +111,9 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 | GET | `/tokens/active` | – | `[ TokenDetail ]` patient's WAITING/CALLED/IN_SERVICE tokens (all queues) |
 | GET | `/tokens/:id` | – | `TokenDetail` (owner, staff, admins) |
 | DELETE | `/tokens/:id` | – | `TokenDetail` with status CANCELLED (owner only, only from WAITING) |
+| POST | `/tokens/:id/switch` | `{ doctorId }` | 201 `{ cancelled: TokenDetail, token: TokenDetail }` — FR-09 "Switch my token here", only with the patient's own action (owner only, OPD token in WAITING). One transaction: the old token → CANCELLED (event CANCELLED, note `"Switched to <branch> · <doctor>"`) and a new OPD token is issued for `doctorId` exactly as `POST /tokens` (same 409 rules, priority from the patient's `priorityCategory`; staff-set priority does not carry over). If the issue fails nothing changes (old token stays WAITING). 400 if `doctorId` is the token's own doctor |
+
+Prediction fallback (FR-06, Section 6.4.4): the backend uses the Eq. 6.2 baseline (`modelVersion: "baseline"`) when the AI service is unreachable or has no active model, and also for a **cold-start doctor** with fewer than `COLD_START_MIN_CONSULTS` (default 30) COMPLETED OPD consultations — even when a model is active. `estimate.explain.reason` says which.
 
 ### Recommendations (FR-08, FR-09)
 | GET | `/recommendations` | `?specialty=Cardiology&lat=31.48&lng=74.32&excludeDoctorId=2` (lat/lng optional; location never stored) | `{ specialty, weights: { wait, distance, congestion }, items: [ { branchId, branchName, address, doctorId, doctorName, predictedWaitMinutes, distanceKm, congestionRatio, congestionLevel, score, reason } ] }` sorted by `score` ascending (lower = better). `distanceKm` null when no location. `reason` e.g. `"About 40 min shorter wait, 3.2 km away"`. |
@@ -135,6 +148,8 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | GET | `/staff/transfer-targets` | `?servicePointId=` | `[ { servicePointId, name, type, doctorId, doctorName, specialty, waiting } ]` active points in the same branch except this one |
 | POST | `/visits/:id/linked-tokens` | `{ type: "LAB"|"PHARMACY", servicePointId? }` | 201 `TokenDetail`; default target = the branch's active point of that type with the shortest queue. Doctors only (roles matrix): 403 `FORBIDDEN` for staff without a doctor profile, and for a doctor whose own OPD token is not part of that visit |
 
+| GET | `/display` | `?branchId=` (required for hospital admins; staff and branch admins default to their branch) | Waiting-room board data (`/display` page of the Staff Dashboard). STAFF with an assignment in that branch, BRANCH_ADMIN (own branch), HOSPITAL_ADMIN; 403 otherwise. `{ branch: { id, name }, generatedAt, servicePoints: [ { id, name, type, departmentName, doctorName, nowServing: { displayNumber, status: "CALLED"|"IN_SERVICE", calledAt } | null, next: [ { displayNumber, priorityLevel, fromAppointment } ] (first 3 WAITING in queue order), waiting } ], departments: [ { departmentId, name, waiting, estimatedWaitMinutes, congestionLevel } ] }` — **token numbers only, never patient names**; active service points only, OPD rooms first, then LAB, then PHARMACY |
+
 Every status change writes a `queue_events` row in the same DB transaction (FR-21), then re-predicts the affected queue (FR-07), sends notifications (called patient + those within `notifyPositionsAhead` positions, FR-11) and emits socket events.
 
 ### Admin (FR-14 … FR-18, FR-20, FR-22) — BRANCH_ADMIN (own branch only) and HOSPITAL_ADMIN (all; optional `?branchId=` filter)
@@ -148,15 +163,15 @@ Every status change writes a `queue_events` row in the same DB transaction (FR-2
 
 `DELETE` on master data = soft deactivate (`is_active=false` / `status=INACTIVE`), except schedules and assignments which are hard-deleted. Each CRUD resource: `GET /x` list, `GET /x/:id`, `POST /x` → 201, `PUT /x/:id`, `DELETE /x/:id`.
 
-| GET | `/admin/dashboard` | `?branchId=` | `{ kpis: { waiting, inService, completedToday, avgWaitMinutes, maxWaitMinutes, activeDoctors, activeServicePoints }, branches: [ { branchId, name, waiting, avgWaitMinutes, congestionLevel } ], departments: [ { departmentId, branchId, branchName, name, specialty, waiting, activeDoctors, avgWaitMinutes, maxWaitMinutes, congestionRatio, congestionLevel } ], servicePoints: [ { id, name, type, branchName, waiting, nowServing } ] }` |
+| GET | `/admin/dashboard` | `?branchId=` | `{ kpis: { waiting, inService, completedToday, avgWaitMinutes, maxWaitMinutes, activeDoctors, activeServicePoints }, trend: [ { hour: "09:00", waiting, inService, completed, avgWaitMinutes, maxWaitMinutes } ], branches: [ { branchId, name, waiting, avgWaitMinutes, congestionLevel } ], departments: [ { departmentId, branchId, branchName, name, specialty, waiting, activeDoctors, avgWaitMinutes, maxWaitMinutes, congestionRatio, congestionLevel, doctors: [ { doctorId, fullName, servicePointId, servicePointName, waiting, nowServing: displayNumber|null, avgConsultMinutes, estimatedWaitMinutes, acceptingNow } ] } ], servicePoints: [ { id, name, type, branchName, waiting, nowServing } ] }`. `trend` = today's hours from the first token issued until the current hour (hospital time): `waiting` / `inService` = snapshot at the end of the hour (the current hour = now), `completed` = cumulative COMPLETED OPD tokens, `avgWaitMinutes` / `maxWaitMinutes` = waits (called − issued) of OPD tokens called in that hour (null when none) |
 | GET | `/admin/alerts` | `?branchId=` | `[ { id, level: "HIGH"|"CRITICAL", source: "LIVE"|"FORECAST", branchId, branchName, departmentId, departmentName, message, at } ]` |
 | GET | `/admin/reports` | `?type=doctor-consult|department-traffic|branch-utilization|waiting-times|feedback&from=&to=&branchId=&format=json|csv` | json: `{ type, title, columns: [ { key, label } ], rows: [ {...} ] }`; csv: `text/csv` attachment |
-| GET | `/admin/forecasts` | `?branchId=&departmentId=&date=` | `[ { branchId, departmentId, departmentName, forecastHour, expectedArrivals, capacity, congestionRatio, congestionLevel, isPeak, source } ]` |
+| GET | `/admin/forecasts` | `?branchId=&departmentId=&date=` | `[ { branchId, departmentId, departmentName, forecastHour, expectedArrivals, capacity, congestionRatio, congestionLevel, isPeak, source, avgConsultMinutes, shortfallDoctorHours } ]` — `avgConsultMinutes` = mean `avg_consult_minutes` of the department's active doctors (lets clients simulate one extra doctor session: +60 / avgConsultMinutes capacity per hour); `shortfallDoctorHours` = `max(0, expectedArrivals − capacity) × avgConsultMinutes / 60`, 1 decimal |
 | POST | `/admin/forecasts/run` | – | `{ generated, source: "ai"|"baseline" }` — calls AI `/ai/jobs/forecast`; falls back to the JS seasonal baseline (avg of same weekday+hour over last 4 weeks) when the AI service is unavailable. Both replace forecasts from today 00:00. 409 `CONFLICT` while an AI forecast job is still running (busy, or longer than `AI_JOB_TIMEOUT_MS`), so the baseline never races it. HOSPITAL_ADMIN only (403 `FORBIDDEN` for branch admins) |
 | GET | `/admin/recommendations` | `?branchId=` | `{ workload: [ { branchId, branchName, patientsPerDoctorHour, utilization, avgWaitMinutes } ], recommendations: [ { branchId, branchName, departmentId, departmentName, date, timeRange, shortfallSessions, message } ] }` (FR-18) |
 | GET | `/admin/feedback` | `?branchId=` | `{ summary: { count, average, distribution: { "1": n, ..., "5": n } }, items: [ { id, rating, comment, createdAt, patientName, branchName, visitDate } ] }` |
 | GET/PUT | `/admin/settings` | PUT hospital admin only | `{ recommendationWeights: { wait: 0.6, distance: 0.25, congestion: 0.15 }, congestionThresholds: { high: 0.85, critical: 1.0 }, alternativeSuggestionWaitMinutes: 45, notifyPositionsAhead: 3, slotMinutes: 15 }` |
-| GET | `/admin/models` | – | `[ { version, trainedAt, trainingRows, dataSource, status, isActive, metrics: { mae, rmse, r2, within10, baselineMae, testRows } } ]` |
+| GET | `/admin/models` | – | `[ { version, trainedAt, trainingRows, dataSource, status, isActive, metrics: { mae, rmse, r2, within10, baselineMae, baselineRmse, baselineR2, baselineWithin10, testRows, featureImportances: [ { feature, importance } ] } } ]` — `featureImportances`: the forest's importances summed onto the contract feature keys, normalised to sum 1, sorted descending (Section 6.4.1: "shown to administrators"). The four `baseline*` metrics are the Eq. 6.2 baseline on the same test rows (Table 7.3). Versions trained before these fields existed return them as `null` / `[]` |
 | POST | `/admin/models/retrain` | – | hospital admin; proxies AI `/ai/models/retrain` → `{ version, metrics, accepted, activated }`; 409 `CONFLICT` with the AI's message while a retraining job is already running; 503 `AI_UNAVAILABLE` when the AI is unreachable, times out (`AI_JOB_TIMEOUT_MS`, default 10 min) or rejects the backend's `AI_SERVICE_TOKEN` |
 | POST | `/admin/models/:version/activate` | – | hospital admin; proxies AI |
 
@@ -168,12 +183,12 @@ Congestion (Eq. 6.5): live ratio for a department = waiting tokens ÷ remaining 
 
 Connect: `io("http://localhost:4000", { auth: { token: "<jwt>" } })`. The server auto-joins each socket to `user:<userId>`.
 Client → server: `subscribe` with `{ room }` and `unsubscribe` with `{ room }`. Allowed rooms:
-`token:<id>` (token owner, staff, admins), `sp:<servicePointId>` (assigned staff, admins), `admin` (admins).
+`token:<id>` (token owner, staff, admins), `sp:<servicePointId>` (assigned staff, admins), `admin` (admins), `branch:<branchId>` (staff with an assignment in that branch, that branch's admin, hospital admins — used by `/display`).
 
 Server → client events (clients just re-fetch the relevant REST resource):
 | Event | Payload | Rooms |
 |---|---|---|
-| `queue:updated` | `{ servicePointId, branchId }` | `sp:<id>`, `admin` |
+| `queue:updated` | `{ servicePointId, branchId }` | `sp:<id>`, `admin`, `branch:<branchId>` |
 | `token:updated` | `{ tokenId, status }` | `token:<id>`, `user:<ownerId>` (sent for every token in an affected queue whose position/estimate changed) |
 | `notification` | `{ id, message, tokenId }` | `user:<id>` |
 | `alert` | alert object (as in `/admin/alerts`) | `admin` |
