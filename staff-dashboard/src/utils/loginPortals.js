@@ -47,11 +47,12 @@ export function portalById(id) {
 }
 
 /**
- * Where a card leads from the app `localApp` ('staff' | 'admin'): null = open the form here,
- * otherwise the other dashboard's login URL with the card preselected.
+ * Where a card leads from the app `localApp` ('staff' | 'admin' | 'all'): null = open the form
+ * here, otherwise the other dashboard's login URL with the card preselected. The combined Smart
+ * OPD Dashboard passes 'all': every card opens its form in place.
  */
 export function portalHref(portal, localApp, otherAppUrl) {
-  if (!portal || portal.app === localApp) return null;
+  if (!portal || localApp === 'all' || portal.app === localApp) return null;
   const base = String(otherAppUrl || '').replace(/\/+$/, '');
   return `${base}/login?portal=${encodeURIComponent(portal.id)}`;
 }

@@ -52,6 +52,14 @@ non-clinical queue data only (FR-01…FR-22, UC-01…UC-19, Data Dictionary 4.9,
    admin app, socket.io-client, Vitest). No new UI kits. Animations in CSS (keyframes,
    transitions) or tiny hooks; no animation libraries.
 
+10. **One dashboard (added after the plan started)** — the user wants a single web dashboard for
+    all logins. `admin-dashboard/` is now the **Smart OPD Dashboard** (port 5174): `/login` is the
+    shared four-card sign-in (`UnifiedLoginPage`), `RootApp` loads the admin screens for
+    BRANCH_ADMIN / HOSPITAL_ADMIN or the doctor/staff screens for STAFF (imported from
+    `staff-dashboard/src` as `@staff`), each with its own stylesheet; sign-in/out reload the page.
+    Staff-screen work (console, `/display`) still lives in `staff-dashboard/src`; when merged,
+    give administrators a way to open `/display` from the admin section (it needs staff routes).
+
 ## Phase 1 — backend, database, AI (branch `upgrade/backend`)
 
 - Health: `.env` / `MONGODB_URI` checks, async error handling on every route, all tests green.

@@ -9,8 +9,8 @@ mobile app are built against. Requirement IDs (FR-xx) refer to the FYP documenta
 |---|---|---|
 | Backend API (Node.js/Express + Socket.IO) | `backend/` | 4000, REST under `/api` |
 | AI service (Python/FastAPI, internal only) | `ai-service/` | 8000 |
-| Staff Dashboard (React + Vite), incl. the waiting-room board `/display` | `staff-dashboard/` | 5173 |
-| Admin Dashboard (React + Vite) | `admin-dashboard/` | 5174 |
+| **Smart OPD Dashboard** — one web app for all four login types (React + Vite): shared four-card login, admin screens for BRANCH_ADMIN / HOSPITAL_ADMIN, doctor/staff screens for STAFF | `admin-dashboard/` (+ `staff-dashboard/src` as module `@staff`) | 5174 |
+| Staff screens standalone (development only), incl. the waiting-room board `/display` | `staff-dashboard/` | 5173 |
 | Patient Web Portal (React + Vite; same PATIENT API as the mobile app) | `patient-portal/` | 5175 |
 | Patient app (Flutter, Android) | `mobile_app/` | — (emulator reaches backend at `http://10.0.2.2:4000`) |
 

@@ -15,16 +15,17 @@ A **MERN** stack (MongoDB, Express, React, Node.js), plus a Python AI service an
 |---|---|---|---|
 | [backend/](backend/README.md) | REST API + real-time channel | Node.js, Express, Socket.IO, MongoDB (Mongoose) | 4000 |
 | [ai-service/](ai-service/README.md) | Internal AI service: wait prediction, branch ranking, forecasting, retraining | Python, FastAPI, scikit-learn (Random Forest), pandas | 8000 |
-| [staff-dashboard/](staff-dashboard/README.md) | Doctors, OPD, lab and pharmacy staff | React, Vite | 5173 |
-| [admin-dashboard/](admin-dashboard/README.md) | Branch admins, hospital admins, management | React, Vite, Recharts | 5174 |
+| [admin-dashboard/](admin-dashboard/README.md) | **Smart OPD Dashboard** — the one web app for all four login types: admin screens (branch and hospital admins) plus the doctor/staff screens | React, Vite, Recharts | 5174 |
+| [staff-dashboard/](staff-dashboard/README.md) | Doctor/staff screens (queue console) — a module of the Smart OPD Dashboard (imported as `@staff`); still runs standalone for development | React, Vite | (5173) |
 | [mobile_app/](mobile_app/README.md) | Patient app (Android) | Flutter (Dart) | — |
 | [database/MONGODB_DESIGN.md](database/MONGODB_DESIGN.md) | MongoDB collections, fields, indexes and concurrency rules | | |
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | Every REST endpoint, JSON shape and socket event all components follow | | |
 
 ```
-Patient app ──┐                         ┌── AI service (FastAPI, :8000, internal only)
-Staff dash  ──┼── HTTPS/JSON + Socket.IO ┤
-Admin dash  ──┘     Backend (:4000)      └── MongoDB (replica set)
+Patient app ──────┐                         ┌── AI service (FastAPI, :8000, internal only)
+                  ├── HTTPS/JSON + Socket.IO ┤
+Smart OPD         │     Backend (:4000)      └── MongoDB (replica set)
+Dashboard (:5174)─┘  (doctors, staff, branch and hospital admins)
 ```
 
 If the AI service is down or has no trained model, the backend falls back to the queueing
@@ -65,17 +66,21 @@ npm start
 
 Check it at <http://localhost:4000/api/health>.
 
-### 2. Dashboards
+### 2. Smart OPD Dashboard (one web app for every role)
+
+The dashboard imports the doctor/staff screens from `staff-dashboard/src`, so install both
+folders once, then run the dashboard:
 
 ```bash
-cd staff-dashboard && npm install && npm run dev
+cd staff-dashboard && npm install
 ```
 
 ```bash
 cd admin-dashboard && npm install && npm run dev
 ```
 
-Staff Dashboard: <http://localhost:5173>. Admin Dashboard: <http://localhost:5174>.
+Open <http://localhost:5174>. The login page shows all four login types; doctors and staff get
+the queue console, branch and hospital administrators get the admin screens — same address.
 
 ### 3. AI service (optional)
 
@@ -103,10 +108,10 @@ See [mobile_app/README.md](mobile_app/README.md) for details.
 
 ## Demo accounts
 
-Development only, created by `npm run seed`. Both dashboards open on the same four-card login
-(Doctor, Staff, Branch Administrator, Hospital Administrator); pick the card that matches the
-account — the backend refuses a token when the account type and the card differ. Doctor and Staff
-sign in on the Staff Dashboard, the administrator cards open the Admin Dashboard.
+Development only, created by `npm run seed`. The Smart OPD Dashboard (<http://localhost:5174>)
+opens on one four-card login (Doctor, Staff, Branch Administrator, Hospital Administrator); pick
+the card that matches the account — the backend refuses a token when the account type and the card
+differ. In development each form has a "Fill" button for its seed account.
 
 | Role | Login | Password |
 |---|---|---|
@@ -126,8 +131,8 @@ of a scheduled weekday, so the demo works outside clinic hours.
 |---|---|---|
 | Backend | `cd backend && npm test` | 109 tests (node:test; integration tests use temporary MongoDB databases) |
 | AI service | `cd ai-service && pytest` | 45 tests (mongomock) |
-| Staff Dashboard | `cd staff-dashboard && npx vitest run` | 57 tests |
-| Admin Dashboard | `cd admin-dashboard && npx vitest run` | 38 tests |
+| Staff screens (module) | `cd staff-dashboard && npx vitest run` | 62 tests |
+| Smart OPD Dashboard | `cd admin-dashboard && npx vitest run` | 50 tests |
 | Patient app | `cd mobile_app && flutter test` | widget and model tests |
 
 ## Requirements coverage
