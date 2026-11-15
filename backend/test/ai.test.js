@@ -146,7 +146,7 @@ test('recommendations use /ai/rank-branches scores when available (FR-08)', asyn
   assert.equal(res.status, 200);
   assert.equal(fake.rankCalls, before + 1);
   assert.deepEqual(res.body.items.map((i) => i.score), [0.1, 0.2, 0.3]);
-  assert.deepEqual(res.body.items.map((i) => i.branchName), ['Model Town', 'Gulberg', 'DHA']);
+  assert.deepEqual(res.body.items.map((i) => i.branchName), ['Model Town', 'Gulberg', 'Johar Town']);
 });
 
 test('forecast job and model management are proxied to the AI service (FR-17, FR-22)', async () => {

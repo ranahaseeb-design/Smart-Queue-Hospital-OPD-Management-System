@@ -171,7 +171,10 @@ function liveCongestion({ waiting, sessions, now, demoAlwaysOpen, thresholds }) 
   let capacity = 0;
   for (const s of sessions) {
     let remaining;
-    if (now >= s.end) remaining = demoAlwaysOpen ? (s.end - s.start) / MINUTE : 0;
+    // DEMO_ALWAYS_OPEN keeps ended sessions accepting patients; their remaining capacity is one
+    // hour of consulting (Eq. 6.5 C_h), so demo congestion behaves like a busy hour instead of a
+    // whole fresh session (which no realistic queue could ever fill).
+    if (now >= s.end) remaining = demoAlwaysOpen ? Math.min(60, (s.end - s.start) / MINUTE) : 0;
     else remaining = (s.end - (now > s.start ? now : s.start)) / MINUTE;
     capacity += remaining / (Number(s.avgConsultMinutes) || 10);
   }

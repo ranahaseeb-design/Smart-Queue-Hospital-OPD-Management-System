@@ -73,7 +73,7 @@ non-clinical queue data only (FR-01…FR-22, UC-01…UC-19, Data Dictionary 4.9,
 ## Phase 1 — backend, database, AI (branch `upgrade/backend`)
 
 - Health: `.env` / `MONGODB_URI` checks, async error handling on every route, all tests green.
-- Seed (contract "Seed"): Gulberg / Johar Town / DHA with the given coordinates; Cardiology,
+- Seed — SUPERSEDED (decision 12): keep the current Model Town / Gulberg data, rename DHA → Johar Town. Original plan: Gulberg / Johar Town / DHA; Cardiology,
   Gynaecology, General Medicine, Orthopedics in each; 24 doctors with distinct rolling
   `avg_consult_minutes`; LAB + PHARMACY counters; 60 days of history; live queues today incl.
   priority, appointment and linked tokens; at least one HIGH/CRITICAL department now. Branch

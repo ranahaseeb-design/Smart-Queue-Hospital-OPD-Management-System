@@ -39,7 +39,7 @@ test('without location: one candidate per branch, distance weight redistributed,
   assert.ok(Math.abs(res.body.weights.wait / res.body.weights.congestion - 0.6 / 0.15) < 1e-2);
   const { items } = res.body;
   assert.equal(items.length, 3);
-  assert.deepEqual(new Set(items.map((i) => i.branchName)), new Set(['Model Town', 'Gulberg', 'DHA']));
+  assert.deepEqual(new Set(items.map((i) => i.branchName)), new Set(['Model Town', 'Gulberg', 'Johar Town']));
   for (const i of items) {
     for (const key of ['branchId', 'branchName', 'address', 'doctorId', 'doctorName', 'predictedWaitMinutes', 'distanceKm', 'congestionRatio', 'congestionLevel', 'score', 'reason']) {
       assert.ok(key in i, key);
@@ -55,15 +55,15 @@ test('without location: one candidate per branch, distance weight redistributed,
 
 test('with location: haversine distance, nearest branch flagged in the reason; location never stored', async () => {
   const lat = 31.4697;
-  const lng = 74.4091; // standing at DHA
+  const lng = 74.2728; // standing at Johar Town
   const res = await ctx.api.get(`/recommendations?specialty=Cardiology&lat=${lat}&lng=${lng}`, patient.token);
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.weights, { wait: 0.6, distance: 0.25, congestion: 0.15 });
-  const dha = res.body.items.find((i) => i.branchName === 'DHA');
+  const dha = res.body.items.find((i) => i.branchName === 'Johar Town');
   const mt = res.body.items.find((i) => i.branchName === 'Model Town');
   assert.equal(dha.distanceKm, 0);
   assert.equal(mt.distanceKm, Math.round(fb.haversineKm(lat, lng, 31.4834, 74.3255) * 10) / 10);
-  assert.ok(mt.distanceKm > 7 && mt.distanceKm < 9);
+  assert.ok(mt.distanceKm > 4.5 && mt.distanceKm < 6);
   assert.match(dha.reason, /0 km away \(nearest\)/);
   const expected = expectedScores(res.body.items, res.body.weights);
   res.body.items.forEach((i, k) => assert.ok(Math.abs(i.score - expected[k]) < 1e-3));
@@ -114,7 +114,7 @@ test('validation and empty results', async () => {
   assert.equal(none.status, 200);
   assert.deepEqual(none.body.items, []);
   const ent = await ctx.api.get('/recommendations?specialty=ENT', patient.token);
-  assert.deepEqual(new Set(ent.body.items.map((i) => i.branchName)), new Set(['Model Town', 'DHA']));
+  assert.deepEqual(new Set(ent.body.items.map((i) => i.branchName)), new Set(['Model Town', 'Johar Town']));
 });
 
 test('patient-facing wait wording matches the app: under 5 minutes reads "less than 5 min"', () => {

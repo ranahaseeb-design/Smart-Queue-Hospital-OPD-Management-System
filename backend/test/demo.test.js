@@ -53,6 +53,29 @@ test('walk-in guest check-in returns a PATIENT session that can join a queue at 
   assert.equal((await ctx.api.post('/auth/guest', null, { fullName: 'x' })).status, 400);
 });
 
+test('walk-in with phone and Urgent / Senior priority: seniors (60+) are prioritised, urgency is for staff', async () => {
+  const thisYear = Number(ctx.time.today().slice(0, 4));
+  const senior = await ctx.api.post('/auth/guest', null, {
+    fullName: 'Rashid Ali', phone: `0399${String(Date.now()).slice(-7)}`, priority: 'URGENT_SENIOR', birthYear: thisYear - 72,
+  });
+  assert.equal(senior.status, 201, JSON.stringify(senior.body));
+  assert.equal(senior.body.user.priorityCategory, 'ELDERLY');
+  assert.equal(senior.body.user.dateOfBirth, `${thisYear - 72}-01-01`);
+  const token = await ctx.api.post('/tokens', senior.body.token, { doctorId: room.doctorId });
+  assert.equal(token.status, 201);
+  assert.equal(token.body.priorityLevel, 1, 'senior walk-in queued with priority');
+
+  const young = await ctx.api.post('/auth/guest', null, { priority: 'URGENT_SENIOR', birthYear: thisYear - 30 });
+  assert.equal(young.status, 400);
+  assert.match(young.body.error.message, /reception desk/);
+  assert.equal((await ctx.api.post('/auth/guest', null, { priority: 'URGENT_SENIOR' })).status, 400);
+  assert.equal((await ctx.api.post('/auth/guest', null, { priority: 'EMERGENCY' })).status, 400);
+  // A phone that already has an account must sign in instead.
+  const taken = await ctx.api.post('/auth/guest', null, { phone: '03001234567' });
+  assert.equal(taken.status, 409);
+  assert.equal((await ctx.api.post('/auth/guest', null, { phone: '12' })).status, 400);
+});
+
 test('demo load simulator fills the doctor queue with N synthetic tokens through the normal path', async () => {
   const before = (await ctx.api.get(`/service-points/${room.id}/queue`, doctorToken)).body.waiting.length;
   const guest = (await ctx.api.post('/auth/guest', null, {})).body;

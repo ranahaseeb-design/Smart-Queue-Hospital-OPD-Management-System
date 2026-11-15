@@ -7,7 +7,8 @@
  *   fills instantly and congestion / branch-recommendation behaviour can be shown.
  * The tokens are flagged is_synthetic, like the seeded history.
  */
-const { createRouter, notFound, forbidden } = require('../utils/errors');
+const { createRouter, notFound, forbidden, badRequest } = require('../utils/errors');
+const demoService = require('../services/demoService');
 const { signToken } = require('../middleware/auth');
 const time = require('../utils/time');
 const scheduleService = require('../services/scheduleService');
@@ -44,6 +45,26 @@ router.post('/demo/load-queue', async (req, res) => {
     issued: tokens.map((t) => ({ id: t.id, displayNumber: t.displayNumber, patientsAhead: t.patientsAhead })),
     waitingNow: last ? last.patientsAhead + 1 : 0,
   });
+});
+
+// ---- One-click committee demo data and the peak-congestion toggle (any signed-in role) ----
+router.post('/demo/seed', async (req, res) => {
+  if (!config.demoTools) throw notFound('Demo tools are not enabled');
+  res.status(201).json(await demoService.seedCommitteeDemo(getDb()));
+});
+
+router.get('/demo/peak', async (req, res) => {
+  if (!config.demoTools) throw notFound('Demo tools are not enabled');
+  const db = getDb();
+  const loads = await demoService.branchLoads(db);
+  res.json({ peakActive: await demoService.peakActive(db), branches: loads.map((l) => ({ branchId: l.branch._id, name: l.branch.name, loadPercent: Math.round(l.ratio * 100), waiting: l.waiting })) });
+});
+
+router.post('/demo/peak', async (req, res) => {
+  if (!config.demoTools) throw notFound('Demo tools are not enabled');
+  const enabled = v.bool((req.body || {}).enabled, 'enabled');
+  if (enabled === null) throw badRequest('enabled (true/false) is required');
+  res.json(await demoService.setPeakCongestion(getDb(), enabled));
 });
 
 // ---- Doctor / room switcher for committee demos ----

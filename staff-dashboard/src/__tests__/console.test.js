@@ -127,8 +127,21 @@ describe('stageActions (action bar availability with reasons)', () => {
     expect(s.start).toMatchObject({ enabled: false, reason: 'Already in service' });
     expect(s.skip).toMatchObject({ enabled: false, reason: 'Consultation already started' });
     expect(s.transfer.enabled).toBe(false);
-    expect(s.complete).toMatchObject({ enabled: true, next: true, label: 'Complete consultation' });
+    expect(s.complete).toMatchObject({ enabled: true, next: true, label: 'Complete visit' });
     expect(s.linked).toBeUndefined();
+    expect(s['refer-pharmacy']).toBeUndefined(); // only doctors (canIssueLinked) refer
+  });
+
+  it('doctors complete and refer to the pharmacy or lab in one step (OPD only)', () => {
+    const c = byId(stageActions({ token: called, canIssueLinked: true }));
+    expect(c['refer-pharmacy']).toMatchObject({ enabled: true, label: 'Complete & refer to Pharmacy' });
+    expect(c['refer-lab']).toMatchObject({ enabled: true, label: 'Complete & refer to Lab' });
+    expect(c.skip.label).toBe('Skip / No-show');
+    const none = byId(stageActions({ token: null, canIssueLinked: true }));
+    expect(none['refer-pharmacy']).toMatchObject({ enabled: false, reason: 'No patient in the room' });
+    const counter = byId(stageActions({ token: called, canIssueLinked: true, servicePointType: 'PHARMACY' }));
+    expect(counter['refer-pharmacy']).toBeUndefined();
+    expect(counter.complete.label).toBe('Complete service');
   });
 
   it('disables everything without reasons while a request runs, and guards other doctors’ tokens', () => {

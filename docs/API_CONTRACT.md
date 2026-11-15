@@ -28,13 +28,13 @@ mobile app are built against. Requirement IDs (FR-xx) refer to the FYP documenta
 | Role | Login | Password |
 |---|---|---|
 | Hospital Admin | `admin@opd.test` | `Admin@123` |
-| Branch Admin (branch 1) | `branchadmin@opd.test` | `Admin@123` |
+| Branch Admin (Model Town) | `branchadmin@opd.test` | `Admin@123` |
 | Doctor (staff, OPD room) | `doctor1@opd.test` … `doctorN@opd.test` | `Staff@123` |
 | Lab staff (branch 1) | `lab1@opd.test` | `Staff@123` |
 | Pharmacy staff (branch 1) | `pharmacy1@opd.test` | `Staff@123` |
 | Patient | `patient@opd.test` (phone `03001234567`) | `Patient@123` |
 
-Seed: 3 Lahore branches — **Gulberg** (branch 1, 31.5160, 74.3429), **Johar Town** (31.4697, 74.2728) and **DHA** (Phase 5, 31.4627, 74.4067) — each with the same 4 standardised specialties (**Cardiology, Gynaecology, General Medicine, Orthopedics**), 2 doctors per department (24 doctors, `doctor1@opd.test` … `doctor24@opd.test`, each with a distinct rolling `avg_consult_minutes`), one OPD room per doctor, one LAB and one PHARMACY counter per branch, schedules Mon–Sun, ~60 days of **synthetic** history (tokens, queue events, wait predictions with `features`, feedback) flagged `is_synthetic`, plus live queues today (WAITING/CALLED/IN_SERVICE tokens, some priority and appointment tokens, linked LAB/PHARMACY tokens) with at least one department at HIGH or CRITICAL live congestion so alerts and recommendations show.
+Seed: 3 Lahore branches — **Model Town** (branch 1, 31.4834, 74.3255), **Gulberg** (31.5204, 74.3587) and **Johar Town** (31.4697, 74.2728) — with 4–5 departments each from the standardised specialties (General Medicine, Cardiology, Pediatrics, ENT, Orthopedics, Dermatology), 2 doctors per department (28 doctors, `doctor1@opd.test` … `doctor28@opd.test`; Model Town: 10 doctors and 12 service points, e.g. Room 1 — Dr. Ahmed Raza), one OPD room per doctor, one LAB and one PHARMACY counter per branch (Model Town: Nasir Mehmood `lab1`, Sobia Anjum `pharmacy1`), schedules Mon–Sun, ~60 days of **synthetic** history flagged `is_synthetic`. Branch admin Kamran Butt (Model Town), hospital admin Ayesha Siddiqui. Live demo activity on top of the seed: `POST /demo/seed` (see Demo tools).
 
 ---
 

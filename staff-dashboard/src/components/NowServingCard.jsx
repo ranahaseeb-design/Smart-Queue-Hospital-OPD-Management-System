@@ -15,6 +15,8 @@ const ICONS = {
   recall: 'refresh',
   transfer: 'transfer',
   linked: 'flask',
+  'refer-pharmacy': 'pill',
+  'refer-lab': 'flask',
   complete: 'check',
 };
 
@@ -25,6 +27,8 @@ const BUSY_LABELS = {
   recall: 'Recalling…',
   transfer: 'Transferring…',
   linked: 'Issuing…',
+  'refer-pharmacy': 'Referring…',
+  'refer-lab': 'Referring…',
   complete: 'Completing…',
 };
 
@@ -65,6 +69,7 @@ export default function NowServingCard({
   onSkip,
   onTransfer,
   onIssueLinked,
+  onReferComplete = () => {},
   onRecall = () => {},
   servicePointType = 'OPD',
   roomName = null,
@@ -94,6 +99,8 @@ export default function NowServingCard({
     recall: (a) => a.target && onRecall(a.target),
     transfer: onTransfer,
     linked: onIssueLinked,
+    'refer-pharmacy': () => onReferComplete('PHARMACY'),
+    'refer-lab': () => onReferComplete('LAB'),
     complete: onComplete,
   };
 
@@ -104,6 +111,8 @@ export default function NowServingCard({
     recall: (a) => (a.target ? `Recall ${a.target.displayNumber}` : 'Recall a skipped token'),
     transfer: dn ? `Transfer ${dn} to another doctor or service point` : 'Transfer',
     linked: dn ? `Issue a linked laboratory or pharmacy token for ${dn}` : 'Issue linked token',
+    'refer-pharmacy': dn ? `Complete ${dn} and refer to the pharmacy counter` : 'Complete and refer to pharmacy',
+    'refer-lab': dn ? `Complete ${dn} and refer to the laboratory` : 'Complete and refer to lab',
     complete: dn ? `Mark ${dn} as completed` : `Complete ${serviceWord}`,
   };
 

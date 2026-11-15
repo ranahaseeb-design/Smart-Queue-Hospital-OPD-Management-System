@@ -76,7 +76,7 @@ export function stageActions({
 
   actions.push({
     id: 'skip',
-    label: 'Skip (absent)',
+    label: 'Skip / No-show',
     ...gate(
       called && operable,
       !token ? 'Call a patient first' : otherDoctor || `${isOpd ? 'Consultation' : 'Service'} already started`,
@@ -114,9 +114,20 @@ export function stageActions({
     });
   }
 
+  // OPD doctors: finish the consultation and send the patient on in one step (FR-04): the linked
+  // PHARMACY / LAB token joins that counter's queue for the same visit, then the OPD token completes.
+  if (isOpd && canIssueLinked) {
+    const referGate = gate(
+      Boolean(token) && token.visitId != null && operable,
+      !token ? 'No patient in the room' : otherDoctor || 'Not linked to a visit',
+    );
+    actions.push({ id: 'refer-pharmacy', label: 'Complete & refer to Pharmacy', ...referGate, next: false });
+    actions.push({ id: 'refer-lab', label: 'Complete & refer to Lab', ...referGate, next: false });
+  }
+
   actions.push({
     id: 'complete',
-    label: isOpd ? 'Complete consultation' : 'Complete service',
+    label: isOpd ? 'Complete visit' : 'Complete service',
     ...gate(Boolean(token) && operable, !token ? 'No patient in the room' : otherDoctor),
     next: inService && operable,
   });

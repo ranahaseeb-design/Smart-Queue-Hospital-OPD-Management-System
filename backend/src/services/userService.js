@@ -214,16 +214,16 @@ function randomTag() {
  * Create a PATIENT account with a generated identity (walk-in guest or demo patient). The
  * random password is never returned, so the account is only usable through the JWT issued now.
  */
-async function createGeneratedPatient(db, { fullName, domain }) {
+async function createGeneratedPatient(db, { fullName, domain, phone = null, dateOfBirth = null, priorityCategory = 'NONE' }) {
   const tag = randomTag();
   const insertId = await insertOne(db, User, {
     full_name: fullName,
     email: `${domain === DEMO_EMAIL_DOMAIN ? 'demo' : 'walkin'}-${tag}@${domain}`,
-    phone: null,
+    phone,
     password_hash: await hashPassword(crypto.randomBytes(24).toString('hex')),
     role: 'PATIENT',
-    date_of_birth: null,
-    priority_category: 'NONE',
+    date_of_birth: dateOfBirth,
+    priority_category: priorityCategory,
     admin_branch_id: null,
     fcm_token: null,
     is_active: true,
@@ -232,11 +232,33 @@ async function createGeneratedPatient(db, { fullName, domain }) {
   return getUserRow(db, insertId);
 }
 
-/** POST /auth/guest — 1-click walk-in check-in at the kiosk (optional display name). */
+/**
+ * POST /auth/guest — 1-click walk-in check-in at the kiosk. Optional name and phone, and
+ * `priority`: NORMAL (default) or URGENT_SENIOR. Senior priority (FR-13, ELDERLY) needs the year
+ * of birth (age >= ELDERLY_MIN_AGE this year; stored as 1 January of that year — the kiosk only
+ * asks the year). Emergency priority is never self-declared: staff set it at the desk.
+ */
 async function guestCheckIn(db, body = {}) {
   const name = v.str(body.fullName, 'fullName', { min: 2, max: 100 });
   const fullName = name || `Walk-in Guest ${crypto.randomInt(1000, 10000)}`;
-  return createGeneratedPatient(db, { fullName, domain: GUEST_EMAIL_DOMAIN });
+  const phone = v.phone(body.phone);
+  if (phone) await assertUnique(db, { email: null, phone });
+  const priority = v.oneOf(body.priority, 'priority', ['NORMAL', 'URGENT_SENIOR']) || 'NORMAL';
+  let dateOfBirth = null;
+  let priorityCategory = 'NONE';
+  if (priority === 'URGENT_SENIOR') {
+    const thisYear = Number(time.today().slice(0, 4));
+    const birthYear = v.int(body.birthYear, 'birthYear', { min: 1900, max: thisYear });
+    if (!birthYear || thisYear - birthYear < ELDERLY_MIN_AGE) {
+      throw badRequest(
+        `Senior priority is for patients aged ${ELDERLY_MIN_AGE} or over (enter the year of birth). `
+        + 'For an urgent medical need, please tell the reception desk — staff set emergency priority.'
+      );
+    }
+    dateOfBirth = `${birthYear}-01-01`;
+    priorityCategory = 'ELDERLY';
+  }
+  return createGeneratedPatient(db, { fullName, domain: GUEST_EMAIL_DOMAIN, phone, dateOfBirth, priorityCategory });
 }
 
 /** Demo patients for the queue load simulator ("Demo Patient 1" …). */

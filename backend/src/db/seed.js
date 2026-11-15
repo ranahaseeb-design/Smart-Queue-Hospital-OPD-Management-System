@@ -5,7 +5,7 @@
  * ordered:false (no transaction: the database is new and nobody else is using it).
  *
  * Master data (docs/API_CONTRACT.md, "Seed / demo accounts"):
- *   - 3 Lahore branches (Model Town, Gulberg, DHA), 4-5 departments each from the standardised
+ *   - 3 Lahore branches (Model Town, Gulberg, Johar Town), 4-5 departments each from the standardised
  *     specialties (General Medicine and Cardiology at every branch), 2 doctors per department,
  *     one OPD room per doctor, one LAB and one PHARMACY counter per branch;
  *   - accounts: admin@opd.test, branchadmin@opd.test (branch 1) / Admin@123,
@@ -51,10 +51,10 @@ const BRANCHES = [
     specialties: ['General Medicine', 'Cardiology', 'Dermatology', 'Pediatrics'],
   },
   {
-    name: 'DHA',
-    address: 'Sector C, Phase 5, DHA, Lahore',
+    name: 'Johar Town',
+    address: 'Main Boulevard, Block G1, Johar Town, Lahore',
     latitude: 31.4697,
-    longitude: 74.4091,
+    longitude: 74.2728,
     specialties: ['General Medicine', 'Cardiology', 'Orthopedics', 'Dermatology', 'ENT'],
   },
 ];

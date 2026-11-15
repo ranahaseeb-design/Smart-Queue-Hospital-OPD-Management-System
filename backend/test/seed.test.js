@@ -51,7 +51,7 @@ test('master data: 3 Lahore branches, 4-5 departments, 2 doctors each, rooms, co
   const branches = await M.Branch.find().sort({ _id: 1 }).lean();
   assert.deepEqual(
     branches.map((b) => [b.name, b.latitude, b.longitude]),
-    [['Model Town', 31.4834, 74.3255], ['Gulberg', 31.5204, 74.3587], ['DHA', 31.4697, 74.4091]]
+    [['Model Town', 31.4834, 74.3255], ['Gulberg', 31.5204, 74.3587], ['Johar Town', 31.4697, 74.2728]]
   );
   const allowed = ['General Medicine', 'Cardiology', 'Pediatrics', 'ENT', 'Orthopedics', 'Dermatology'];
   for (const b of branches) {

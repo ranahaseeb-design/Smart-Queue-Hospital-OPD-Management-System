@@ -166,6 +166,23 @@ function QueueScreen({ servicePointId, pointInfo }) {
 
   const complete = (t) => run('complete', () => api.complete(t.id), { success: `${t.displayNumber} completed.` });
 
+  // FR-04 in one step: the linked PHARMACY / LAB token joins that counter's queue for the same
+  // visit (the patient's pass moves to stage 3), then the OPD consultation completes.
+  const referAndComplete = (t, type) =>
+    run(
+      type === 'PHARMACY' ? 'refer-pharmacy' : 'refer-lab',
+      async () => {
+        const linked = await api.issueLinkedToken(t.visitId, type);
+        await api.complete(t.id);
+        return linked;
+      },
+      {
+        errorPrefix: `Could not refer to ${type === 'PHARMACY' ? 'the pharmacy' : 'the lab'}`,
+        success: (linked) =>
+          `${t.displayNumber} completed and referred: ${linked.displayNumber} at ${linked.servicePoint ? linked.servicePoint.name : type}.`,
+      },
+    );
+
   const skip = async (t) => {
     await run('skip', () => api.skip(t.id), {
       success: `${t.displayNumber} skipped. You can recall it from the Skipped tab.`,
@@ -391,6 +408,7 @@ function QueueScreen({ servicePointId, pointInfo }) {
                   onSkip={() => setDialog({ kind: 'skip', token: nowServing })}
                   onTransfer={() => setDialog({ kind: 'transfer', token: nowServing })}
                   onIssueLinked={() => setDialog({ kind: 'linked', token: nowServing })}
+                  onReferComplete={(type) => referAndComplete(nowServing, type)}
                   onRecall={recall}
                 />
                 <SummaryTiles summary={summary} servicePointType={servicePoint.type} />

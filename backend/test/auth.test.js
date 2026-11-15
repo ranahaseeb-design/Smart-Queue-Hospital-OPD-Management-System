@@ -176,7 +176,7 @@ test('browse: branches, specialties, departments, doctors (FR-02)', async () => 
   assert.equal(branches.status, 200);
   assert.deepEqual(
     branches.body.map((b) => b.name),
-    ['Model Town', 'Gulberg', 'DHA']
+    ['Model Town', 'Gulberg', 'Johar Town']
   );
   assert.equal(branches.body[0].latitude, 31.4834);
   assert.equal(branches.body[0].longitude, 74.3255);

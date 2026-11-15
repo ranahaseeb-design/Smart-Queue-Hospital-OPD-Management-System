@@ -49,12 +49,18 @@ router.get('/branches/:id/departments', async (req, res) => {
   const rows = await Department.find({ branch_id: branchId, is_active: true }).sort({ specialty: 1, _id: 1 }).session(sess(db)).lean();
   const out = [];
   for (const d of rows) {
+    const congestion = await queueService.departmentCongestion(db, d._id);
     out.push({
       id: d._id,
       branchId: d.branch_id,
       specialty: d.specialty,
       name: d.name,
       doctorCount: (await activeDoctorIds(db, d._id)).length,
+      // Live load (Eq. 6.5): waiting tokens ÷ remaining capacity of the department's sessions.
+      waiting: congestion.waiting,
+      congestionRatio: congestion.ratio,
+      congestionLevel: congestion.level,
+      loadPercent: Math.round(congestion.ratio * 100),
     });
   }
   res.json(out);

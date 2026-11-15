@@ -104,7 +104,7 @@ describe('NowServingCard', () => {
     expect(inService).toContain('pace--critical'); // 16 min against a 10 min average
     expect(inService).toContain('Well over average');
     expect(inService).toMatch(/class="action action--complete is-next/);
-    expect(inService).toContain('>Complete consultation<');
+    expect(inService).toContain('>Complete visit<');
   });
 
   it('explains every disabled action when the room is empty', () => {
@@ -134,7 +134,7 @@ describe('NowServingCard', () => {
       <NowServingCard token={{ ...calledToken, status: 'IN_SERVICE' }} servicePointType="LAB" waitingCount={0} busy={null} {...handlers} />,
     );
     expect(html).toContain('>Complete service<');
-    expect(html).not.toContain('Complete consultation');
+    expect(html).not.toContain('Complete visit');
   });
 
   it('hides "Issue linked token" unless a doctor works in an OPD room (FR-04)', () => {

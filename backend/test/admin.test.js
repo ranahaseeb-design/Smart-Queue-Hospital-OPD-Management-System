@@ -41,25 +41,25 @@ test('branches: hospital admin CRUD with soft deactivation; branch admin read-on
   assert.equal((await ctx.api.put('/admin/branches/1', branchAdmin, { name: 'X' })).status, 403);
   assert.equal((await ctx.api.del('/admin/branches/1', branchAdmin)).status, 403);
 
-  assert.equal((await ctx.api.post('/admin/branches', admin, { name: 'Johar Town' })).status, 400);
-  assert.equal((await ctx.api.post('/admin/branches', admin, { name: 'Johar Town', latitude: 95, longitude: 74 })).status, 400);
+  assert.equal((await ctx.api.post('/admin/branches', admin, { name: 'Wapda Town' })).status, 400);
+  assert.equal((await ctx.api.post('/admin/branches', admin, { name: 'Wapda Town', latitude: 95, longitude: 74 })).status, 400);
   const res = await ctx.api.post('/admin/branches', admin, {
-    name: 'Johar Town',
-    address: 'Block G, Johar Town, Lahore',
+    name: 'Wapda Town',
+    address: 'Block G, Wapda Town, Lahore',
     latitude: 31.4697,
     longitude: 74.2728,
     status: 'ACTIVE',
   });
   assert.equal(res.status, 201);
-  assert.equal(res.body.name, 'Johar Town');
+  assert.equal(res.body.name, 'Wapda Town');
   assert.equal(res.body.status, 'ACTIVE');
   created.branch = res.body;
   assert.equal((await ctx.api.post('/admin/branches', admin, { name: 'johar town', latitude: 1, longitude: 1 })).status, 409);
 
-  const upd = await ctx.api.put(`/admin/branches/${created.branch.id}`, admin, { address: 'Johar Town, Lahore' });
+  const upd = await ctx.api.put(`/admin/branches/${created.branch.id}`, admin, { address: 'Wapda Town, Lahore' });
   assert.equal(upd.status, 200);
-  assert.equal(upd.body.address, 'Johar Town, Lahore');
-  assert.equal((await ctx.api.get(`/admin/branches/${created.branch.id}`, admin)).body.name, 'Johar Town');
+  assert.equal(upd.body.address, 'Wapda Town, Lahore');
+  assert.equal((await ctx.api.get(`/admin/branches/${created.branch.id}`, admin)).body.name, 'Wapda Town');
   assert.equal((await ctx.api.get('/admin/branches/999', admin)).status, 404);
   assert.equal((await ctx.api.get('/admin/branches/abc', admin)).status, 400);
 });
@@ -86,7 +86,7 @@ test('departments: CRUD, duplicate specialty 409, branch admin scoped to own bra
     isActive: true,
   });
   assert.equal(res.status, 201);
-  assert.equal(res.body.branchName, 'Johar Town');
+  assert.equal(res.body.branchName, 'Wapda Town');
   assert.equal(res.body.isActive, true);
   assert.equal(res.body.doctorCount, 0);
   created.department = res.body;
@@ -142,7 +142,7 @@ test('doctors: create STAFF user + doctor, login works, update, soft delete bloc
     assert.ok(key in res.body, key);
   }
   assert.equal(res.body.avgConsultMinutes, 12.5);
-  assert.equal(res.body.branchName, 'Johar Town');
+  assert.equal(res.body.branchName, 'Wapda Town');
   assertNoSecrets(assert, res.body);
   created.doctor = res.body;
   assert.equal((await ctx.api.post('/admin/doctors', admin, body)).status, 409);

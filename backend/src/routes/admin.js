@@ -13,6 +13,8 @@ const analyticsService = require('../services/analyticsService');
 const forecastService = require('../services/forecastService');
 const settingsService = require('../services/settingsService');
 const ai = require('../services/aiClient');
+const operationsService = require('../services/operationsService');
+const time = require('../utils/time');
 
 const router = createRouter();
 
@@ -74,6 +76,50 @@ router.get('/reports', async (req, res) => {
     return;
   }
   res.json(report);
+});
+
+// ---- Haversine cross-branch load balancer (FR-08/09, FR-15, FR-18) ----
+router.get('/load-balancer', async (req, res) => {
+  res.json(await operationsService.loadBalancer(getDb(), req.user));
+});
+
+// ---- Forecast / model status banner (FR-17, FR-22) ----
+// Which engine produced the current forecasts (ai = Random Forest in the AI service, baseline =
+// seasonal average) and the active waiting-time model's training size and validation MAE.
+router.get('/forecast-status', async (req, res) => {
+  const db = getDb();
+  const since = time.startOfDay(time.clock.now());
+  const rows = await models.Forecast.aggregate([
+    { $match: { forecast_hour: { $gte: since } } },
+    { $group: { _id: '$source', rows: { $sum: 1 }, generatedAt: { $max: '$generated_at' } } },
+  ]);
+  const latest = rows.sort((a, b) => new Date(b.generatedAt) - new Date(a.generatedAt))[0] || null;
+  let waitModel = null;
+  let aiAvailable = true;
+  try {
+    const versions = await ai.listModels();
+    const active = (versions || []).find((m) => m.isActive);
+    if (active) {
+      waitModel = {
+        version: active.version,
+        trainedAt: active.trainedAt,
+        trainingRows: active.trainingRows,
+        testRows: active.metrics ? active.metrics.testRows : null,
+        maeMinutes: active.metrics ? active.metrics.mae : null,
+        baselineMaeMinutes: active.metrics ? active.metrics.baselineMae : null,
+        r2: active.metrics ? active.metrics.r2 : null,
+      };
+    }
+  } catch {
+    aiAvailable = false;
+  }
+  res.json({
+    aiAvailable,
+    forecast: latest
+      ? { source: latest._id, engine: latest._id === 'ai' ? 'Random Forest Regressor (AI service)' : 'Seasonal baseline (fallback)', rows: latest.rows, generatedAt: time.toApi(latest.generatedAt) }
+      : null,
+    waitModel,
+  });
 });
 
 // ---- Congestion / peak-hour forecasts (FR-17) ----
