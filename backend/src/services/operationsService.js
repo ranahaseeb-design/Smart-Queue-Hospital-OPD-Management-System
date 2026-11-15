@@ -132,6 +132,9 @@ async function displayBoard(db, requestedBranchId = null, now = time.clock.now()
     .session(sess(db))
     .lean();
   const doctors = await demoService.doctorsToday(db, now);
+  // Random Forest wait for a patient joining each doctor's queue now (Eq. 6.2 fallback).
+  const accepting = doctors.filter((d) => d.branch_id === branchId && d.acceptingNow);
+  const predictions = await predictionService.predictHypothetical(db, accepting, { now });
 
   const servicePoints = [];
   for (const sp of points) {
@@ -139,6 +142,7 @@ async function displayBoard(db, requestedBranchId = null, now = time.clock.now()
     const serving = here.filter((t) => t.status !== 'WAITING').sort((a, b) => new Date(b.called_at) - new Date(a.called_at))[0] || null;
     const waiting = here.filter((t) => t.status === 'WAITING');
     const doctor = sp.type === 'OPD' ? doctors.find((d) => d.session.servicePointId === sp._id) : null;
+    const estimate = doctor && doctor.acceptingNow ? predictions.get(doctor.doctor_id) : null;
     servicePoints.push({
       id: sp._id,
       name: sp.name,
@@ -154,12 +158,13 @@ async function displayBoard(db, requestedBranchId = null, now = time.clock.now()
         fromAppointment: Boolean(t.appointment_id),
       })),
       waiting: waiting.length,
+      // OPD rooms: predicted wait for a new patient (null for counters / doctors not accepting).
+      estimatedWaitMinutes: estimate ? Math.round(estimate.minutes) : null,
+      estimateModelVersion: estimate ? estimate.modelVersion : null,
     });
   }
 
   const departments = [];
-  const accepting = doctors.filter((d) => d.branch_id === branchId && d.acceptingNow);
-  const predictions = await predictionService.predictHypothetical(db, accepting, { now });
   const depts = await Department.find({ branch_id: branchId, is_active: true }).session(sess(db)).lean();
   for (const d of depts) {
     const c = await queueService.departmentCongestion(db, d._id, now);

@@ -109,7 +109,7 @@ test('waiting-room board: token numbers per room and counter, no patient names, 
   assert.ok(board.body.departments.length > 0);
   // No patient data: only these fields exist on the board (doctor names are public room labels).
   const allowed = {
-    servicePoint: ['id', 'name', 'type', 'departmentName', 'doctorName', 'nowServing', 'next', 'waiting'],
+    servicePoint: ['id', 'name', 'type', 'departmentName', 'doctorName', 'nowServing', 'next', 'waiting', 'estimatedWaitMinutes', 'estimateModelVersion'],
     serving: ['displayNumber', 'status', 'calledAt'],
     next: ['displayNumber', 'priorityLevel', 'fromAppointment'],
   };
