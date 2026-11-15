@@ -152,9 +152,30 @@ async function register(db, body) {
 }
 
 /** POST /auth/login — identifier is an e-mail address or a phone number. */
+/**
+ * Login portals of the dashboards' four-card sign-in screen. Doctors and other staff share the
+ * STAFF role; a doctor is a STAFF account with a doctor profile (as `doctorId` in the User shape).
+ */
+const LOGIN_PORTALS = ['DOCTOR', 'STAFF', 'BRANCH_ADMIN', 'HOSPITAL_ADMIN'];
+const PORTAL_LABELS = {
+  DOCTOR: 'Doctor Login',
+  STAFF: 'Staff Login',
+  BRANCH_ADMIN: 'Branch Administrator',
+  HOSPITAL_ADMIN: 'Hospital Administrator',
+};
+
+/** The portal an account belongs to, or null for patients (they use the patient apps). */
+async function portalOf(db, row) {
+  if (row.role === 'BRANCH_ADMIN' || row.role === 'HOSPITAL_ADMIN') return row.role;
+  if (row.role !== 'STAFF') return null;
+  const doctor = await Doctor.findOne({ user_id: row.user_id }, { _id: 1 }).session(sess(db)).lean();
+  return doctor ? 'DOCTOR' : 'STAFF';
+}
+
 async function login(db, body) {
   const identifier = v.str(body.identifier, 'identifier', { required: true, max: 120 });
   const password = v.str(body.password, 'password', { required: true, trim: false, max: 128 });
+  const portal = v.oneOf(body.portal, 'portal', LOGIN_PORTALS);
   let row;
   if (identifier.includes('@')) {
     row = asRow(User, await User.findOne({ email: identifier.toLowerCase() }).session(sess(db)).lean());
@@ -165,6 +186,17 @@ async function login(db, body) {
     throw unauthorized('Invalid credentials');
   }
   if (!row.is_active) throw forbidden('This account has been deactivated');
+  // Portal check after the password, so a wrong password never reveals the account's role.
+  if (portal) {
+    const actual = await portalOf(db, row);
+    if (actual !== portal) {
+      throw forbidden(
+        actual
+          ? `This account can't sign in with ${PORTAL_LABELS[portal]}. Go back and choose “${PORTAL_LABELS[actual]}”.`
+          : `Patient accounts cannot sign in here. Please use the Smart OPD patient app.`
+      );
+    }
+  }
   return row;
 }
 

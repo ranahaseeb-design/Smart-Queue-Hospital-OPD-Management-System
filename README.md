@@ -103,7 +103,10 @@ See [mobile_app/README.md](mobile_app/README.md) for details.
 
 ## Demo accounts
 
-Development only, created by `npm run seed`:
+Development only, created by `npm run seed`. Both dashboards open on the same four-card login
+(Doctor, Staff, Branch Administrator, Hospital Administrator); pick the card that matches the
+account — the backend refuses a token when the account type and the card differ. Doctor and Staff
+sign in on the Staff Dashboard, the administrator cards open the Admin Dashboard.
 
 | Role | Login | Password |
 |---|---|---|

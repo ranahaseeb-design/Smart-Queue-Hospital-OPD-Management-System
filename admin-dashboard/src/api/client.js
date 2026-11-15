@@ -131,8 +131,12 @@ export const api = {
   del: (path, opts = {}) => request('DELETE', path, opts),
 
   /** POST /auth/login. A 401 here means wrong credentials, so it must not trigger logout. */
-  login: (identifier, password) =>
-    request('POST', '/auth/login', { body: { identifier, password }, auth: false }),
+  // `portal` (BRANCH_ADMIN | HOSPITAL_ADMIN) makes the backend verify the account type first.
+  login: (identifier, password, portal) =>
+    request('POST', '/auth/login', {
+      body: portal ? { identifier, password, portal } : { identifier, password },
+      auth: false,
+    }),
 
   /**
    * Downloads a file (e.g. report CSV, FR-16) with the auth header and saves it via a blob URL.

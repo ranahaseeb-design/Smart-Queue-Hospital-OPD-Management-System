@@ -94,7 +94,7 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 |---|---|---|---|
 | GET | `/health` | – | `{ status: "ok", db: "mongodb", ai: true|false }` |
 | POST | `/auth/register` | `{ fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }` (≥1 of email/phone, password ≥ 6) | 201 `{ token, user }` — role is always PATIENT. `ELDERLY` is derived from `dateOfBirth` (age ≥ 60, set automatically); declaring it without a qualifying `dateOfBirth` → 400. `DIFFERENTLY_ABLED` may be declared (staff confirm per token) |
-| POST | `/auth/login` | `{ identifier, password }` (identifier = email or phone) | `{ token, user }` |
+| POST | `/auth/login` | `{ identifier, password, portal? }` (identifier = email or phone; `portal` = `DOCTOR` \| `STAFF` \| `BRANCH_ADMIN` \| `HOSPITAL_ADMIN`, case-insensitive) | `{ token, user }`. With `portal` (the dashboards' four-card sign-in), the account must match **after** the password check, else 403 `FORBIDDEN` naming the right card and no token: `DOCTOR` = STAFF with a doctor profile, `STAFF` = STAFF without one, admins by role; patients are refused. Wrong password stays 401 without revealing the account type; unknown `portal` 400. Without `portal` (mobile app) any active account signs in |
 | GET | `/auth/me` | – | `{ user }` |
 | PUT | `/auth/me` | `{ fullName?, email?, phone?, dateOfBirth?, priorityCategory?, password? }` | `{ user }` (same `priorityCategory` rules as register) |
 

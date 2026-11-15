@@ -9,6 +9,9 @@ export const API_URL = trimSlash(env.VITE_API_URL || 'http://localhost:4000');
 /** Socket.IO origin; same server as the REST API unless overridden. */
 export const SOCKET_URL = trimSlash(env.VITE_SOCKET_URL || API_URL);
 
+/** Admin Dashboard origin — the administrator login cards link there. */
+export const ADMIN_APP_URL = trimSlash(env.VITE_ADMIN_APP_URL || 'http://localhost:5174');
+
 /** Fallback polling interval used while the live channel is down (FR-05, NFR-01). */
 export const POLL_INTERVAL_MS = 15000;
 

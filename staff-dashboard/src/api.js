@@ -120,7 +120,9 @@ const enc = encodeURIComponent;
 
 export const api = {
   // FR-01 authentication
-  login: (identifier, password) => request('POST', '/auth/login', { identifier, password }, { auth: false }),
+  // `portal` (DOCTOR | STAFF) makes the backend verify the account type before issuing a token.
+  login: (identifier, password, portal) =>
+    request('POST', '/auth/login', portal ? { identifier, password, portal } : { identifier, password }, { auth: false }),
   me: () => request('GET', '/auth/me'),
 
   // FR-12 staff queue view and operations

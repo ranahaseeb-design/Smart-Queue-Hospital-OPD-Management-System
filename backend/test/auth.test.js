@@ -85,6 +85,46 @@ test('login with e-mail or phone; wrong password is 401', async () => {
   assert.equal(missing.status, 400);
 });
 
+test('login portal: the four-card sign-in only issues a token to the matching account type', async () => {
+  const as = (identifier, password, portal) => ctx.api.post('/auth/login', null, { identifier, password, portal });
+  // Matching portal → 200 (doctors and other staff share the STAFF role; a doctor has a doctor profile).
+  const okCases = [
+    ['doctor1@opd.test', 'Staff@123', 'DOCTOR'],
+    ['lab1@opd.test', 'Staff@123', 'STAFF'],
+    ['pharmacy1@opd.test', 'Staff@123', 'staff'],
+    ['branchadmin@opd.test', 'Admin@123', 'BRANCH_ADMIN'],
+    ['admin@opd.test', 'Admin@123', 'HOSPITAL_ADMIN'],
+  ];
+  for (const [id, pw, portal] of okCases) {
+    const res = await as(id, pw, portal);
+    assert.equal(res.status, 200, `${id} via ${portal}: ${JSON.stringify(res.body)}`);
+    assert.ok(res.body.token);
+  }
+  // Wrong portal → 403 with no token, naming the right card.
+  const wrongCases = [
+    ['doctor1@opd.test', 'Staff@123', 'STAFF', 'Doctor Login'],
+    ['lab1@opd.test', 'Staff@123', 'DOCTOR', 'Staff Login'],
+    ['branchadmin@opd.test', 'Admin@123', 'HOSPITAL_ADMIN', 'Branch Administrator'],
+    ['admin@opd.test', 'Admin@123', 'BRANCH_ADMIN', 'Hospital Administrator'],
+    ['admin@opd.test', 'Admin@123', 'DOCTOR', 'Hospital Administrator'],
+  ];
+  for (const [id, pw, portal, hint] of wrongCases) {
+    const res = await as(id, pw, portal);
+    assert.equal(res.status, 403, `${id} via ${portal}`);
+    assert.equal(res.body.error.code, 'FORBIDDEN');
+    assert.equal(res.body.token, undefined);
+    assert.match(res.body.error.message, new RegExp(hint));
+  }
+  const patient = await as('patient@opd.test', 'Patient@123', 'STAFF');
+  assert.equal(patient.status, 403);
+  assert.match(patient.body.error.message, /patient app/i);
+  // A wrong password stays 401 and never reveals the account type; unknown portal is 400.
+  const wrongPw = await as('admin@opd.test', 'nope!!', 'DOCTOR');
+  assert.equal(wrongPw.status, 401);
+  assert.doesNotMatch(JSON.stringify(wrongPw.body), /Administrator/);
+  assert.equal((await as('admin@opd.test', 'Admin@123', 'SUPERUSER')).status, 400);
+});
+
 test('ELDERLY is derived from the date of birth (age >= 60); DIFFERENTLY_ABLED may be declared (FR-13)', async () => {
   const reg = (extra) => ctx.api.post('/auth/register', null, { fullName: 'Prio Test', password: 'secret1', ...extra });
   const noDob = await reg({ email: 'prio1@example.com', priorityCategory: 'ELDERLY' });

@@ -64,8 +64,8 @@ export function AuthProvider({ children }) {
     };
   }, [logout]);
 
-  const login = useCallback(async (identifier, password) => {
-    const res = await api.login(identifier.trim(), password);
+  const login = useCallback(async (identifier, password, portal) => {
+    const res = await api.login(identifier.trim(), password, portal);
     const nextUser = res && res.user;
     if (!res || !res.token || !nextUser) {
       throw new ApiError(500, 'SERVER_ERROR', 'Unexpected response from the server.');

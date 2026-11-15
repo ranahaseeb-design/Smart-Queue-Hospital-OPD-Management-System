@@ -45,8 +45,8 @@ export function AuthProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const login = useCallback(async (identifier, password) => {
-    const res = await api.login(identifier.trim(), password);
+  const login = useCallback(async (identifier, password, portal) => {
+    const res = await api.login(identifier.trim(), password, portal);
     if (!res?.token || !res?.user) {
       throw new ApiError(500, 'BAD_RESPONSE', 'Unexpected response from the server');
     }

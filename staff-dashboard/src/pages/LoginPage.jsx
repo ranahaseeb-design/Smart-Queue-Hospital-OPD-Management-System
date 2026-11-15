@@ -1,14 +1,24 @@
-// Staff sign-in (FR-01, Table 4.19 "Login"). Identifier = email or phone (POST /api/auth/login).
-// Accounts that are not STAFF are rejected with a clear explanation (Section 3.2 roles matrix).
+// Sign-in (FR-01, Table 4.19 "Login") — the four-card login screen.
+// All four login types show together; Doctor and Staff open their form here, the two
+// administrator cards open the Admin Dashboard's login with that card preselected. The chosen
+// card is sent as `portal`, so the backend refuses accounts of another type (roles matrix,
+// Section 3.2); the app also keeps only STAFF tokens (AuthContext).
 import { useEffect, useId, useRef, useState } from 'react';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
 import Icon from '../components/Icon.jsx';
+import LoginPortalPicker, { PortalIcon } from '../components/LoginPortalPicker.jsx';
 import { BrandGlyph } from '../components/Spinner.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
+import { ADMIN_APP_URL } from '../config.js';
+import { portalById, portalHref } from '../utils/loginPortals.js';
+import '../styles/portal.css';
 
-export default function LoginPage() {
-  const { token, user, login, notice, clearNotice } = useAuth();
+const LOCAL_APP = 'staff';
+const OTHER_APP_NAME = 'Admin Dashboard';
+
+function LoginForm({ portal, onBack }) {
+  const { login, notice, clearNotice } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [identifier, setIdentifier] = useState('');
@@ -20,12 +30,11 @@ export default function LoginPage() {
   const idId = useId();
   const pwId = useId();
   const errorId = useId();
+  const headingId = useId();
 
   useEffect(() => {
     identifierRef.current?.focus();
   }, []);
-
-  if (token && user) return <Navigate to="/" replace />;
 
   async function submit(e) {
     e.preventDefault();
@@ -37,7 +46,7 @@ export default function LoginPage() {
     setError(null);
     clearNotice();
     try {
-      await login(identifier, password);
+      await login(identifier, password, portal.apiPortal);
       const from = location.state && location.state.from;
       navigate(from && from !== '/login' ? from : '/', { replace: true });
     } catch (err) {
@@ -54,85 +63,138 @@ export default function LoginPage() {
   const message = error || notice;
 
   return (
-    <main className="login-page">
-      <div className="login-theme">
-        <ThemeToggle />
+    <section className="portal-form-view" aria-labelledby={headingId}>
+      <button type="button" className="portal-back" onClick={onBack}>
+        <PortalIcon name="arrowLeft" />
+        Back to login options
+      </button>
+
+      <div className="portal-form-head">
+        <span className="portal-icon portal-icon--lg" aria-hidden="true">
+          <PortalIcon name={portal.icon} />
+        </span>
+        <div>
+          <h2 id={headingId} className="portal-form-title">{portal.title}</h2>
+          <p className="portal-form-subtitle">{portal.subtitle}</p>
+        </div>
       </div>
-      <div className="login-card">
-        <div className="login-brand">
-          <span className="brand-mark brand-mark--lg" aria-hidden="true">
-            <BrandGlyph />
-          </span>
-          <div>
-            <h1 className="login-title">Smart OPD</h1>
-            <p className="login-subtitle">Staff Dashboard — doctors, OPD, laboratory and pharmacy</p>
+
+      <form onSubmit={submit} noValidate aria-describedby={message ? errorId : undefined}>
+        <div className="field">
+          <label className="field-label" htmlFor={idId}>
+            Username, email or phone
+          </label>
+          <input
+            ref={identifierRef}
+            id={idId}
+            className="input input--lg"
+            type="text"
+            inputMode="email"
+            autoComplete="username"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
+            disabled={busy}
+            required
+            aria-invalid={error && !identifier.trim() ? 'true' : undefined}
+          />
+        </div>
+
+        <div className="field">
+          <label className="field-label" htmlFor={pwId}>
+            Password
+          </label>
+          <div className="input-with-button">
+            <input
+              id={pwId}
+              className="input input--lg"
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              required
+              aria-invalid={error && !password ? 'true' : undefined}
+            />
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm input-addon"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-pressed={showPassword}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+            >
+              <Icon name={showPassword ? 'eyeOff' : 'eye'} />
+              {showPassword ? 'Hide' : 'Show'}
+            </button>
           </div>
         </div>
 
-        <form onSubmit={submit} noValidate aria-describedby={message ? errorId : undefined}>
-          <div className="field">
-            <label className="field-label" htmlFor={idId}>
-              Email or phone
-            </label>
-            <input
-              ref={identifierRef}
-              id={idId}
-              className="input input--lg"
-              type="text"
-              inputMode="email"
-              autoComplete="username"
-              value={identifier}
-              onChange={(e) => setIdentifier(e.target.value)}
-              disabled={busy}
-              required
-              aria-invalid={error && !identifier.trim() ? 'true' : undefined}
-            />
-          </div>
+        {message && (
+          <p id={errorId} className={error ? 'form-error' : 'form-notice'} role={error ? 'alert' : 'status'}>
+            <Icon name={error ? 'alert' : 'info'} />
+            {message}
+          </p>
+        )}
 
-          <div className="field">
-            <label className="field-label" htmlFor={pwId}>
-              Password
-            </label>
-            <div className="input-with-button">
-              <input
-                id={pwId}
-                className="input input--lg"
-                type={showPassword ? 'text' : 'password'}
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={busy}
-                required
-                aria-invalid={error && !password ? 'true' : undefined}
-              />
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm input-addon"
-                onClick={() => setShowPassword((v) => !v)}
-                aria-pressed={showPassword}
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-              >
-                <Icon name={showPassword ? 'eyeOff' : 'eye'} />
-                {showPassword ? 'Hide' : 'Show'}
-              </button>
-            </div>
-          </div>
+        <button type="submit" className="btn btn--primary btn--lg btn--block" disabled={busy}>
+          {busy && <span className="btn-spinner" aria-hidden="true" />}
+          {busy ? 'Signing in…' : `Sign in to ${portal.subtitle.replace(/^Access /, '')}`}
+        </button>
+      </form>
+    </section>
+  );
+}
 
-          {message && (
-            <p id={errorId} className={error ? 'form-error' : 'form-notice'} role={error ? 'alert' : 'status'}>
-              <Icon name={error ? 'alert' : 'info'} />
-              {message}
-            </p>
+export default function LoginPage() {
+  const { token, user } = useAuth();
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const selected = portalById(params.get('portal'));
+  // An administrator card in the URL belongs to the Admin Dashboard: hand over to its login.
+  const elsewhere = selected ? portalHref(selected, LOCAL_APP, ADMIN_APP_URL) : null;
+
+  useEffect(() => {
+    if (elsewhere) window.location.assign(elsewhere);
+  }, [elsewhere]);
+
+  if (token && user) return <Navigate to="/" replace />;
+  if (elsewhere) return null;
+
+  // Keep the return path (location.state) when switching between the cards and a form.
+  const choose = (portal) => setParams({ portal: portal.id }, { state: location.state });
+  const back = () => setParams({}, { state: location.state });
+
+  return (
+    <main className="portal-page">
+      <div className="portal-theme">
+        <ThemeToggle />
+      </div>
+      <div className={`portal-shell${selected ? ' portal-shell--form' : ''}`}>
+        <header className="portal-header">
+          <span className="portal-brand" aria-hidden="true">
+            <BrandGlyph />
+          </span>
+          <h1 className="portal-app-name">Smart OPD</h1>
+          {!selected && (
+            <>
+              <p className="portal-welcome">Welcome back!</p>
+              <p className="portal-lead">Select your login type to continue</p>
+            </>
           )}
+        </header>
 
-          <button type="submit" className="btn btn--primary btn--lg btn--block" disabled={busy}>
-            {busy && <span className="btn-spinner" aria-hidden="true" />}
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
+        {selected ? (
+          <LoginForm key={selected.id} portal={selected} onBack={back} />
+        ) : (
+          <LoginPortalPicker
+            localApp={LOCAL_APP}
+            otherAppUrl={ADMIN_APP_URL}
+            otherAppName={OTHER_APP_NAME}
+            onSelect={choose}
+          />
+        )}
 
-        <p className="login-footnote">
-          Administrators use the Admin Dashboard. Patients use the Smart OPD mobile app.
+        <p className="portal-footnote">
+          Patients use the Smart OPD patient app. Your role is verified when you sign in.
         </p>
       </div>
     </main>
