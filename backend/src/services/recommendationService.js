@@ -189,7 +189,13 @@ async function recommend(db, { specialty, lat = null, lng = null, excludeDoctorI
       score: scores[i],
       reason: buildReason(c, candidates, reference),
     }))
-    .sort((a, b) => a.score - b.score || a.predictedWaitMinutes - b.predictedWaitMinutes);
+    // Ties (equal score, e.g. a zero distance weight) go to the shorter wait, then the nearer branch.
+    .sort(
+      (a, b) =>
+        a.score - b.score ||
+        a.predictedWaitMinutes - b.predictedWaitMinutes ||
+        (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity)
+    );
 
   return { specialty: canonicalSpecialty, weights, items };
 }

@@ -23,10 +23,21 @@ def _call(client, method, path, body, headers=None):
     return client.post(path, json=body, headers=headers) if headers else client.post(path, json=body)
 
 
+def _all_routes(routes):
+    """Flatten app routes. FastAPI <= 0.115 copies an included router's routes into app.routes;
+    newer releases keep them inside an internal wrapper exposing ``original_router``."""
+    for route in routes:
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            yield from _all_routes(inner.routes)
+        else:
+            yield route
+
+
 def test_every_ai_route_requires_the_token():
     from app.main import app
 
-    ai_routes = [r for r in app.routes if getattr(r, "path", "").startswith("/ai")]
+    ai_routes = [r for r in _all_routes(app.routes) if (getattr(r, "path", None) or "").startswith("/ai")]
     assert len(ai_routes) >= 6
     for route in ai_routes:
         deps = [d.call.__name__ for d in route.dependant.dependencies]
