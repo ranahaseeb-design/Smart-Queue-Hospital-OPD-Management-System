@@ -15,7 +15,7 @@ const time = require('../utils/time');
 const { models, sess, byIds, nextIds } = require('../db');
 const scheduleService = require('./scheduleService');
 
-const { Department, Branch, Doctor, Token, Forecast } = models;
+const { Department, Branch, Doctor, Token, Forecast, Setting } = models;
 const fb = require('./featureBuilder');
 const ai = require('./aiClient');
 const { conflict } = require('../utils/errors');
@@ -167,19 +167,46 @@ async function runBaselineForecast(db, { now = time.clock.now(), days = 7 } = {}
   return rows.length;
 }
 
-/** POST /admin/forecasts/run — AI job first, JS seasonal baseline as fallback. */
-async function runForecasts(db, { now = time.clock.now(), days = 7, preferAi = true } = {}) {
+/** Human-readable engine names for forecast rows' `source`. */
+const ENGINE_LABELS = {
+  'rf-forecast': 'Random Forest Regressor (AI service)',
+  'seasonal-baseline': 'Seasonal baseline (chosen by the AI backtest)',
+  baseline: 'Seasonal baseline (fallback: AI service unavailable)',
+};
+
+/**
+ * POST /admin/forecasts/run — AI job first (Random Forest unless the seasonal baseline is clearly
+ * better in the backtest, or the engine the caller asks for), JS seasonal baseline as fallback.
+ * The outcome (engine, backtest MAEs) is remembered for the Forecasts status banner.
+ */
+async function runForecasts(db, { now = time.clock.now(), days = 7, preferAi = true, engine = 'auto' } = {}) {
+  let outcome;
   if (preferAi) {
-    const result = await ai.runForecastJob(days);
+    const result = await ai.runForecastJob(days, engine);
     if (result && result.pending) {
       // The AI job is busy or still running and will write its own rows: running the baseline now
       // would race with it on the same forecast hours.
       throw conflict('An AI forecast job is still running; try again in a few minutes');
     }
-    if (result) return { generated: Number(result.generated) || 0, source: 'ai' };
+    if (result) {
+      const ev = result.evaluation || {};
+      outcome = {
+        generated: Number(result.generated) || 0,
+        source: 'ai',
+        engine: result.modelVersion || 'seasonal-baseline',
+        evaluation: { rfMae: ev.rfMae ?? null, baselineMae: ev.baselineMae ?? null, trainRows: ev.trainRows ?? null, testRows: ev.testRows ?? null },
+      };
+    }
   }
-  const generated = await runBaselineForecast(db, { now, days });
-  return { generated, source: 'baseline' };
+  if (!outcome) {
+    const generated = await runBaselineForecast(db, { now, days });
+    outcome = { generated, source: 'baseline', engine: 'baseline', evaluation: null };
+  }
+  outcome.engineLabel = ENGINE_LABELS[outcome.engine] || outcome.engine;
+  outcome.generatedAt = time.toApi(now);
+  // Remembered for GET /admin/forecast-status (settings collection, key lastForecastRun).
+  await Setting.updateOne({ _id: 'lastForecastRun' }, { $set: { value: outcome, updated_at: time.dbDate(now) } }, { upsert: true });
+  return outcome;
 }
 
 function toForecast(r) {
@@ -236,4 +263,4 @@ async function listForecasts(db, { branchId = null, departmentId = null, date = 
   return rows.map(toForecast);
 }
 
-module.exports = { runBaselineForecast, runForecasts, listForecasts, forecastRows, toForecast, percentile, loadCapacity };
+module.exports = { ENGINE_LABELS, runBaselineForecast, runForecasts, listForecasts, forecastRows, toForecast, percentile, loadCapacity };

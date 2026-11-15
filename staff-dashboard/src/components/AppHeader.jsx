@@ -41,6 +41,19 @@ export default function AppHeader({ servicePoint = null }) {
 
         <div className="header-actions">
           <DemoDoctorSwitch />
+          {/* The waiting-room board lives in the combined Smart OPD Dashboard (/display). */}
+          {typeof window !== 'undefined' && window.__SMARTOPD_UNIFIED__ && (
+            <a
+              className="btn btn--secondary btn--sm"
+              href="/display"
+              target="_blank"
+              rel="noopener"
+              title="Open the waiting-room display board in a new tab"
+            >
+              <Icon name="monitor" />
+              <span className="hide-sm">Waiting room display</span>
+            </a>
+          )}
           {servicePoint && canSwitch && (
             <button
               type="button"

@@ -99,7 +99,7 @@ test('peak congestion toggle pushes Model Town above 85 % and back; the load bal
 });
 
 test('waiting-room board: token numbers per room and counter, no patient names, branch-scoped', async () => {
-  const board = await ctx.api.get('/display', pharmacyToken);
+  const board = await ctx.api.get('/display', null);
   assert.equal(board.status, 200, JSON.stringify(board.body));
   assert.equal(board.body.branch.name, 'Model Town');
   const types = board.body.servicePoints.map((s) => s.type);
@@ -120,12 +120,16 @@ test('waiting-room board: token numbers per room and counter, no patient names, 
   }
   assert.doesNotMatch(JSON.stringify(board.body), /patient|phone|email/i);
 
-  assert.equal((await ctx.api.get('/display', admin)).status, 200);
-  const gulberg = board.body.branch.id + 1;
-  assert.equal((await ctx.api.get(`/display?branchId=${gulberg}`, branchAdmin)).status, 403);
-  assert.equal((await ctx.api.get(`/display?branchId=${gulberg}`, admin)).status, 200);
-  const pt = (await ctx.api.post('/auth/guest', null, {})).body.token;
-  assert.equal((await ctx.api.get('/display', pt)).status, 403);
+  // Public: a TV opens it without signing in; any active branch can be chosen.
+  const anon = await ctx.api.get('/display', null);
+  assert.equal(anon.status, 200);
+  assert.equal(anon.body.branch.name, 'Model Town');
+  assert.equal(anon.body.branches.length, 3);
+  const gulberg = anon.body.branches.find((b) => b.name === 'Gulberg');
+  const other = await ctx.api.get(`/display?branchId=${gulberg.id}`, null);
+  assert.equal(other.status, 200);
+  assert.equal(other.body.branch.name, 'Gulberg');
+  assert.equal((await ctx.api.get('/display?branchId=999', null)).status, 404);
 });
 
 test('forecast status reports the engine of the current forecasts and the AI availability', async () => {
@@ -133,6 +137,7 @@ test('forecast status reports the engine of the current forecasts and the AI ava
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.aiAvailable, false); // AI service is down in tests
   assert.ok(res.body.forecast && ['ai', 'baseline'].includes(res.body.forecast.source));
-  assert.equal(res.body.forecast.engine, 'Seasonal baseline (fallback)');
+  assert.equal(res.body.forecast.engine, 'Seasonal baseline (fallback: AI service unavailable)');
+  assert.equal(res.body.forecast.isRandomForest, false);
   assert.equal(res.body.waitModel, null);
 });

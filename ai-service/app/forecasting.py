@@ -351,8 +351,21 @@ def _new_forest() -> RandomForestRegressor:
     )
 
 
-def select_model(grid: ForecastGrid, capacity: dict[Key, np.ndarray]) -> tuple[RandomForestRegressor | None, Backtest]:
-    """Back-test RF vs the seasonal baseline on the last 2 weeks; refit the RF on all rows if it wins."""
+# The Random Forest is the documented forecaster (Section 6.6.1); the seasonal baseline replaces it
+# only when it is clearly better: its backtest MAE must be more than RF_TOLERANCE lower.
+RF_TOLERANCE = 0.02
+ENGINES = ("auto", "rf", "baseline")
+
+
+def select_model(
+    grid: ForecastGrid, capacity: dict[Key, np.ndarray], engine: str = "auto"
+) -> tuple[RandomForestRegressor | None, Backtest]:
+    """Back-test RF vs the seasonal baseline on the last 2 weeks; refit the RF on all rows if used.
+
+    ``engine``: "auto" keeps the RF unless the baseline's MAE beats it by more than RF_TOLERANCE;
+    "rf" always uses the RF when it can be trained; "baseline" always uses the seasonal baseline.
+    The backtest is reported either way.
+    """
     result = Backtest()
     rows = _history_rows(grid, capacity)
     if rows.empty:
@@ -374,7 +387,9 @@ def select_model(grid: ForecastGrid, capacity: dict[Key, np.ndarray]) -> tuple[R
     forest.fit(train[FORECAST_FEATURES], train["target"].to_numpy(dtype=float))
     rf_pred = np.clip(forest.predict(test[FORECAST_FEATURES]), 0.0, None)
     result.rf_mae = float(np.mean(np.abs(y_test - rf_pred)))
-    if result.rf_mae >= result.baseline_mae:
+    if engine == "baseline":
+        return None, result
+    if engine == "auto" and result.rf_mae > result.baseline_mae * (1 + RF_TOLERANCE):
         return None, result
 
     result.selected = SOURCE_RF
@@ -414,17 +429,17 @@ def peak_thresholds(grid: ForecastGrid, capacity: dict[Key, np.ndarray]) -> dict
 # --------------------------------------------------------------------------- job
 
 
-def run_forecast(days: int = 7, now: datetime | None = None) -> dict:
+def run_forecast(days: int = 7, now: datetime | None = None, engine: str = "auto") -> dict:
     """FR-17: generate hourly forecasts for ``days`` days and write them to ``forecasts``."""
     if not _forecast_lock.acquire(blocking=False):
         raise ForecastBusyError("A forecasting job is already running.")
     try:
-        return _run_forecast_locked(max(1, int(days)), now or local_now())
+        return _run_forecast_locked(max(1, int(days)), now or local_now(), engine)
     finally:
         _forecast_lock.release()
 
 
-def _run_forecast_locked(days: int, now: datetime) -> dict:
+def _run_forecast_locked(days: int, now: datetime, engine: str = "auto") -> dict:
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     horizon_end = today + timedelta(days=days)
     history_from = today - timedelta(days=settings.forecast_lookback_days)
@@ -438,7 +453,7 @@ def _run_forecast_locked(days: int, now: datetime) -> dict:
     keys = sorted(set(capacity) | {(int(b), int(d)) for b, d in arrivals[["branch_id", "department_id"]].itertuples(index=False)})
     grid = build_grid(arrivals, keys, today, days)
 
-    model, backtest = select_model(grid, capacity)
+    model, backtest = select_model(grid, capacity, engine if engine in ENGINES else "auto")
     source = backtest.selected
     peaks = peak_thresholds(grid, capacity)
     predict_horizon(grid, model)

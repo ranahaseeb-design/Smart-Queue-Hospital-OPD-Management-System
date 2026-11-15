@@ -17,7 +17,9 @@ describe('geo helpers', () => {
   });
 
   it('a queue is busy above 25 min or more than 4 waiting', () => {
-    expect(CONGESTION_RULE).toEqual({ waitMinutes: 25, waiting: 4 });
+    expect(CONGESTION_RULE).toEqual({ waitMinutes: 25, waiting: 4, loadPercent: 75 });
+    expect(isCongested({ estimatedWaitMinutes: 3, queueLength: 1 }, { loadPercent: 75 })).toBe(true);
+    expect(isCongested({ estimatedWaitMinutes: 3, queueLength: 1 }, { loadPercent: 74 })).toBe(false);
     expect(isCongested({ estimatedWaitMinutes: 25, queueLength: 4 })).toBe(false);
     expect(isCongested({ estimatedWaitMinutes: 26, queueLength: 0 })).toBe(true);
     expect(isCongested({ estimatedWaitMinutes: 3, queueLength: 5 })).toBe(true);

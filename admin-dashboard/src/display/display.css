@@ -1,0 +1,84 @@
+/*
+ * Waiting-room display board (/display). Always the dark clinical palette (TV in a waiting area),
+ * very large type, >= 7:1 contrast, readable across a room. Semantic tokens only.
+ */
+body { margin: 0; background: var(--slate-950, #020617); font-family: var(--font-sans); color: var(--slate-100, #f1f5f9); }
+.dp *, .dp *::before, .dp *::after { box-sizing: border-box; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.dp {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem 2rem;
+  background: radial-gradient(1200px 600px at 0% -20%, rgba(16, 185, 129, 0.12), transparent 60%), #0f172a;
+  color: #f1f5f9;
+}
+
+.dp-head { display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; flex-wrap: wrap; }
+.dp-brand { display: flex; align-items: center; gap: 1rem; }
+.dp-mark { display: grid; place-items: center; width: 3.5rem; height: 3.5rem; border-radius: 1rem; background: linear-gradient(135deg, #10b981, #14b8a6); color: #022c22; font-size: 2.25rem; font-weight: 800; }
+.dp-brand h1 { margin: 0; font-size: clamp(1.75rem, 3vw, 2.75rem); letter-spacing: -0.01em; }
+.dp-brand p { margin: 0.25rem 0 0; color: #cbd5e1; font-size: 1.1rem; }
+.dp-tools { display: flex; align-items: center; gap: 1rem; }
+.dp-clock { font-size: clamp(1.75rem, 3vw, 2.75rem); font-weight: 700; font-variant-numeric: tabular-nums; }
+.dp-btn, .dp-select { min-height: 2.75rem; padding: 0 1rem; border: 1px solid #334155; border-radius: 0.75rem; background: #1e293b; color: #f1f5f9; font: inherit; font-size: 1rem; cursor: pointer; }
+.dp-btn:focus-visible, .dp-select:focus-visible { outline: 3px solid rgba(20, 184, 166, 0.7); outline-offset: 2px; }
+
+.dp-error, .dp-loading { margin: 0; padding: 1rem 1.25rem; border-radius: 0.75rem; background: #1e293b; color: #fcd34d; font-size: 1.25rem; }
+
+.dp-main { flex: 1; display: flex; flex-direction: column; gap: 1.25rem; }
+.dp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.25rem; }
+.dp-grid--counters { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+
+.dp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid #334155;
+  border-radius: 1.25rem;
+  background: #1e293b;
+  transition: border-color 260ms ease, box-shadow 260ms ease, transform 260ms ease;
+}
+.dp-card.has-serving { border-color: rgba(16, 185, 129, 0.55); }
+.dp-card--lab, .dp-card--pharmacy { border-style: dashed; }
+.dp-card.is-flash { animation: dp-call 1.2s ease-in-out 4; border-color: #10b981; }
+
+.dp-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; }
+.dp-room { font-size: 1.6rem; font-weight: 800; }
+.dp-type { color: #94a3b8; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.dp-doctor { margin: -0.25rem 0 0; color: #cbd5e1; font-size: 1.1rem; }
+
+.dp-now { display: flex; flex-direction: column; align-items: center; gap: 0.25rem; padding: 0.75rem; border-radius: 1rem; background: #0b1222; }
+.dp-now-label { color: #6ee7b7; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.dp-now-number { font-size: clamp(3rem, 6vw, 5rem); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.has-serving .dp-now-number { color: #34d399; }
+.dp-now-state { color: #cbd5e1; font-size: 1.05rem; }
+
+.dp-next { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.dp-next-label { color: #94a3b8; font-size: 0.95rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.dp-next ol { display: flex; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.dp-next li { padding: 0.25rem 0.75rem; border-radius: 0.6rem; background: #334155; font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.dp-next li.is-priority { background: rgba(245, 158, 11, 0.25); color: #fcd34d; }
+.dp-next li.is-emergency { background: rgba(244, 63, 94, 0.28); color: #fda4af; }
+.dp-next-empty { color: #94a3b8; font-size: 1.1rem; }
+.dp-more { color: #94a3b8; font-size: 1.05rem; }
+
+.dp-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.25rem; padding: 1rem 1.25rem; border-radius: 1rem; background: #1e293b; border: 1px solid #334155; }
+.dp-foot-label { color: #6ee7b7; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.dp-dept { display: inline-flex; align-items: baseline; gap: 0.5rem; font-size: 1.2rem; }
+.dp-dept strong { font-weight: 700; }
+.dp-dept-waiting { color: #94a3b8; font-size: 1rem; }
+.dp-dept--high span:nth-child(2) { color: #fcd34d; }
+.dp-dept--critical span:nth-child(2) { color: #fda4af; }
+
+@keyframes dp-call {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); transform: none; }
+  50% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0.25); transform: scale(1.02); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dp-card.is-flash { animation: none; box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.35); }
+}

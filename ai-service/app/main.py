@@ -154,7 +154,8 @@ def rank_branches(body: RankRequest) -> RankResponse:
 def forecast_job(body: Optional[ForecastRequest] = Body(default=None)) -> dict:
     """FR-17: regenerate hourly forecasts for the next ``days`` days (default 7)."""
     days = body.days if body is not None else 7
-    return run_forecast(days)
+    engine = body.engine if body is not None else "auto"
+    return run_forecast(days, engine=engine)
 
 
 @ai.post("/models/retrain", response_model=RetrainResponse)

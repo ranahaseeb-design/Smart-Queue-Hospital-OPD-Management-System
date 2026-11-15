@@ -31,15 +31,26 @@ const DEV_ACCOUNTS = import.meta.env.DEV
  */
 function WalkInCheckIn({ disabled }) {
   const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [priority, setPriority] = useState('NORMAL');
+  const [birthYear, setBirthYear] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const nameId = useId();
+  const phoneId = useId();
+  const yearId = useId();
+  const senior = priority === 'URGENT_SENIOR';
 
   async function checkIn() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.guestCheckIn(name.trim() || undefined);
+      const res = await api.guestCheckIn({
+        fullName: name.trim() || undefined,
+        phone: phone.trim() || undefined,
+        priority,
+        birthYear: senior && birthYear ? Number(birthYear) : undefined,
+      });
       saveSession(res.token, res.user);
       window.location.assign('/');
     } catch (err) {
@@ -50,21 +61,38 @@ function WalkInCheckIn({ disabled }) {
 
   return (
     <div className="portal-walkin">
-      <div className="portal-divider" role="separator"><span>or</span></div>
-      <div className="portal-field">
-        <label className="portal-label" htmlFor={nameId}>Walk-in name (optional)</label>
-        <input
-          id={nameId}
-          className="portal-input"
-          type="text"
-          autoComplete="name"
-          maxLength={100}
-          placeholder="e.g. Ayesha Bibi"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={busy || disabled}
-        />
+      <div className="portal-divider" role="separator"><span>or walk in</span></div>
+      <div className="portal-walkin-grid">
+        <div className="portal-field">
+          <label className="portal-label" htmlFor={nameId}>Name (optional)</label>
+          <input id={nameId} className="portal-input" type="text" autoComplete="name" maxLength={100} placeholder="e.g. Ayesha Bibi"
+            value={name} onChange={(e) => setName(e.target.value)} disabled={busy || disabled} />
+        </div>
+        <div className="portal-field">
+          <label className="portal-label" htmlFor={phoneId}>Phone (optional)</label>
+          <input id={phoneId} className="portal-input" type="tel" autoComplete="tel" inputMode="tel" maxLength={20} placeholder="03xx xxxxxxx"
+            value={phone} onChange={(e) => setPhone(e.target.value)} disabled={busy || disabled} />
+        </div>
       </div>
+      <fieldset className="portal-priority" disabled={busy || disabled}>
+        <legend className="portal-label">Priority</legend>
+        <div className="portal-priority-options" role="radiogroup">
+          {[['NORMAL', 'Normal'], ['URGENT_SENIOR', 'Urgent / Senior']].map(([value, label]) => (
+            <label key={value} className={priority === value ? 'portal-radio is-on' : 'portal-radio'}>
+              <input type="radio" name="walkin-priority" value={value} checked={priority === value} onChange={() => setPriority(value)} />
+              {label}
+            </label>
+          ))}
+        </div>
+        {senior && (
+          <div className="portal-field">
+            <label className="portal-label" htmlFor={yearId}>Year of birth (seniors 60+ are prioritised)</label>
+            <input id={yearId} className="portal-input" type="number" inputMode="numeric" min="1900" max={new Date().getFullYear()}
+              placeholder="e.g. 1955" value={birthYear} onChange={(e) => setBirthYear(e.target.value)} />
+            <p className="portal-dev">For an urgent medical need, please also tell the reception desk — staff set emergency priority.</p>
+          </div>
+        )}
+      </fieldset>
       {error && <p className="portal-error" role="alert">{error}</p>}
       <button type="button" className="portal-submit portal-submit--walkin" onClick={checkIn} disabled={busy || disabled}>
         {busy && <span className="portal-submit-spinner" aria-hidden="true" />}

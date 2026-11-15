@@ -98,6 +98,8 @@ function createApp() {
   });
 
   app.use('/api/auth', require('./routes/auth'));
+  // Public waiting-room board data (token numbers only): a TV opens /display without signing in.
+  app.use('/api', require('./routes/operations'));
 
   // Everything below requires a valid JWT.
   app.use('/api', authenticate);
@@ -107,7 +109,6 @@ function createApp() {
   app.use('/api', require('./routes/staff'));
   app.use('/api', require('./routes/patient'));
   app.use('/api', require('./routes/demo'));
-  app.use('/api', require('./routes/operations'));
 
   app.use('/api', notFoundHandler);
   app.use(notFoundHandler);

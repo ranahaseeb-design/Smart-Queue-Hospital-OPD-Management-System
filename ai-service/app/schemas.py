@@ -3,7 +3,7 @@ except the feature object, whose keys are the snake_case names of Section 6.3.""
 
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Optional, Union, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -156,6 +156,8 @@ class ActivateResponse(CamelModel):
 
 class ForecastRequest(CamelModel):
     days: int = Field(default=7, ge=1, le=31)
+    # "auto": Random Forest unless the seasonal baseline is clearly better (> 2 % lower MAE).
+    engine: Literal["auto", "rf", "baseline"] = "auto"
 
 
 class ForecastEvaluation(CamelModel):

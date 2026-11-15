@@ -163,7 +163,7 @@ const ROOTS = {
   patient: ['token'],
   admin: [
     'overview', 'branches', 'departments', 'doctors', 'schedules', 'service-points', 'users',
-    'reports', 'forecasts', 'workload', 'feedback', 'models', 'settings',
+    'reports', 'forecasts', 'workload', 'feedback', 'models', 'settings', 'display',
   ],
 };
 

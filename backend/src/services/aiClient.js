@@ -137,11 +137,11 @@ async function rankBranches(weights, candidates) {
  * AI service is unavailable (caller runs the JS baseline).
  * Long-running job: a quick health probe first (1.5 s), then a longer job timeout.
  */
-async function runForecastJob(days) {
+async function runForecastJob(days, engine = 'auto') {
   if (!enabled() || breakerOpen()) return null;
   try {
     await request('GET', '/health');
-    const data = await request('POST', '/ai/jobs/forecast', { days }, config.ai.jobTimeoutMs, { job: true });
+    const data = await request('POST', '/ai/jobs/forecast', { days, engine }, config.ai.jobTimeoutMs, { job: true });
     if (!data || typeof data.generated !== 'number') return null;
     return data;
   } catch (err) {

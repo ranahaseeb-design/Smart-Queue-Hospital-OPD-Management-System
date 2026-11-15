@@ -82,6 +82,9 @@ export const papi = {
   token: (id) => request('GET', `/tokens/${id}`),
   cancelToken: (id) => request('DELETE', `/tokens/${id}`),
   loadDemoQueue: (doctorId, count) => request('POST', '/demo/load-queue', { doctorId, count }),
+  seedCommitteeDemo: () => request('POST', '/demo/seed', {}),
+  peakStatus: () => request('GET', '/demo/peak'),
+  setPeak: (enabled) => request('POST', '/demo/peak', { enabled }),
 };
 
 export function errorText(err) {

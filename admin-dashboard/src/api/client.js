@@ -132,8 +132,11 @@ export const api = {
 
   /** POST /auth/login. A 401 here means wrong credentials, so it must not trigger logout. */
   /** POST /auth/guest — kiosk walk-in check-in (demo tools); returns { token, user }. */
-  guestCheckIn: (fullName) =>
-    request('POST', '/auth/guest', { body: fullName ? { fullName } : {}, auth: false }),
+  guestCheckIn: (details = {}) =>
+    request('POST', '/auth/guest', {
+      body: Object.fromEntries(Object.entries(details).filter(([, v]) => v !== undefined && v !== '')),
+      auth: false,
+    }),
 
   // `portal` (DOCTOR | STAFF | BRANCH_ADMIN | HOSPITAL_ADMIN | PATIENT) makes the backend verify
   // the account type before issuing a token.

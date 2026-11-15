@@ -26,14 +26,22 @@ export function haversineKm(a, b) {
   return Math.round(2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(h))) * 10) / 10;
 }
 
-/** The portal looks for a faster branch when the chosen doctor's queue is this busy. */
-export const CONGESTION_RULE = { waitMinutes: 25, waiting: 4 };
+/**
+ * The portal looks for a faster branch when the chosen doctor's queue is this busy: predicted wait
+ * over 25 min, more than 4 waiting, or the department's live load (Eq. 6.5) at 75 % or more.
+ */
+export const CONGESTION_RULE = { waitMinutes: 25, waiting: 4, loadPercent: 75 };
 
-export function isCongested(doctor) {
+export function isCongested(doctor, department = null) {
   if (!doctor) return false;
   const wait = Number(doctor.estimatedWaitMinutes);
   const waiting = Number(doctor.queueLength);
-  return (Number.isFinite(wait) && wait > CONGESTION_RULE.waitMinutes) || (Number.isFinite(waiting) && waiting > CONGESTION_RULE.waiting);
+  const load = Number(department?.loadPercent);
+  return (
+    (Number.isFinite(wait) && wait > CONGESTION_RULE.waitMinutes)
+    || (Number.isFinite(waiting) && waiting > CONGESTION_RULE.waiting)
+    || (Number.isFinite(load) && load >= CONGESTION_RULE.loadPercent)
+  );
 }
 
 /**

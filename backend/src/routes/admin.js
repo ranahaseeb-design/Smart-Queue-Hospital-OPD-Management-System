@@ -94,6 +94,8 @@ router.get('/forecast-status', async (req, res) => {
     { $group: { _id: '$source', rows: { $sum: 1 }, generatedAt: { $max: '$generated_at' } } },
   ]);
   const latest = rows.sort((a, b) => new Date(b.generatedAt) - new Date(a.generatedAt))[0] || null;
+  const lastRunDoc = await models.Setting.findById('lastForecastRun').lean();
+  const lastRun = lastRunDoc ? lastRunDoc.value : null;
   let waitModel = null;
   let aiAvailable = true;
   try {
@@ -116,7 +118,15 @@ router.get('/forecast-status', async (req, res) => {
   res.json({
     aiAvailable,
     forecast: latest
-      ? { source: latest._id, engine: latest._id === 'ai' ? 'Random Forest Regressor (AI service)' : 'Seasonal baseline (fallback)', rows: latest.rows, generatedAt: time.toApi(latest.generatedAt) }
+      ? {
+        source: latest._id,
+        engine: forecastService.ENGINE_LABELS[latest._id] || latest._id,
+        isRandomForest: latest._id === 'rf-forecast',
+        rows: latest.rows,
+        generatedAt: time.toApi(latest.generatedAt),
+        // Backtest of the run that wrote these rows (Section 6.7.2): RF vs seasonal baseline MAE.
+        evaluation: lastRun && lastRun.engine === latest._id ? lastRun.evaluation : null,
+      }
       : null,
     waitModel,
   });
@@ -140,7 +150,8 @@ router.get('/forecasts', async (req, res) => {
 router.post('/forecasts/run', async (req, res) => {
   // Regenerates forecasts for every branch, so it is a hospital-wide action.
   admin.requireHospitalAdmin(req.user, 'forecast runs');
-  res.json(await forecastService.runForecasts(getDb()));
+  const engine = v.oneOf((req.body || {}).engine, 'engine', ['AUTO', 'RF', 'BASELINE']) || 'AUTO';
+  res.json(await forecastService.runForecasts(getDb(), { engine: engine.toLowerCase() }));
 });
 
 // ---- Workload analysis and resource-allocation recommendations (FR-18) ----

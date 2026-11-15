@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useRealtime } from '../context/RealtimeContext.jsx';
 import { ROLE_LABELS } from '../utils/roles.js';
+import DemoControls from './DemoControls.jsx';
 
 const NAV = [
   {
@@ -213,6 +214,7 @@ export default function Layout() {
             </div>
           )}
           <div className="topbar-spacer" />
+          <DemoControls />
           <BranchFilter />
           <span className={`live-chip live-${status}`} title={st.title} role="status">
             <span className="live-dot" aria-hidden="true" />

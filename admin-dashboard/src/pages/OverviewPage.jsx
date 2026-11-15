@@ -15,6 +15,7 @@ import AlertStrip from '../components/AlertStrip.jsx';
 import DepartmentMatrix from '../components/DepartmentMatrix.jsx';
 import LiveIndicator from '../components/LiveIndicator.jsx';
 import LiveKpiTile from '../components/LiveKpiTile.jsx';
+import LoadBalancerCard from '../components/LoadBalancerCard.jsx';
 import {
   Badge, Card, CongestionBadge, EmptyState, ErrorBanner, LastUpdated, Loading, PageHeader, PageSkeleton,
 } from '../components/ui.jsx';
@@ -230,6 +231,8 @@ export default function OverviewPage() {
             </div>
             <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</p>
           </section>
+
+          {!selectedDept && <LoadBalancerCard />}
 
           <div className="grid-main-side">
             <Card

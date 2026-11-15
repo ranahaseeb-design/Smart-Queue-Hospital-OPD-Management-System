@@ -21,6 +21,10 @@ import {
 const AdminSection = lazy(() => import('./sections/AdminSection.jsx'));
 const StaffSection = lazy(() => import('./sections/StaffSection.jsx'));
 const PatientSection = lazy(() => import('./patient/PatientSection.jsx'));
+const DisplayBoard = lazy(() => import('./display/DisplayBoard.jsx'));
+
+// Lets shared staff screens know they run inside the combined dashboard (e.g. to link /display).
+if (typeof window !== 'undefined') window.__SMARTOPD_UNIFIED__ = true;
 const SECTIONS = { admin: AdminSection, staff: StaffSection, patient: PatientSection };
 
 // A tab opened with ?session=<kind> (e.g. "Open live queue" from Admin > Doctors) shows that
@@ -63,7 +67,8 @@ export default function RootApp() {
     }
   }, [onLogin]);
 
-  const kind = onLogin ? null : activeSession();
+  // The public board (/display) uses no session, so it never reacts to sign-ins in other tabs.
+  const kind = onLogin || location.pathname === '/display' ? null : activeSession();
 
   // Another tab changed THIS tab's role session (signed in as another doctor, signed out, token
   // refreshed): reload, so this tab never sends one account's token from another account's screen.
@@ -91,6 +96,17 @@ export default function RootApp() {
   }, [kind]);
 
   if (onLogin) return loadedSection.current ? null : <UnifiedLoginPage />;
+
+  // Waiting-room board: public (a TV opens it without signing in; token numbers only).
+  if (location.pathname === '/display') {
+    loadedSection.current = 'display';
+    return (
+      <Suspense fallback={<SectionLoading />}>
+        <DisplayBoard />
+      </Suspense>
+    );
+  }
+
   const section = sectionForKind(kind);
   if (!section) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;

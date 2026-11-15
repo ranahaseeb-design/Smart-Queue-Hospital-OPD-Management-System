@@ -152,7 +152,9 @@ test('recommendations use /ai/rank-branches scores when available (FR-08)', asyn
 test('forecast job and model management are proxied to the AI service (FR-17, FR-22)', async () => {
   const admin = await ctx.login('admin');
   const run = await ctx.api.post('/admin/forecasts/run', admin);
-  assert.deepEqual(run.body, { generated: 7, source: 'ai' });
+  assert.equal(run.body.generated, 7);
+  assert.equal(run.body.source, 'ai');
+  assert.equal(run.body.engine, 'rf-test'); // the AI job's modelVersion is reported as the engine
   const models = await ctx.api.get('/admin/models', admin);
   assert.equal(models.status, 200);
   assert.equal(models.body[0].version, 'rf-test');

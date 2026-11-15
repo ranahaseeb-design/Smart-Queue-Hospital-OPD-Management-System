@@ -115,7 +115,8 @@ export default function BookingPage() {
             waiting: doctors.reduce((sum, d) => sum + (d.queueLength || 0), 0),
             accepting: accepting.length,
             best,
-            busy: best ? isCongested(best) : false,
+            loadPercent: byBranch[b.id].department?.loadPercent ?? null,
+            busy: best ? isCongested(best, byBranch[b.id].department) : false,
           };
         })
         .sort((x, y) => (x.distanceKm ?? 1e9) - (y.distanceKm ?? 1e9)),
@@ -138,7 +139,8 @@ export default function BookingPage() {
   const doctors = byBranch[selection.branchId]?.doctors || [];
   const doctor = doctors.find((d) => d.id === selection.doctorId) || null;
   const branch = branches.find((b) => b.id === selection.branchId) || null;
-  const congested = isCongested(doctor);
+  const department = byBranch[selection.branchId]?.department || null;
+  const congested = isCongested(doctor, department);
   const source = estimateSource(doctor?.estimateModelVersion);
   const activeHere = doctor ? active.find((t) => t.doctor?.id === doctor.id) : null;
 
@@ -175,6 +177,20 @@ export default function BookingPage() {
       () => setGeoNote('Location was not shared. Choose an area instead.'),
       { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
     );
+  }
+
+  // One click from the recommendation: move the booking there and issue the token at once.
+  async function switchAndBook(option) {
+    update({ branchId: option.branchId, doctorId: option.doctorId });
+    setBooking(true);
+    setBookError(null);
+    try {
+      const token = await papi.joinQueue(option.doctorId);
+      navigate(`/token/${token.id}`);
+    } catch (err) {
+      setBookError(errorText(err));
+      setBooking(false);
+    }
   }
 
   async function getToken() {
@@ -286,6 +302,7 @@ export default function BookingPage() {
                     <span className="pt-muted pt-small">
                       {c.distanceKm != null ? `${c.distanceKm} km away · ` : ''}
                       {c.waiting} waiting · {c.accepting} doctor{c.accepting === 1 ? '' : 's'} on duty
+                      {c.loadPercent != null ? ` · ${c.loadPercent}% load` : ''}
                     </span>
                   </button>
                 ))}
@@ -342,6 +359,10 @@ export default function BookingPage() {
                 </p>
                 <dl className="pt-stats">
                   <div>
+                    <dt>Department load</dt>
+                    <dd>{department?.loadPercent != null ? `${department.loadPercent}%` : '—'}</dd>
+                  </div>
+                  <div>
                     <dt>Patients waiting</dt>
                     <dd>{doctor.queueLength}</dd>
                   </div>
@@ -380,9 +401,17 @@ export default function BookingPage() {
               <button
                 type="button"
                 className="pt-btn pt-btn--primary pt-btn--block"
+                disabled={booking}
+                onClick={() => switchAndBook(rec.best)}
+              >
+                {booking ? 'Booking…' : 'Switch & book here'}
+              </button>
+              <button
+                type="button"
+                className="pt-btn pt-btn--ghost pt-btn--sm"
                 onClick={() => update({ branchId: rec.best.branchId, doctorId: rec.best.doctorId })}
               >
-                {rec.best.sameBranch ? 'Switch to recommended doctor' : 'Switch to recommended branch'}
+                {rec.best.sameBranch ? 'Only switch doctor' : 'Only switch branch'}
               </button>
               {rec.otherBranch && (
                 <div className="pt-rec-alt">
@@ -406,8 +435,8 @@ export default function BookingPage() {
             <section className="pt-card pt-rec pt-rec--none" role="status">
               <span className="pt-eyebrow pt-eyebrow--amber">Busy here</span>
               <p className="pt-muted">
-                This queue is above {CONGESTION_RULE.waitMinutes} min or {CONGESTION_RULE.waiting} waiting, but no other branch
-                is at least 5 minutes faster right now.
+                This queue is above {CONGESTION_RULE.waitMinutes} min, {CONGESTION_RULE.waiting} waiting or {CONGESTION_RULE.loadPercent}% load,
+                but no other branch is at least 5 minutes faster right now.
               </p>
             </section>
           )}

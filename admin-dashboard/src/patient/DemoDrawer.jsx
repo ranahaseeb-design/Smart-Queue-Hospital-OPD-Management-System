@@ -5,6 +5,70 @@ import { useEffect, useRef, useState } from 'react';
 import { usePatient } from './PatientContext.jsx';
 import { errorText, papi } from './patientApi.js';
 
+/** One-click committee demo data and the Model Town peak-congestion switch (same as the admin header). */
+function CommitteeTools({ onChanged }) {
+  const [peak, setPeak] = useState(null);
+  const [load, setLoad] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [note, setNote] = useState(null);
+
+  useEffect(() => {
+    papi
+      .peakStatus()
+      .then((r) => {
+        setPeak(Boolean(r.peakActive));
+        const mt = (r.branches || []).find((b) => b.name === 'Model Town') || (r.branches || [])[0];
+        setLoad(mt ? mt.loadPercent : null);
+      })
+      .catch(() => setPeak(null));
+  }, []);
+
+  if (peak === null) return null;
+
+  async function seed() {
+    setBusy('seed');
+    setNote(null);
+    try {
+      const r = await papi.seedCommitteeDemo();
+      setNote({ ok: true, text: `Loaded ${r.completedVisits} completed visits today, ${r.waiting?.doctor?.tokens.length ?? 0} waiting for ${r.waiting?.doctor?.doctorName ?? 'Room 1'} and ${r.waiting?.pharmacy?.tokens.length ?? 0} at the pharmacy.` });
+      onChanged();
+    } catch (err) {
+      setNote({ ok: false, text: errorText(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function togglePeak() {
+    setBusy('peak');
+    setNote(null);
+    try {
+      const r = await papi.setPeak(!peak);
+      setPeak(r.peakActive);
+      setLoad(r.load?.percent ?? null);
+      setNote({ ok: true, text: r.enabled ? `Peak simulated: ${r.added} tokens added, ${r.branch.name} at ${r.load.percent}% load.` : `Peak cleared: ${r.cancelled} tokens cancelled, ${r.branch.name} at ${r.load.percent}% load.` });
+      onChanged();
+    } catch (err) {
+      setNote({ ok: false, text: errorText(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="pt-committee">
+      <button type="button" className="pt-btn pt-btn--amber pt-btn--block" onClick={seed} disabled={Boolean(busy)}>
+        {busy === 'seed' ? 'Loading demo data…' : 'Load committee demo data'}
+      </button>
+      <button type="button" role="switch" aria-checked={peak} className={`pt-btn pt-btn--ghost pt-btn--block${peak ? ' is-on' : ''}`} onClick={togglePeak} disabled={Boolean(busy)}>
+        {busy === 'peak' ? 'Working…' : `Simulate peak congestion: ${peak ? 'ON' : 'OFF'}`}
+        {load !== null && ` · Model Town ${load}%`}
+      </button>
+      {note && <p className={note.ok ? 'pt-muted pt-small' : 'pt-error'} role="status">{note.text}</p>}
+    </div>
+  );
+}
+
 export default function DemoDrawer({ open, onClose }) {
   const { selection, bumpRefresh } = usePatient();
   const [doctors, setDoctors] = useState([]);
@@ -95,6 +159,9 @@ export default function DemoDrawer({ open, onClose }) {
           The tokens are flagged as synthetic.
         </p>
 
+        <CommitteeTools onChanged={bumpRefresh} />
+
+        <h3 className="pt-label">Add simulated patients to one queue</h3>
         <label className="pt-label" htmlFor="pt-demo-doctor">Target doctor / OPD room</label>
         <select id="pt-demo-doctor" className="pt-input" value={doctorId ?? ''} onChange={(e) => setDoctorId(Number(e.target.value))} disabled={busy || !doctors.length}>
           {!doctors.length && <option value="">Loading doctors on duty…</option>}

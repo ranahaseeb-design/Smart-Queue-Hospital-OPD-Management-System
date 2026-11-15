@@ -9,14 +9,13 @@
  *    point, live estimated wait per department. Token numbers only — never patient names.
  */
 const time = require('../utils/time');
-const { forbidden, notFound } = require('../utils/errors');
+const { notFound } = require('../utils/errors');
 const { models, sess } = require('../db');
 const fb = require('./featureBuilder');
 const scheduleService = require('./scheduleService');
 const queueService = require('./queueService');
 const predictionService = require('./predictionService');
 const settingsService = require('./settingsService');
-const access = require('./accessService');
 const demoService = require('./demoService');
 
 const { Branch, ServicePoint, Token, Department } = models;
@@ -118,33 +117,13 @@ async function loadBalancer(db, user, now = time.clock.now()) {
 
 const TYPE_ORDER = { OPD: 0, LAB: 1, PHARMACY: 2 };
 
-async function resolveDisplayBranch(db, user, requested) {
-  if (user.role === 'HOSPITAL_ADMIN') {
-    if (requested) return requested;
-    const first = await Branch.findOne({ status: 'ACTIVE' }).sort({ _id: 1 }).session(sess(db)).lean();
-    if (!first) throw notFound('No active branch');
-    return first._id;
-  }
-  if (user.role === 'BRANCH_ADMIN') {
-    if (requested && requested !== user.admin_branch_id) throw forbidden('Branch administrators can only open their own branch');
-    return user.admin_branch_id;
-  }
-  if (user.role === 'STAFF') {
-    const branches = await access.staffBranchIds(db, user);
-    if (!branches.size) throw forbidden('You are not assigned to a branch');
-    if (requested) {
-      if (!branches.has(requested)) throw forbidden('You can only open the board of your branch');
-      return requested;
-    }
-    return [...branches].sort((a, b) => a - b)[0];
-  }
-  throw forbidden('The waiting-room board is for staff and administrators');
-}
-
-async function displayBoard(db, user, requestedBranchId, now = time.clock.now()) {
-  const branchId = await resolveDisplayBranch(db, user, requestedBranchId);
-  const branch = await Branch.findById(branchId).session(sess(db)).lean();
-  if (!branch || branch.status !== 'ACTIVE') throw notFound('Branch not found');
+/** Public board data: the requested branch, or the first active branch. */
+async function displayBoard(db, requestedBranchId = null, now = time.clock.now()) {
+  const activeBranches = await Branch.find({ status: 'ACTIVE' }, { name: 1 }).sort({ _id: 1 }).session(sess(db)).lean();
+  if (!activeBranches.length) throw notFound('No active branch');
+  const branch = requestedBranchId ? activeBranches.find((b) => b._id === requestedBranchId) : activeBranches[0];
+  if (!branch) throw notFound('Branch not found');
+  const branchId = branch._id;
   const date = time.formatDate(now);
   const points = (await ServicePoint.find({ branch_id: branchId, is_active: true }).session(sess(db)).lean())
     .sort((a, b) => TYPE_ORDER[a.type] - TYPE_ORDER[b.type] || a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -194,7 +173,13 @@ async function displayBoard(db, user, requestedBranchId, now = time.clock.now())
     });
   }
 
-  return { branch: { id: branch._id, name: branch.name }, generatedAt: time.toApi(now), servicePoints, departments };
+  return {
+    branch: { id: branch._id, name: branch.name },
+    branches: activeBranches.map((b) => ({ id: b._id, name: b.name })),
+    generatedAt: time.toApi(now),
+    servicePoints,
+    departments,
+  };
 }
 
 module.exports = { loadBalancer, displayBoard, REDIRECT_LOAD };
