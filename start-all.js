@@ -356,13 +356,17 @@ async function startFrontend() {
     return url;
   }
   log('FRONTEND', `Starting the Smart OPD Dashboard (Vite) on :${PORTS.frontend}…`);
-  run('FRONTEND', 'npm', ['run', 'dev'], { cwd: path.join(ROOT, 'admin-dashboard') });
+  // dev:vite = plain Vite (the folder's own "dev" script points back to this launcher).
+  run('FRONTEND', 'npm', ['run', 'dev:vite'], { cwd: path.join(ROOT, 'admin-dashboard') });
   await waitFor(() => portOpen(PORTS.frontend, 'localhost'), { timeoutMs: 60000 });
   return url;
 }
 
 async function main() {
   console.log(bold('\nSmart OPD — starting the full stack (MongoDB rs0 · AI :8000 · backend :4000 · dashboard :5174)\n'));
+  // npm sets INIT_CWD to the folder `npm run dev` was typed in (root, backend, admin-dashboard, …).
+  const from = process.env.INIT_CWD ? path.resolve(process.env.INIT_CWD) : ROOT;
+  if (from !== ROOT) log('SETUP', `Started from ${path.relative(ROOT, from) || '.'} — running the whole system from ${ROOT}`);
   checkDependencies();
   ensureEnvFiles();
   await ensureMongo();

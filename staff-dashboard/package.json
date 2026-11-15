@@ -5,10 +5,11 @@
   "description": "Staff Dashboard (doctors, OPD, lab and pharmacy staff) for the Smart Digital Queue Management System for Hospital OPD",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node ../start-all.js",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:vite": "vite"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

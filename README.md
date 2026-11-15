@@ -34,8 +34,8 @@ operations never depend on the AI layer.
 
 ## One command: `npm run dev`
 
-Once the dependencies are installed (below), open **Git Bash** (or any terminal) in the project
-root and run:
+Open **Git Bash** (or any terminal) in the project root — or inside `admin-dashboard`,
+`staff-dashboard` or `backend`, where `npm run dev` runs the same launcher — and run:
 
 ```bash
 npm run dev
@@ -53,7 +53,8 @@ npm run dev
 It creates `backend/.env` (`npm run setup`) and `ai-service/.env` (same `AI_SERVICE_TOKEN`) when
 they are missing, reuses services that are already running, and `Ctrl+C` stops the AI service,
 backend and dashboard (MongoDB keeps running). Overrides: `MONGOD_PATH`, `MONGO_DBPATH`, `PYTHON`,
-`SKIP_AI=1`.
+`SKIP_AI=1`. Single pieces for development: `npm run dev:vite` (admin-dashboard / staff-dashboard)
+and `npm run dev:server` (backend, watch mode).
 
 ## Quick start (local demo)
 

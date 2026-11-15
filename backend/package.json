@@ -6,11 +6,12 @@
   "private": true,
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "dev": "node ../start-all.js",
     "setup": "node scripts/setup-env.js",
     "db:init": "node src/db/init.js",
     "seed": "node src/db/seed.js",
-    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "dev:server": "node --watch src/server.js"
   },
   "engines": {
     "node": ">=22.13"
