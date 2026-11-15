@@ -32,6 +32,29 @@ If the AI service is down or has no trained model, the backend falls back to the
 baseline (Eq. 6.2), a JavaScript branch ranking and a seasonal-baseline forecast, so queue
 operations never depend on the AI layer.
 
+## One command: `npm run dev`
+
+Once the dependencies are installed (below), open **Git Bash** (or any terminal) in the project
+root and run:
+
+```bash
+npm run dev
+```
+
+`start-all.js` starts and connects everything, with colour-coded logs:
+
+| Tag | What happens |
+|---|---|
+| `[MONGO]` | Reuses MongoDB on `127.0.0.1:27017`; otherwise starts the Windows `MongoDB` service or `mongod` itself (portable install in `%USERPROFILE%\mongodb-portable`, `C:\Program Files\MongoDB`, or `PATH`; detached, so it keeps running), then initialises replica set `rs0` if needed |
+| `[AI]` | AI service (Random Forest) on `:8000` with `ai-service/.venv` / `venv` if present, else the system Python; skipped with a message if Python or its packages are missing (the backend then uses the Eq. 6.2 baseline) |
+| `[BACKEND]` | Backend on `:4000`, waits for `/api/health` |
+| `[FRONTEND]` | Smart OPD Dashboard (Vite) on <http://localhost:5174> |
+
+It creates `backend/.env` (`npm run setup`) and `ai-service/.env` (same `AI_SERVICE_TOKEN`) when
+they are missing, reuses services that are already running, and `Ctrl+C` stops the AI service,
+backend and dashboard (MongoDB keeps running). Overrides: `MONGOD_PATH`, `MONGO_DBPATH`, `PYTHON`,
+`SKIP_AI=1`.
+
 ## Quick start (local demo)
 
 Requirements: Node.js 22.13+ (24 recommended). Python 3.11+ for the AI service and the Flutter

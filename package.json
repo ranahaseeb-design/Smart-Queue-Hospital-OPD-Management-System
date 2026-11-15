@@ -1,0 +1,13 @@
+{
+  "name": "smart-opd",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Smart Digital Queue Management System for Hospital OPD — one command starts MongoDB (rs0), the AI service, the backend and the Smart OPD Dashboard.",
+  "scripts": {
+    "dev": "node start-all.js",
+    "start": "node start-all.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

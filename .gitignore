@@ -14,3 +14,6 @@ mobile_app/build/
 mobile_app/.flutter-plugins*
 mobile_app/.packages
 mobile_app/pubspec.lock
+
+# Local MongoDB data folder created by start-all.js when no portable install exists
+.mongodb-data/
