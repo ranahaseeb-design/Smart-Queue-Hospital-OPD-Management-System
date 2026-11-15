@@ -28,12 +28,21 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('unified session', () => {
-  it('maps roles to sections; patients have none', () => {
+  it('maps roles to sections (admin, staff, patient portal)', () => {
     expect(sectionForRole('HOSPITAL_ADMIN')).toBe('admin');
     expect(sectionForRole('BRANCH_ADMIN')).toBe('admin');
     expect(sectionForRole('STAFF')).toBe('staff');
-    expect(sectionForRole('PATIENT')).toBeNull();
+    expect(sectionForRole('PATIENT')).toBe('patient');
+    expect(sectionForRole('SUPERUSER')).toBeNull();
     expect(sectionForRole(undefined)).toBeNull();
+  });
+
+  it('saves a patient (or walk-in guest) login under the patient keys', () => {
+    expect(saveSession('jwt-patient', { id: 9, role: 'PATIENT' })).toBe('patient');
+    expect(storage.getItem('smartopd.patient.token')).toBe('jwt-patient');
+    expect(activeSection()).toBe('patient');
+    expect(destinationAfterLogin('patient', '/token/42')).toBe('/token/42');
+    expect(destinationAfterLogin('patient', '/overview')).toBe('/');
   });
 
   it('saves a staff login under the staff keys and clears any admin session', () => {
@@ -54,8 +63,8 @@ describe('unified session', () => {
     expect(activeSection()).toBe('admin');
   });
 
-  it('refuses patients and empty tokens', () => {
-    expect(() => saveSession('jwt', { role: 'PATIENT' })).toThrow();
+  it('refuses unknown roles and empty tokens', () => {
+    expect(() => saveSession('jwt', { role: 'SUPERUSER' })).toThrow();
     expect(() => saveSession('', { role: 'STAFF' })).toThrow();
     expect(activeSection()).toBeNull();
   });

@@ -60,6 +60,16 @@ non-clinical queue data only (FR-01…FR-22, UC-01…UC-19, Data Dictionary 4.9,
     Staff-screen work (console, `/display`) still lives in `staff-dashboard/src`; when merged,
     give administrators a way to open `/display` from the admin section (it needs staff routes).
 
+11. **Patient Portal inside the one dashboard (replaces the separate `patient-portal/` app)** —
+    a PATIENT section of the Smart OPD Dashboard (`admin-dashboard/src/patient/`) with a featured
+    "Patient Portal / Get Token" login card, 1-click walk-in check-in (`POST /auth/guest`), booking
+    with area presets + haversine distances + the Random Forest estimate (`estimateModelVersion`),
+    the busy-queue recommendation (> 25 min or > 4 waiting) with one-click switch, the live token
+    pass (socket + 4 s polling, "NOW SERVING — Proceed to Room N", chime, journey) and the demo
+    load simulator (`POST /demo/load-queue`). `DEMO_TOOLS` gates the guest and demo endpoints.
+    The paused `upgrade/patient` agent is superseded; reuse its appointments / history / feedback
+    screens here if they are worth keeping.
+
 ## Phase 1 — backend, database, AI (branch `upgrade/backend`)
 
 - Health: `.env` / `MONGODB_URI` checks, async error handling on every route, all tests green.

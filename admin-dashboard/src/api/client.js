@@ -131,7 +131,12 @@ export const api = {
   del: (path, opts = {}) => request('DELETE', path, opts),
 
   /** POST /auth/login. A 401 here means wrong credentials, so it must not trigger logout. */
-  // `portal` (BRANCH_ADMIN | HOSPITAL_ADMIN) makes the backend verify the account type first.
+  /** POST /auth/guest — kiosk walk-in check-in (demo tools); returns { token, user }. */
+  guestCheckIn: (fullName) =>
+    request('POST', '/auth/guest', { body: fullName ? { fullName } : {}, auth: false }),
+
+  // `portal` (DOCTOR | STAFF | BRANCH_ADMIN | HOSPITAL_ADMIN | PATIENT) makes the backend verify
+  // the account type before issuing a token.
   login: (identifier, password, portal) =>
     request('POST', '/auth/login', {
       body: portal ? { identifier, password, portal } : { identifier, password },

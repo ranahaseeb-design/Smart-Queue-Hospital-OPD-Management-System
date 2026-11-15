@@ -117,7 +117,7 @@ test('login portal: the four-card sign-in only issues a token to the matching ac
   }
   const patient = await as('patient@opd.test', 'Patient@123', 'STAFF');
   assert.equal(patient.status, 403);
-  assert.match(patient.body.error.message, /patient app/i);
+  assert.match(patient.body.error.message, /Patient Portal/);
   // A wrong password stays 401 and never reveals the account type; unknown portal is 400.
   const wrongPw = await as('admin@opd.test', 'nope!!', 'DOCTOR');
   assert.equal(wrongPw.status, 401);

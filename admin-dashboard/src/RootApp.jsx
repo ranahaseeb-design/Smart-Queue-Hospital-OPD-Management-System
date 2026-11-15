@@ -1,7 +1,8 @@
-// Smart OPD Dashboard — one web app for all four login types.
-// /login is the shared four-card sign-in. Everything else renders the section of the signed-in
-// account: the admin screens (BRANCH_ADMIN / HOSPITAL_ADMIN) or the doctor/staff screens (STAFF),
-// each loaded on demand with its own stylesheet. Sign-in and sign-out do a full page load, so a
+// Smart OPD Dashboard — one web app for every login type.
+// /login is the shared role-card sign-in. Everything else renders the section of the signed-in
+// account: the admin screens (BRANCH_ADMIN / HOSPITAL_ADMIN), the doctor/staff screens (STAFF) or
+// the Patient Portal & token kiosk (PATIENT, incl. walk-in guests), each loaded on demand with its
+// own stylesheet. Sign-in and sign-out do a full page load, so a
 // page only ever holds one section (and one section's styles).
 import { lazy, Suspense, useEffect, useRef } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
@@ -10,6 +11,8 @@ import { activeSection } from './utils/unifiedSession.js';
 
 const AdminSection = lazy(() => import('./sections/AdminSection.jsx'));
 const StaffSection = lazy(() => import('./sections/StaffSection.jsx'));
+const PatientSection = lazy(() => import('./patient/PatientSection.jsx'));
+const SECTIONS = { admin: AdminSection, staff: StaffSection, patient: PatientSection };
 
 function SectionLoading() {
   return (
@@ -42,7 +45,7 @@ export default function RootApp() {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
   loadedSection.current = section;
-  const Section = section === 'admin' ? AdminSection : StaffSection;
+  const Section = SECTIONS[section];
   return (
     <Suspense fallback={<SectionLoading />}>
       <Section />

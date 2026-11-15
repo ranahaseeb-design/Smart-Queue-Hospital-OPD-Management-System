@@ -34,6 +34,13 @@ const ICONS = {
       <path d="M9 12l2.2 2.2L15.5 10" />
     </>
   ),
+  ticket: (
+    <>
+      <path d="M3 8a2 2 0 0 0 2-2h14a2 2 0 0 0 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 0-2 2H5a2 2 0 0 0-2-2v-2a2 2 0 0 0 0-4z" />
+      <path d="M9 6v12" strokeDasharray="2 2.5" />
+      <path d="M13 10h4M13 14h3" />
+    </>
+  ),
   arrowRight: <path d="M5 12h14M13 6l6 6-6 6" />,
   arrowLeft: <path d="M19 12H5M11 18l-6-6 6-6" />,
   external: (
@@ -84,7 +91,7 @@ export default function LoginPortalPicker({ localApp, otherAppUrl, otherAppName,
         );
         const style = { '--portal-index': i };
         return (
-          <div role="listitem" key={portal.id} className="portal-cell">
+          <div role="listitem" key={portal.id} className={`portal-cell${portal.featured ? ' portal-cell--featured' : ''}`}>
             {href ? (
               <a
                 className="portal-card"

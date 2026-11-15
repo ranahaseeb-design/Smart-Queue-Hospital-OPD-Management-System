@@ -18,6 +18,7 @@ const forbidden = (message = 'You do not have permission to perform this action'
   new ApiError(403, 'FORBIDDEN', message);
 const notFound = (message = 'Resource not found') => new ApiError(404, 'NOT_FOUND', message);
 const conflict = (message) => new ApiError(409, 'CONFLICT', message);
+const tooManyRequests = (message = 'Too many requests, please try again later') => new ApiError(429, 'TOO_MANY_REQUESTS', message);
 const aiUnavailable = (message = 'The AI service is unavailable') => new ApiError(503, 'AI_UNAVAILABLE', message);
 
 /** Wrap an async express handler so rejected promises reach the error middleware. */
@@ -61,6 +62,7 @@ module.exports = {
   notFound,
   conflict,
   aiUnavailable,
+  tooManyRequests,
   asyncHandler,
   createRouter,
   isUniqueViolation,

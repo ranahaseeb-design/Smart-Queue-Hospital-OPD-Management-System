@@ -17,12 +17,63 @@ import '../styles/portal.css';
 // production builds because import.meta.env.DEV is false there.
 const DEV_ACCOUNTS = import.meta.env.DEV
   ? {
+    patient: { identifier: 'patient@opd.test', password: 'Patient@123' },
     doctor: { identifier: 'doctor1@opd.test', password: 'Staff@123' },
     staff: { identifier: 'lab1@opd.test', password: 'Staff@123' },
     'branch-admin': { identifier: 'branchadmin@opd.test', password: 'Admin@123' },
     'hospital-admin': { identifier: 'admin@opd.test', password: 'Admin@123' },
   }
   : {};
+
+/**
+ * Kiosk walk-in: one click creates a guest patient session (POST /auth/guest) and opens the
+ * patient portal — no credentials. The optional name is shown to staff in the queue.
+ */
+function WalkInCheckIn({ disabled }) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const nameId = useId();
+
+  async function checkIn() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.guestCheckIn(name.trim() || undefined);
+      saveSession(res.token, res.user);
+      window.location.assign('/');
+    } catch (err) {
+      setError(err?.status === 404 ? 'Walk-in check-in is turned off on this server.' : errorMessage(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="portal-walkin">
+      <div className="portal-divider" role="separator"><span>or</span></div>
+      <div className="portal-field">
+        <label className="portal-label" htmlFor={nameId}>Walk-in name (optional)</label>
+        <input
+          id={nameId}
+          className="portal-input"
+          type="text"
+          autoComplete="name"
+          maxLength={100}
+          placeholder="e.g. Ayesha Bibi"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={busy || disabled}
+        />
+      </div>
+      {error && <p className="portal-error" role="alert">{error}</p>}
+      <button type="button" className="portal-submit portal-submit--walkin" onClick={checkIn} disabled={busy || disabled}>
+        {busy && <span className="portal-submit-spinner" aria-hidden="true" />}
+        {busy ? 'Checking in…' : '1-click walk-in / guest check-in'}
+      </button>
+      <p className="portal-dev">No account needed — get a token at the kiosk in one tap.</p>
+    </div>
+  );
+}
 
 function LoginForm({ portal, onBack, returnTo }) {
   const [identifier, setIdentifier] = useState('');
@@ -83,7 +134,9 @@ function LoginForm({ portal, onBack, returnTo }) {
 
       <form onSubmit={submit} noValidate aria-describedby={error ? errorId : undefined}>
         <div className="portal-field">
-          <label className="portal-label" htmlFor={idId}>Username, email or phone</label>
+          <label className="portal-label" htmlFor={idId}>
+            {portal.id === 'patient' ? 'Phone or email' : 'Username, email or phone'}
+          </label>
           <input
             ref={idRef}
             id={idId}
@@ -133,6 +186,8 @@ function LoginForm({ portal, onBack, returnTo }) {
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
+
+      {portal.id === 'patient' && <WalkInCheckIn disabled={busy} />}
 
       {devAccount && (
         <p className="portal-dev">

@@ -1,4 +1,4 @@
-// Four-card sign-in (shared by the Staff and Admin dashboards; keep both copies identical).
+// Role-card sign-in (shared by the Smart OPD Dashboard and the standalone staff screens; keep both copies identical).
 // Each card is a login portal. The backend verifies it: POST /api/auth/login with `portal`
 // refuses a token when the account does not match (docs/API_CONTRACT.md, "/auth/login").
 // Doctors and other staff sign in on the Staff Dashboard, administrators on the Admin Dashboard;
@@ -6,6 +6,16 @@
 // preselected (only the portal id travels in the URL — never credentials or tokens).
 
 export const LOGIN_PORTALS = [
+  {
+    // Patients and walk-ins (kiosk): sign in, or check in as a guest without credentials.
+    id: 'patient',
+    apiPortal: 'PATIENT',
+    app: 'patient',
+    title: 'Patient Portal / Get Token',
+    subtitle: 'Join an OPD queue or check in as a walk-in — no staff login needed',
+    icon: 'ticket',
+    featured: true,
+  },
   {
     id: 'doctor',
     apiPortal: 'DOCTOR',

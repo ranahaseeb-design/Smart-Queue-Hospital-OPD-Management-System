@@ -3,6 +3,7 @@
  * Accounts (FR-01): registration, login, profile and the User shape from the contract.
  * Passwords are stored as salted bcrypt hashes; password_hash is never serialised.
  */
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const config = require('../config');
 const time = require('../utils/time');
@@ -156,17 +157,18 @@ async function register(db, body) {
  * Login portals of the dashboards' four-card sign-in screen. Doctors and other staff share the
  * STAFF role; a doctor is a STAFF account with a doctor profile (as `doctorId` in the User shape).
  */
-const LOGIN_PORTALS = ['DOCTOR', 'STAFF', 'BRANCH_ADMIN', 'HOSPITAL_ADMIN'];
+const LOGIN_PORTALS = ['DOCTOR', 'STAFF', 'BRANCH_ADMIN', 'HOSPITAL_ADMIN', 'PATIENT'];
 const PORTAL_LABELS = {
   DOCTOR: 'Doctor Login',
   STAFF: 'Staff Login',
   BRANCH_ADMIN: 'Branch Administrator',
   HOSPITAL_ADMIN: 'Hospital Administrator',
+  PATIENT: 'Patient Portal',
 };
 
-/** The portal an account belongs to, or null for patients (they use the patient apps). */
+/** The login portal an account belongs to. */
 async function portalOf(db, row) {
-  if (row.role === 'BRANCH_ADMIN' || row.role === 'HOSPITAL_ADMIN') return row.role;
+  if (row.role === 'BRANCH_ADMIN' || row.role === 'HOSPITAL_ADMIN' || row.role === 'PATIENT') return row.role;
   if (row.role !== 'STAFF') return null;
   const doctor = await Doctor.findOne({ user_id: row.user_id }, { _id: 1 }).session(sess(db)).lean();
   return doctor ? 'DOCTOR' : 'STAFF';
@@ -198,6 +200,52 @@ async function login(db, body) {
     }
   }
   return row;
+}
+
+// ---- Walk-in kiosk and demo patients (config.demoTools) ----
+const GUEST_EMAIL_DOMAIN = 'walkin.opd.local';
+const DEMO_EMAIL_DOMAIN = 'demo.opd.local';
+
+function randomTag() {
+  return `${Date.now().toString(36)}${crypto.randomBytes(4).toString('hex')}`;
+}
+
+/**
+ * Create a PATIENT account with a generated identity (walk-in guest or demo patient). The
+ * random password is never returned, so the account is only usable through the JWT issued now.
+ */
+async function createGeneratedPatient(db, { fullName, domain }) {
+  const tag = randomTag();
+  const insertId = await insertOne(db, User, {
+    full_name: fullName,
+    email: `${domain === DEMO_EMAIL_DOMAIN ? 'demo' : 'walkin'}-${tag}@${domain}`,
+    phone: null,
+    password_hash: await hashPassword(crypto.randomBytes(24).toString('hex')),
+    role: 'PATIENT',
+    date_of_birth: null,
+    priority_category: 'NONE',
+    admin_branch_id: null,
+    fcm_token: null,
+    is_active: true,
+    created_at: time.nowDb(),
+  });
+  return getUserRow(db, insertId);
+}
+
+/** POST /auth/guest — 1-click walk-in check-in at the kiosk (optional display name). */
+async function guestCheckIn(db, body = {}) {
+  const name = v.str(body.fullName, 'fullName', { min: 2, max: 100 });
+  const fullName = name || `Walk-in Guest ${crypto.randomInt(1000, 10000)}`;
+  return createGeneratedPatient(db, { fullName, domain: GUEST_EMAIL_DOMAIN });
+}
+
+/** Demo patients for the queue load simulator ("Demo Patient 1" …). */
+async function createDemoPatients(db, count) {
+  const rows = [];
+  for (let i = 1; i <= count; i += 1) {
+    rows.push(await createGeneratedPatient(db, { fullName: `Demo Patient ${crypto.randomInt(100, 1000)}`, domain: DEMO_EMAIL_DOMAIN }));
+  }
+  return rows;
 }
 
 /** PUT /auth/me */
@@ -266,6 +314,10 @@ module.exports = {
   getUserRow,
   assertUnique,
   register,
+  guestCheckIn,
+  createDemoPatients,
+  GUEST_EMAIL_DOMAIN,
+  DEMO_EMAIL_DOMAIN,
   login,
   updateMe,
 };

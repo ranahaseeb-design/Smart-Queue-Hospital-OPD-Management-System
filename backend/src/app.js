@@ -106,6 +106,7 @@ function createApp() {
   app.use('/api', require('./routes/browse'));
   app.use('/api', require('./routes/staff'));
   app.use('/api', require('./routes/patient'));
+  app.use('/api', require('./routes/demo'));
 
   app.use('/api', notFoundHandler);
   app.use(notFoundHandler);

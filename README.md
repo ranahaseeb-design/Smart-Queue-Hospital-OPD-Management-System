@@ -79,8 +79,20 @@ cd staff-dashboard && npm install
 cd admin-dashboard && npm install && npm run dev
 ```
 
-Open <http://localhost:5174>. The login page shows all four login types; doctors and staff get
-the queue console, branch and hospital administrators get the admin screens — same address.
+Open <http://localhost:5174>. The login page shows every login type; doctors and staff get the
+queue console, branch and hospital administrators get the admin screens, and patients get the
+**Patient Portal & token kiosk** — same address.
+
+**Patient Portal / Get Token** (featured card): sign in with phone/email, or **1-click walk-in
+check-in** (no account). Choose an area (preset Lahore coordinates or your browser location),
+department, branch and doctor/OPD room; the AI estimated wait comes from the Random Forest (or the
+Eq. 6.2 fallback, labelled). When the chosen queue is busy (> 25 min or > 4 waiting) the portal
+shows the best option from the haversine + load-balancing scorer with minutes saved and a
+one-click switch. The **live token pass** updates over the socket (with polling fallback): "NOW
+SERVING — Proceed to Room 1" with a pulse and optional chime when the doctor calls next, then the
+OPD → Lab/Pharmacy → Completed journey. The header's **Demo load simulator** injects 5 simulated
+patients into a doctor's queue for presentations. Walk-in check-in and the simulator need
+`DEMO_TOOLS=true` (default outside production).
 
 ### 3. AI service (optional)
 
@@ -109,9 +121,10 @@ See [mobile_app/README.md](mobile_app/README.md) for details.
 ## Demo accounts
 
 Development only, created by `npm run seed`. The Smart OPD Dashboard (<http://localhost:5174>)
-opens on one four-card login (Doctor, Staff, Branch Administrator, Hospital Administrator); pick
-the card that matches the account — the backend refuses a token when the account type and the card
-differ. In development each form has a "Fill" button for its seed account.
+opens on one role-card login (Patient Portal / Get Token, Doctor, Staff, Branch Administrator,
+Hospital Administrator); pick the card that matches the account — the backend refuses a token when
+the account type and the card differ. In development each form has a "Fill" button for its seed
+account; patients can also use the 1-click walk-in check-in.
 
 | Role | Login | Password |
 |---|---|---|
@@ -129,10 +142,10 @@ of a scheduled weekday, so the demo works outside clinic hours.
 
 | Component | Command | Suite |
 |---|---|---|
-| Backend | `cd backend && npm test` | 109 tests (node:test; integration tests use temporary MongoDB databases) |
+| Backend | `cd backend && npm test` | 115 tests (node:test; integration tests use temporary MongoDB databases) |
 | AI service | `cd ai-service && pytest` | 45 tests (mongomock) |
-| Staff screens (module) | `cd staff-dashboard && npx vitest run` | 62 tests |
-| Smart OPD Dashboard | `cd admin-dashboard && npx vitest run` | 50 tests |
+| Staff screens (module) | `cd staff-dashboard && npx vitest run` | 63 tests |
+| Smart OPD Dashboard | `cd admin-dashboard && npx vitest run` | 61 tests |
 | Patient app | `cd mobile_app && flutter test` | widget and model tests |
 
 ## Requirements coverage

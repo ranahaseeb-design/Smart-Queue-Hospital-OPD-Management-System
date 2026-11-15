@@ -84,6 +84,9 @@ const config = {
     serviceToken: (process.env.AI_SERVICE_TOKEN || '').trim(),
   },
   demoAlwaysOpen: bool(process.env.DEMO_ALWAYS_OPEN, false),
+  // Demo / kiosk tools: walk-in guest check-in (POST /auth/guest) and the queue load simulator
+  // (POST /demo/load-queue). On by default outside production; set DEMO_TOOLS=false to disable.
+  demoTools: bool(process.env.DEMO_TOOLS, nodeEnv !== 'production'),
   jobsEnabled: bool(process.env.JOBS_ENABLED, nodeEnv !== 'test'),
   autoSeed: bool(process.env.AUTO_SEED, false),
   seedHistoryDays: Math.max(1, int(process.env.SEED_HISTORY_DAYS, 60)),

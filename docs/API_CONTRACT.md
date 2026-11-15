@@ -17,7 +17,7 @@ mobile app are built against. Requirement IDs (FR-xx) refer to the FYP documenta
 - JSON bodies, **camelCase** keys in the REST API. DB columns are snake_case.
 - Auth: backend-issued JWT, header `Authorization: Bearer <token>`. All endpoints except register/login and `GET /api/health` require auth.
 - Errors: HTTP status + `{ "error": { "code": "SOME_CODE", "message": "Human readable" } }`.
-  Codes used: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `CONFLICT` (409), `AI_UNAVAILABLE` (503).
+  Codes used: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `CONFLICT` (409), `TOO_MANY_REQUESTS` (429), `AI_UNAVAILABLE` (503).
 - Datetimes: hospital local time (server `TZ=Asia/Karachi`), serialized as `"YYYY-MM-DDTHH:mm:ss"` **without** a zone suffix. Dates are `"YYYY-MM-DD"`, times `"HH:mm"`. Clients parse them as local time.
 - Roles: `PATIENT`, `STAFF` (doctors, OPD/lab/pharmacy staff), `BRANCH_ADMIN`, `HOSPITAL_ADMIN`.
 - Priority levels: `0` normal, `1` elderly / differently-abled, `2` emergency ("0 = normal; higher = earlier", data dictionary). Queue order among `WAITING` tokens (FR-13) = `priorityLevel DESC`, then checked-in **appointment** tokens before walk-ins, then `issuedAt ASC`, i.e. EMERGENCY > ELDERLY / DIFFERENTLY_ABLED > APPOINTMENT > NORMAL. Stored as `tokens.from_appointment` (boolean, moves with the appointment link on transfer).
@@ -94,7 +94,8 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 |---|---|---|---|
 | GET | `/health` | – | `{ status: "ok", db: "mongodb", ai: true|false }` |
 | POST | `/auth/register` | `{ fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }` (≥1 of email/phone, password ≥ 6) | 201 `{ token, user }` — role is always PATIENT. `ELDERLY` is derived from `dateOfBirth` (age ≥ 60, set automatically); declaring it without a qualifying `dateOfBirth` → 400. `DIFFERENTLY_ABLED` may be declared (staff confirm per token) |
-| POST | `/auth/login` | `{ identifier, password, portal? }` (identifier = email or phone; `portal` = `DOCTOR` \| `STAFF` \| `BRANCH_ADMIN` \| `HOSPITAL_ADMIN`, case-insensitive) | `{ token, user }`. With `portal` (the dashboards' four-card sign-in), the account must match **after** the password check, else 403 `FORBIDDEN` naming the right card and no token: `DOCTOR` = STAFF with a doctor profile, `STAFF` = STAFF without one, admins by role; patients are refused. Wrong password stays 401 without revealing the account type; unknown `portal` 400. Without `portal` (mobile app) any active account signs in |
+| POST | `/auth/login` | `{ identifier, password, portal? }` (identifier = email or phone; `portal` = `DOCTOR` \| `STAFF` \| `BRANCH_ADMIN` \| `HOSPITAL_ADMIN` \| `PATIENT`, case-insensitive) | `{ token, user }`. With `portal` (the dashboards' four-card sign-in), the account must match **after** the password check, else 403 `FORBIDDEN` naming the right card and no token: `DOCTOR` = STAFF with a doctor profile, `STAFF` = STAFF without one, admins and patients by role. Wrong password stays 401 without revealing the account type; unknown `portal` 400. Without `portal` (mobile app) any active account signs in |
+| POST | `/auth/guest` | `{ fullName? }` (2–100 chars) | 201 `{ token, user }` — kiosk **walk-in check-in** without credentials: a PATIENT account with a generated identity (`Walk-in Guest 1234` when no name, priority NONE, random password never returned). Only with `DEMO_TOOLS` (default on outside production; 404 when off); 30 per client address per hour (429 `TOO_MANY_REQUESTS`) |
 | GET | `/auth/me` | – | `{ user }` |
 | PUT | `/auth/me` | `{ fullName?, email?, phone?, dateOfBirth?, priorityCategory?, password? }` | `{ user }` (same `priorityCategory` rules as register) |
 
@@ -102,7 +103,7 @@ Estimate range: `low = max(0, round(minutes*0.8))`, `high = round(minutes*1.2)`,
 | GET | `/branches` | – | `[ { id, name, address, latitude, longitude, status, load: { waiting, congestionLevel, estimatedWaitMinutes } } ]` (ACTIVE only for patients). `load` is live: `waiting` = WAITING OPD tokens today, `congestionLevel` = worst department level, `estimatedWaitMinutes` = median over that branch's doctors accepting now of their `estimatedWaitMinutes` (null if none accepting) |
 | GET | `/specialties` | – | `[ "Cardiology", ... ]` |
 | GET | `/branches/:id/departments` | – | `[ { id, branchId, specialty, name, doctorCount, waiting, congestionLevel, congestionRatio, shortestWaitMinutes } ]` (`shortestWaitMinutes` = minimum `estimatedWaitMinutes` over doctors accepting now, null if none) |
-| GET | `/departments/:id/doctors` | `?date=YYYY-MM-DD` (default today) | `[ { id, fullName, departmentId, specialty, branchId, avgConsultMinutes, servicePointId, servicePointName, session: { startTime, endTime } | null, availableToday, acceptingNow, queueLength, estimatedWaitMinutes } ]` |
+| GET | `/departments/:id/doctors` | `?date=YYYY-MM-DD` (default today) | `[ { id, fullName, departmentId, specialty, branchId, avgConsultMinutes, servicePointId, servicePointName, session: { startTime, endTime } | null, availableToday, acceptingNow, queueLength, estimatedWaitMinutes, estimateModelVersion } ]` (`estimateModelVersion` = model version that produced the estimate, `"baseline"` for the Eq. 6.2 fallback) |
 
 `acceptingNow` = scheduled today, session not ended (unless `DEMO_ALWAYS_OPEN=true`, which ignores clock time but still needs a schedule that weekday), and below `max_patients` of the current session (counting only the doctor's OPD tokens issued in that session's window: from the previous session's end, or 00:00, to this session's end; the last session runs to midnight).
 
@@ -134,6 +135,11 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | GET | `/notifications` | – | `[ { id, tokenId, channel, message, sentAt, isRead } ]` newest first (IN_APP rows) |
 | POST | `/notifications/read-all` | – | `{ ok: true }` |
 | POST | `/notifications/device-token` | `{ fcmToken }` | `{ ok: true }` |
+
+### Demo tools (live presentations) — any authenticated role, only with `DEMO_TOOLS` (404 when off)
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/demo/load-queue` | `{ doctorId, count? }` (count 1–10, default 5) | 201 `{ doctorId, servicePoint: {id,name,type}, branch: {id,name}, issued: [ { id, displayNumber, patientsAhead } ], waitingNow }` — creates `count` "Demo Patient" accounts and issues their OPD tokens for that doctor through the normal issue path (events, predictions, notifications, sockets), flagged `is_synthetic`. A refusal (doctor not accepting) stops the batch with that error |
 
 ### Staff (FR-04, FR-12, FR-13) — role STAFF, limited to assigned service points
 | GET | `/staff/service-points` | – | `[ { id, name, type, branchId, branchName, doctorId, doctorName } ]` (doctorId = doctor scheduled in that room today, or the logged-in doctor) |

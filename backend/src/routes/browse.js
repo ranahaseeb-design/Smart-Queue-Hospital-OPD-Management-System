@@ -103,6 +103,7 @@ router.get('/departments/:id/doctors', async (req, res) => {
         acceptingNow: avail.acceptingNow,
         queueLength: avail.queueLength,
         estimatedWaitMinutes: p ? Math.round(p.minutes) : null,
+        estimateModelVersion: p ? p.modelVersion : null,
       };
     })
   );
