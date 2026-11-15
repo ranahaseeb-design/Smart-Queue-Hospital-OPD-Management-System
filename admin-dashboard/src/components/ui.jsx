@@ -1,4 +1,4 @@
-// Small presentational building blocks shared by all pages ("Clinical Calm" design system).
+// Small presentational building blocks shared by all pages ("Clinical Night" design system).
 import Icon from './Icon.jsx';
 import { errorMessage } from '../api/client.js';
 import { timeAgo } from '../utils/format.js';
@@ -16,9 +16,9 @@ export function PageHeader({ title, subtitle, actions, children }) {
   );
 }
 
-export function Card({ title, subtitle, overline, actions, children, className = '', bodyClassName = '' }) {
+export function Card({ title, subtitle, overline, actions, children, className = '', bodyClassName = '', id }) {
   return (
-    <section className={`card ${className}`}>
+    <section className={`card ${className}`} id={id}>
       {(title || actions || overline) && (
         <header className="card-head">
           <div className="card-head-text">

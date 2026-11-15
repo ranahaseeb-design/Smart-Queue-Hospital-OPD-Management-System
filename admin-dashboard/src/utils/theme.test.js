@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { applyTheme, nextTheme, readTheme, storeTheme, THEME_KEY } from './theme.js';
+import {
+  applyTheme, DEFAULT_THEME, nextTheme, normaliseTheme, readTheme, storeTheme, THEME_KEY, THEMES,
+} from './theme.js';
 import { peakRanges } from './chartTheme.js';
 
 function memoryStorage(initial = {}) {
@@ -18,28 +22,37 @@ const throwingStorage = {
   removeItem: () => { throw new Error('blocked'); },
 };
 
-describe('ThemeToggle cycle and storage', () => {
-  it('cycles System -> Light -> Dark -> System', () => {
-    expect(nextTheme('system')).toBe('light');
-    expect(nextTheme('light')).toBe('dark');
-    expect(nextTheme('dark')).toBe('system');
-    expect(nextTheme('bogus')).toBe('system');
+describe('theme toggle: Dark <-> Light, dark default (Decision 5)', () => {
+  it('has exactly two themes and dark is the default', () => {
+    expect(THEMES).toEqual(['dark', 'light']);
+    expect(DEFAULT_THEME).toBe('dark');
+    expect(THEME_KEY).toBe('smartopd.theme');
   });
 
-  it('stores light/dark under smartopd.theme and removes the key for system', () => {
+  it('toggles Dark -> Light -> Dark; unknown values count as dark', () => {
+    expect(nextTheme('dark')).toBe('light');
+    expect(nextTheme('light')).toBe('dark');
+    expect(nextTheme('system')).toBe('light');
+    expect(nextTheme(undefined)).toBe('light');
+  });
+
+  it('normalises anything that is not "light" to dark', () => {
+    expect(normaliseTheme('light')).toBe('light');
+    ['dark', 'system', 'purple', '', null, undefined, 1].forEach((v) => expect(normaliseTheme(v)).toBe('dark'));
+  });
+
+  it('stores the choice under smartopd.theme and reads it back', () => {
     const storage = memoryStorage();
-    expect(THEME_KEY).toBe('smartopd.theme');
+    expect(readTheme(storage)).toBe('dark');
     storeTheme('light', storage);
     expect(storage.data[THEME_KEY]).toBe('light');
     expect(readTheme(storage)).toBe('light');
     storeTheme('dark', storage);
+    expect(storage.data[THEME_KEY]).toBe('dark');
     expect(readTheme(storage)).toBe('dark');
-    storeTheme('system', storage);
-    expect(THEME_KEY in storage.data).toBe(false);
-    expect(readTheme(storage)).toBe('system');
   });
 
-  it('a full toggle round trip ends back on system with nothing stored', () => {
+  it('a toggle round trip alternates light and dark', () => {
     const storage = memoryStorage();
     let theme = readTheme(storage);
     const seen = [];
@@ -48,25 +61,53 @@ describe('ThemeToggle cycle and storage', () => {
       storeTheme(theme, storage);
       seen.push(readTheme(storage));
     }
-    expect(seen).toEqual(['light', 'dark', 'system']);
-    expect(storage.data).toEqual({});
+    expect(seen).toEqual(['light', 'dark', 'light']);
   });
 
-  it('ignores invalid stored values and survives blocked storage', () => {
-    expect(readTheme(memoryStorage({ [THEME_KEY]: 'purple' }))).toBe('system');
-    expect(readTheme(throwingStorage)).toBe('system');
-    expect(() => storeTheme('dark', throwingStorage)).not.toThrow();
-    expect(readTheme(undefined)).toBe('system');
+  it('falls back to dark for invalid or legacy values and survives blocked storage', () => {
+    expect(readTheme(memoryStorage({ [THEME_KEY]: 'purple' }))).toBe('dark');
+    expect(readTheme(memoryStorage({ [THEME_KEY]: 'system' }))).toBe('dark');
+    expect(readTheme(throwingStorage)).toBe('dark');
+    expect(() => storeTheme('light', throwingStorage)).not.toThrow();
+    expect(readTheme(undefined)).toBe('dark');
   });
 
-  it('applies the theme as data-theme and removes it for system', () => {
+  it('always sets data-theme on the root', () => {
     const root = { dataset: {} };
-    applyTheme('dark', root);
-    expect(root.dataset.theme).toBe('dark');
     applyTheme('light', root);
     expect(root.dataset.theme).toBe('light');
-    applyTheme('system', root);
-    expect('theme' in root.dataset).toBe(false);
+    applyTheme('dark', root);
+    expect(root.dataset.theme).toBe('dark');
+    applyTheme('bogus', root);
+    expect(root.dataset.theme).toBe('dark');
+    expect(() => applyTheme('dark', null)).not.toThrow();
+  });
+});
+
+describe('index.html theme boot script (before first paint)', () => {
+  const html = readFileSync(fileURLToPath(new URL('../../index.html', import.meta.url)), 'utf8');
+  const script = /<script id="theme-boot">([\s\S]*?)<\/script>/.exec(html)?.[1];
+
+  function boot(localStorage) {
+    const attrs = {};
+    const document = { documentElement: { setAttribute: (k, v) => { attrs[k] = v; } } };
+    // eslint-disable-next-line no-new-func
+    new Function('localStorage', 'document', script)(localStorage, document);
+    return attrs['data-theme'];
+  }
+
+  it('is inline in <head> and defaults the root to dark', () => {
+    expect(script).toBeTruthy();
+    expect(html).toMatch(/<html lang="en" data-theme="dark">/);
+    expect(html.indexOf('theme-boot')).toBeLessThan(html.indexOf('</head>'));
+  });
+
+  it('applies light only when light is stored, dark otherwise, and tolerates blocked storage', () => {
+    expect(boot(memoryStorage({ [THEME_KEY]: 'light' }))).toBe('light');
+    expect(boot(memoryStorage({ [THEME_KEY]: 'dark' }))).toBe('dark');
+    expect(boot(memoryStorage({ [THEME_KEY]: 'system' }))).toBe('dark');
+    expect(boot(memoryStorage())).toBe('dark');
+    expect(boot(throwingStorage)).toBe('dark');
   });
 });
 
@@ -75,5 +116,10 @@ describe('forecast peak bands', () => {
     const points = ['08:00', '09:00', '10:00', '11:00', '12:00', '13:00'].map((hour, i) => ({ hour, isPeak: [1, 2, 4].includes(i) }));
     expect(peakRanges(points)).toEqual([{ x1: '09:00', x2: '10:00' }, { x1: '12:00', x2: '12:00' }]);
     expect(peakRanges([])).toEqual([]);
+  });
+
+  it('accepts a custom marker (peak or shortfall hours)', () => {
+    const points = [{ hour: '08:00', s: 0 }, { hour: '09:00', s: 1 }, { hour: '10:00', s: 2 }];
+    expect(peakRanges(points, (p) => p.s > 0)).toEqual([{ x1: '09:00', x2: '10:00' }]);
   });
 });

@@ -1,9 +1,12 @@
 // Live refresh for monitoring screens (FR-15, NFR-01):
 //  - re-fetch on socket events (debounced, so a burst of queue changes causes one request);
-//  - polling fallback every `pollMs` while the socket is not connected;
+//  - polling fallback every `pollMs` (default 15 s, Decision 8) while the socket is not connected;
 //  - one re-fetch when the socket comes back after a drop (events missed while offline).
 import { useEffect, useRef } from 'react';
 import { useRealtime } from '../context/RealtimeContext.jsx';
+
+/** Polling interval while the socket is disconnected (Decision 8: <= 15 s outside /display). */
+export const LIVE_POLL_MS = 15000;
 
 /**
  * True when the realtime status changes to 'live' after a drop: from 'offline', or from any
@@ -18,7 +21,7 @@ export function isReconnect(prevStatus, status, wasLive) {
 export function useLiveRefresh(refresh, {
   events = ['queue:updated', 'alert'],
   debounceMs = 1200,
-  pollMs = 20000,
+  pollMs = LIVE_POLL_MS,
   filter,
 } = {}) {
   const { on, status } = useRealtime();

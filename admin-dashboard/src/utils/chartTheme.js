@@ -1,6 +1,6 @@
 // Chart colours come from the design tokens (--chart-*, congestion and status tokens), read at
-// runtime with getComputedStyle so light and dark themes both work. Congestion colours are
-// always paired with a text label or badge (never colour alone).
+// runtime with getComputedStyle so the dark (default) and light themes both work. Congestion
+// colours are always paired with a text label or badge (never colour alone).
 
 const VARS = {
   series1: '--chart-1',
@@ -12,17 +12,25 @@ const VARS = {
   grid: '--chart-grid',
   axis: '--chart-axis',
   reference: '--chart-reference',
+  peak: '--chart-peak',
   normal: '--color-congestion-normal',
   high: '--color-congestion-high',
   critical: '--color-congestion-critical',
+  danger: '--color-danger',
+  dangerText: '--color-danger-text',
   peakBand: '--color-warning-soft',
   peakText: '--color-warning-text',
+  primary: '--color-primary',
+  accent: '--color-accent',
+  live: '--color-live',
   cursor: '--color-surface-hover',
   textMuted: '--color-text-muted',
   surface: '--color-surface',
   fontSans: '--font-sans',
   textXs: '--text-xs',
 };
+
+export const CHART_TOKEN_VARS = VARS;
 
 function remToPx(value, rootPx) {
   const n = parseFloat(value);
@@ -32,7 +40,9 @@ function remToPx(value, rootPx) {
 
 /** Snapshot of the chart tokens for the current theme. */
 export function readChartTheme() {
-  if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return { tick: {} };
+  if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') {
+    return { tick: {}, congestion: {} };
+  }
   const root = document.documentElement;
   const cs = getComputedStyle(root);
   const t = Object.fromEntries(Object.entries(VARS).map(([k, v]) => [k, cs.getPropertyValue(v).trim()]));
@@ -40,6 +50,7 @@ export function readChartTheme() {
   const fontSize = remToPx(t.textXs, rootPx);
   return {
     ...t,
+    mode: root.dataset?.theme === 'light' ? 'light' : 'dark',
     fontSize,
     tick: { fill: t.axis, fontSize, fontFamily: t.fontSans },
     congestion: { NORMAL: t.normal, HIGH: t.high, CRITICAL: t.critical },
@@ -51,11 +62,11 @@ export function congestionColor(theme, level) {
 }
 
 /** Groups consecutive peak hours into bands, e.g. [{ x1: '10:00', x2: '12:00' }]. */
-export function peakRanges(points) {
+export function peakRanges(points, isMarked = (p) => p.isPeak) {
   const ranges = [];
   let current = null;
   (points || []).forEach((p, i) => {
-    if (p.isPeak) {
+    if (isMarked(p)) {
       if (current && current.end === i - 1) {
         current.x2 = p.hour;
         current.end = i;

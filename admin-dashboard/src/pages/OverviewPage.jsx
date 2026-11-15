@@ -1,20 +1,30 @@
 // Live Overview & Alerts (FR-15 live monitoring, FR-17 congestion alerts, NFR-01 real-time refresh).
-// Data: GET /admin/dashboard and GET /admin/alerts (scoped by ?branchId=). The page re-fetches on
-// socket events 'queue:updated' / 'alert' (debounced) and polls every 20 s while the socket is down.
+// Data: GET /admin/dashboard (kpis, trend, branches, departments[].doctors, servicePoints) and
+// GET /admin/alerts, scoped by ?branchId=. The page re-fetches on socket events 'queue:updated' /
+// 'alert' (debounced) and polls every 15 s while the socket is down (Decision 8).
+// Upgrade 2026: sliding congestion alert strip, animated KPI tiles with sparklines from `trend`
+// and a "● Live" indicator, and a department load matrix with expandable doctor rows.
+// Every number comes from the API; missing new fields (trend, doctors) simply hide those extras.
 import { useCallback, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
+import AlertStrip from '../components/AlertStrip.jsx';
+import DepartmentMatrix from '../components/DepartmentMatrix.jsx';
+import LiveIndicator from '../components/LiveIndicator.jsx';
+import LiveKpiTile from '../components/LiveKpiTile.jsx';
 import {
-  Badge, Card, CongestionBadge, EmptyState, ErrorBanner, KpiTile, LastUpdated, Loading, PageHeader, PageSkeleton,
+  Badge, Card, CongestionBadge, EmptyState, ErrorBanner, LastUpdated, Loading, PageHeader, PageSkeleton,
 } from '../components/ui.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useResource } from '../hooks/useResource.js';
-import { useLiveRefresh } from '../hooks/useLiveRefresh.js';
-import { fmtMinutes, fmtNum, fmtPercent, formatDateTime, timeAgo } from '../utils/format.js';
+import { useLiveRefresh, LIVE_POLL_MS } from '../hooks/useLiveRefresh.js';
+import { fmtMinutes, formatDateTime, timeAgo } from '../utils/format.js';
 import { congestionColor } from '../utils/chartTheme.js';
 import { useChartTheme } from '../hooks/useChartTheme.js';
+import { filterDepartments, kpiAnnouncement, trendSeries } from '../utils/overview.js';
 import { ServicePointType } from './ServicePointsPage.jsx';
 
 const LEVEL_RANK = { CRITICAL: 2, HIGH: 1, NORMAL: 0 };
@@ -45,7 +55,14 @@ function AlertList({ alerts, loading }) {
             <span className="muted small" title={formatDateTime(a.at)}>{timeAgo(a.at)}</span>
           </div>
           <p className="alert-msg">{a.message}</p>
-          <span className="muted small">{[a.branchName, a.departmentName].filter(Boolean).join(' · ')}</span>
+          <div className="alert-item-foot">
+            <span className="muted small">{[a.branchName, a.departmentName].filter(Boolean).join(' · ')}</span>
+            {a.departmentId !== undefined && a.departmentId !== null && (
+              <Link className="link-btn" to={`/workload?departmentId=${encodeURIComponent(a.departmentId)}`}>
+                Simulate staffing fix <span aria-hidden="true">→</span>
+              </Link>
+            )}
+          </div>
         </li>
       ))}
     </ul>
@@ -53,7 +70,7 @@ function AlertList({ alerts, loading }) {
 }
 
 export default function OverviewPage() {
-  const { scopeQuery, branchName, branchId } = useScope();
+  const { scopeQuery, branchName, branchId, branch } = useScope();
   const dash = useResource('/admin/dashboard', scopeQuery);
   const alerts = useResource('/admin/alerts', scopeQuery);
   const [deptFilter, setDeptFilter] = useState('');
@@ -71,20 +88,32 @@ export default function OverviewPage() {
 
   const data = dash.data || {};
   const kpis = data.kpis || {};
-  const departments = useMemo(() => (Array.isArray(data.departments) ? data.departments : []), [data.departments]);
+  const trend = useMemo(() => (Array.isArray(data.trend) ? data.trend : []), [data.trend]);
+  const trendLabels = trend.map((p) => p?.hour);
+  // The branch scope filters immediately on the client while the re-fetch for the new scope runs.
+  const departments = useMemo(
+    () => filterDepartments(Array.isArray(data.departments) ? data.departments : [], { branchId }),
+    [data.departments, branchId],
+  );
   const branches = Array.isArray(data.branches) ? data.branches : [];
-  const servicePoints = Array.isArray(data.servicePoints) ? data.servicePoints : [];
+  const servicePoints = (Array.isArray(data.servicePoints) ? data.servicePoints : [])
+    .filter((sp) => !branchId || !branch?.name || !sp.branchName || sp.branchName === branch.name);
 
-  // FR-15 input: department filter (client side, applied to tables, chart and alerts).
+  // FR-15 input: department filter (client side, applied to the matrix, chart and alerts).
   const deptOptions = useMemo(() => departments
     .map((d) => ({ value: String(d.departmentId), label: `${d.name || d.specialty}${branchId ? '' : ` — ${d.branchName}`}` }))
     .sort((a, b) => a.label.localeCompare(b.label)), [departments, branchId]);
   const selectedDept = departments.find((d) => String(d.departmentId) === deptFilter);
-  const deptRows = deptFilter ? departments.filter((d) => String(d.departmentId) === deptFilter) : departments;
+  const deptRows = useMemo(
+    () => filterDepartments(departments, { departmentId: selectedDept ? deptFilter : '' }),
+    [departments, deptFilter, selectedDept],
+  );
+  const scopedAlerts = (Array.isArray(alerts.data) ? alerts.data : [])
+    .filter((a) => !branchId || a.branchId === undefined || Number(a.branchId) === Number(branchId))
+    .filter((a) => !selectedDept || String(a.departmentId) === deptFilter);
   // Order: CRITICAL before HIGH, live before forecast; live alerts newest first, forecast alerts
   // by forecast hour (soonest first) so the next expected peak is on top.
-  const alertRows = (Array.isArray(alerts.data) ? alerts.data : [])
-    .filter((a) => !deptFilter || String(a.departmentId) === deptFilter)
+  const alertRows = [...scopedAlerts]
     .sort((a, b) => (LEVEL_RANK[b.level] ?? 0) - (LEVEL_RANK[a.level] ?? 0)
       || (a.source === 'FORECAST') - (b.source === 'FORECAST')
       || (a.source === 'FORECAST'
@@ -105,38 +134,33 @@ export default function OverviewPage() {
       ratio: d.congestionRatio,
     }));
 
-  const deptColumns = [
+  const levelTone = (lvl) => (lvl === 'CRITICAL' ? 'danger' : lvl === 'HIGH' ? 'warning' : 'default');
+  const tiles = selectedDept ? [
+    { key: 'waiting', label: 'Waiting', value: selectedDept.waiting, icon: 'users', tone: 'primary', hint: selectedDept.name || selectedDept.specialty },
+    { key: 'avg', label: 'Avg current wait', value: selectedDept.avgWaitMinutes, unit: 'min', icon: 'schedules' },
+    { key: 'max', label: 'Max current wait', value: selectedDept.maxWaitMinutes, unit: 'min', icon: 'alert', tone: levelTone(selectedDept.congestionLevel) },
+    { key: 'doctors', label: 'Active doctors', value: selectedDept.activeDoctors, icon: 'doctors' },
     {
-      key: 'name', label: 'Department',
-      searchValue: (r) => `${r.name} ${r.specialty} ${r.branchName}`,
-      render: (r) => (
-        <div className="cell-stack">
-          <strong>{r.name || r.specialty}</strong>
-          {!branchId && <span className="muted small">{r.branchName}</span>}
-        </div>
-      ),
+      key: 'load', label: 'Load (Eq. 6.5)',
+      value: Number.isFinite(Number(selectedDept.congestionRatio)) && selectedDept.congestionRatio !== null ? Number(selectedDept.congestionRatio) * 100 : null,
+      unit: '%', icon: 'workload', hint: <CongestionBadge level={selectedDept.congestionLevel} />,
     },
-    { key: 'waiting', label: 'Waiting', align: 'right' },
-    { key: 'activeDoctors', label: 'Doctors', align: 'right' },
-    { key: 'avgWaitMinutes', label: 'Avg wait', align: 'right', render: (r) => fmtMinutes(r.avgWaitMinutes) },
-    { key: 'maxWaitMinutes', label: 'Max wait', align: 'right', render: (r) => fmtMinutes(r.maxWaitMinutes) },
+  ] : [
+    { key: 'waiting', label: 'Waiting now', value: kpis.waiting, icon: 'users', tone: 'primary', trend: trendSeries(trend, 'waiting') },
+    { key: 'inService', label: 'In service', value: kpis.inService, icon: 'doctors', trend: trendSeries(trend, 'inService') },
+    { key: 'completed', label: 'Completed today', value: kpis.completedToday, icon: 'check', tone: 'success', trend: trendSeries(trend, 'completed') },
+    { key: 'avg', label: 'Avg current wait', value: kpis.avgWaitMinutes, unit: 'min', icon: 'schedules', trend: trendSeries(trend, 'avgWaitMinutes') },
     {
-      key: 'congestionRatio', label: 'Load', align: 'right',
-      render: (r) => (
-        <span className="ratio-cell" title="Waiting patients ÷ remaining capacity this session (Eq. 6.5)">
-          <span className={`ratio-bar ratio-${String(r.congestionLevel || 'NORMAL').toLowerCase()}`}>
-            <span style={{ width: `${Math.min(100, (Number(r.congestionRatio) || 0) * 100)}%` }} />
-          </span>
-          {fmtPercent(r.congestionRatio)}
-        </span>
-      ),
+      key: 'max', label: 'Max current wait', value: kpis.maxWaitMinutes, unit: 'min', icon: 'alert',
+      tone: Number(kpis.maxWaitMinutes) >= 60 ? 'warning' : 'default', trend: trendSeries(trend, 'maxWaitMinutes'),
     },
+    { key: 'doctors', label: 'Active doctors', value: kpis.activeDoctors, icon: 'doctors' },
     {
-      key: 'congestionLevel', label: 'Congestion',
-      sortValue: (r) => LEVEL_RANK[r.congestionLevel] ?? 0,
-      render: (r) => <CongestionBadge level={r.congestionLevel} />,
+      key: 'sp', label: 'Active service points', value: kpis.activeServicePoints, icon: 'servicePoints',
+      hint: congested ? `${congested} congested department${congested === 1 ? '' : 's'}` : 'No congestion',
     },
   ];
+  const announcement = kpiAnnouncement(tiles);
 
   const branchColumns = [
     { key: 'name', label: 'Branch', render: (r) => <strong>{r.name}</strong> },
@@ -173,7 +197,7 @@ export default function OverviewPage() {
             <LastUpdated at={dash.updatedAt} refreshing={dash.refreshing} />
             <label className="inline-field">
               <span>Department</span>
-              <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)} aria-label="Department filter">
+              <select value={selectedDept ? deptFilter : ''} onChange={(e) => setDeptFilter(e.target.value)} aria-label="Department filter">
                 <option value="">All departments</option>
                 {deptOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -185,56 +209,52 @@ export default function OverviewPage() {
         )}
       />
 
+      <AlertStrip alerts={scopedAlerts} />
+
       <ErrorBanner error={dash.error} onRetry={() => dash.reload()} />
 
       {dash.loading && !dash.data ? <PageSkeleton text="Loading live overview…" kpis={7} cards={2} /> : (
         <>
-          <div className="kpi-grid">
-            {selectedDept ? (
-              <>
-                <KpiTile label="Waiting" value={fmtNum(selectedDept.waiting)} icon="users" tone="primary" hint={selectedDept.name || selectedDept.specialty} />
-                <KpiTile label="Avg current wait" value={fmtNum(selectedDept.avgWaitMinutes)} unit="min" icon="schedules" />
-                <KpiTile label="Max current wait" value={fmtNum(selectedDept.maxWaitMinutes)} unit="min" icon="alert"
-                  tone={selectedDept.congestionLevel === 'CRITICAL' ? 'danger' : selectedDept.congestionLevel === 'HIGH' ? 'warning' : 'default'} />
-                <KpiTile label="Active doctors" value={fmtNum(selectedDept.activeDoctors)} icon="doctors" />
-                <KpiTile label="Load (Eq. 6.5)" value={fmtPercent(selectedDept.congestionRatio)} icon="workload"
-                  hint={<CongestionBadge level={selectedDept.congestionLevel} />} />
-              </>
-            ) : (
-              <>
-                <KpiTile label="Waiting now" value={fmtNum(kpis.waiting)} icon="users" tone="primary" />
-                <KpiTile label="In service" value={fmtNum(kpis.inService)} icon="doctors" />
-                <KpiTile label="Completed today" value={fmtNum(kpis.completedToday)} icon="check" tone="success" />
-                <KpiTile label="Avg current wait" value={fmtNum(kpis.avgWaitMinutes)} unit="min" icon="schedules" />
-                <KpiTile label="Max current wait" value={fmtNum(kpis.maxWaitMinutes)} unit="min" icon="alert"
-                  tone={Number(kpis.maxWaitMinutes) >= 60 ? 'warning' : 'default'} />
-                <KpiTile label="Active doctors" value={fmtNum(kpis.activeDoctors)} icon="doctors" />
-                <KpiTile label="Active service points" value={fmtNum(kpis.activeServicePoints)} icon="servicePoints"
-                  hint={congested ? `${congested} congested department${congested === 1 ? '' : 's'}` : 'No congestion'} />
-              </>
-            )}
-          </div>
+          <section className="kpi-section" aria-labelledby="kpi-heading">
+            <div className="section-head">
+              <h2 className="overline" id="kpi-heading">
+                {selectedDept ? `${selectedDept.name || selectedDept.specialty} — right now` : 'Today at a glance'}
+              </h2>
+              <LiveIndicator refreshing={dash.refreshing} pollSeconds={LIVE_POLL_MS / 1000} />
+              {!selectedDept && trend.length > 1 && <span className="muted small section-note">Sparklines: hourly trend today</span>}
+            </div>
+            <div className="kpi-grid">
+              {tiles.map(({ key, ...t }) => (
+                <LiveKpiTile key={`${selectedDept ? 'd' : 'k'}-${key}`} {...t} trendLabels={trendLabels} />
+              ))}
+            </div>
+            <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</p>
+          </section>
 
           <div className="grid-main-side">
             <Card
-              title="Departments"
-              subtitle="Live queue length, waits and load against remaining session capacity."
+              title="Department load"
+              subtitle="Live queue, waits and utilisation of the remaining session capacity (Eq. 6.5). Expand a row to see its doctors."
+              actions={(
+                <div className="legend-row" aria-label="Utilisation legend">
+                  <span><i className="legend-swatch util-swatch-low" /> &lt; 70 %</span>
+                  <span><i className="legend-swatch util-swatch-mid" /> 70–85 %</span>
+                  <span><i className="legend-swatch util-swatch-high" /> &gt; 85 %</span>
+                </div>
+              )}
             >
-              <DataTable
-                columns={deptColumns}
+              <DepartmentMatrix
                 rows={deptRows}
-                rowKey="departmentId"
-                searchable={departments.length > 8}
-                initialSort={{ key: 'congestionLevel', dir: 'desc' }}
-                emptyTitle="No departments in scope"
-                pageSize={15}
-                dense
+                showBranch={!branchId}
+                emptyText={branchId ? 'This branch has no active departments.' : 'No departments are configured yet.'}
               />
             </Card>
             <Card
               title={`Alerts${alertRows.length ? ` (${alertRows.length})` : ''}`}
               subtitle="Live and forecast congestion above the configured thresholds (FR-17)."
               actions={<LastUpdated at={alerts.updatedAt} refreshing={alerts.refreshing} />}
+              className="alerts-card"
+              id="alerts"
             >
               <ErrorBanner error={alerts.error} onRetry={() => alerts.reload()} title="Could not load alerts" />
               <AlertList alerts={alertRows} loading={alerts.loading} />
@@ -242,9 +262,9 @@ export default function OverviewPage() {
           </div>
 
           <div className="grid-2">
-            <Card title="Waiting patients by department" subtitle="Bar colour shows the congestion level; see the table for exact values.">
+            <Card title="Waiting patients by department" subtitle="Bar colour shows the congestion level; see the matrix for exact values.">
               {chartRows.length === 0 ? (
-                <EmptyState title="No queue data yet" />
+                <EmptyState title="No queue data yet">No department in scope has patients waiting today.</EmptyState>
               ) : (
                 <div className="chart-box" style={{ height: Math.max(220, chartRows.length * 34 + 40) }}>
                   <ResponsiveContainer width="100%" height="100%">
