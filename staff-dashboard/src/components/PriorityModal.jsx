@@ -16,8 +16,17 @@ const QUICK_REASONS = {
   2: ['Emergency case', 'Severe pain / distress', 'Referred as urgent'],
 };
 
-export default function PriorityModal({ token, onClose, onDone }) {
-  const [level, setLevel] = useState(() => Number(token.priorityLevel) || 0);
+/**
+ * @param {{ token: object, initialLevel?: number, onClose: () => void, onDone: (t: object) => void }} props
+ * `initialLevel` pre-selects a level (quick escalation selector in the waiting list); the reason is
+ * still required before anything is saved.
+ */
+export default function PriorityModal({ token, initialLevel, onClose, onDone }) {
+  const [level, setLevel] = useState(() =>
+    initialLevel != null && PRIORITY_LEVELS.some((p) => p.level === Number(initialLevel))
+      ? Number(initialLevel)
+      : Number(token.priorityLevel) || 0,
+  );
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -78,7 +87,7 @@ export default function PriorityModal({ token, onClose, onDone }) {
                 checked={level === p.level}
                 onChange={() => setLevel(p.level)}
                 disabled={busy}
-                data-autofocus={idx === (Number(token.priorityLevel) || 0) ? true : undefined}
+                data-autofocus={initialLevel == null && idx === (Number(token.priorityLevel) || 0) ? true : undefined}
               />
               <span className="choice-text">
                 <span className="choice-title">
@@ -113,6 +122,7 @@ export default function PriorityModal({ token, onClose, onDone }) {
           aria-invalid={error && !reasonValid ? 'true' : undefined}
           disabled={busy}
           placeholder="Why is this priority being applied or changed?"
+          data-autofocus={initialLevel != null ? true : undefined}
         />
         <p id={reasonHintId} className="field-hint">
           Recorded in the queue audit log with your name. {trimmed.length}/{REASON_MAX_LENGTH}

@@ -6,6 +6,7 @@ import WaitingList from '../components/WaitingList.jsx';
 import SkippedList from '../components/SkippedList.jsx';
 import SummaryTiles from '../components/SummaryTiles.jsx';
 import RecentlyCompletedList from '../components/RecentlyCompletedList.jsx';
+import QueuePanel from '../components/QueuePanel.jsx';
 import { REASON_MAX_LENGTH } from '../components/PriorityModal.jsx';
 
 const noop = () => {};
@@ -44,6 +45,14 @@ function isDisabled(html, label) {
   return tag.includes('disabled=""');
 }
 
+/** Same for a <select> labelled `label`. */
+function isSelectDisabled(html, label) {
+  const selects = html.match(/<select[^>]*>/g) || [];
+  const tag = selects.find((b) => b.includes(`aria-label="${label}"`));
+  if (!tag) throw new Error(`No select labelled "${label}"`);
+  return tag.includes('disabled=""');
+}
+
 describe('NowServingCard', () => {
   it('enables "Call next" when nothing is open', () => {
     const html = render(<NowServingCard token={null} servicePointType="OPD" waitingCount={3} busy={null} {...handlers} />);
@@ -61,8 +70,71 @@ describe('NowServingCard', () => {
     expect(html).toContain('OPD-007');
     expect(html).toContain('Ali Khan');
     expect(html).toContain('Emergency');
-    expect(html).toContain('>Start<');
+    expect(html).toContain('>Start service<');
+    expect(isDisabled(html, 'Start consultation for OPD-007')).toBe(false);
     expect(html).toContain('Issue linked token');
+    // The disabled Call next says why (NFR-03).
+    expect(html).toContain('Complete the current patient first');
+  });
+
+  it('shows the stage (CALLED / IN SERVICE), the pace gauge and the obvious next step', () => {
+    const now = new Date(2026, 9, 29, 9, 52, 30);
+    const called = render(
+      <NowServingCard token={calledToken} waitingCount={1} busy={null} avgConsultMinutes={10} now={now} {...handlers} />,
+    );
+    expect(called).toContain('CALLED');
+    expect(called).toMatch(/stage-step is-current[^>]*aria-current="step"/);
+    expect(called).toContain('role="meter"');
+    expect(called).toContain('since called');
+    expect(called).toMatch(/class="action action--start is-next/);
+
+    const inService = render(
+      <NowServingCard
+        token={{ ...calledToken, status: 'IN_SERVICE' }}
+        waitingCount={1}
+        busy={null}
+        avgConsultMinutes={10}
+        startedAt={new Date(now.getTime() - 16 * 60000)}
+        now={now}
+        {...handlers}
+      />,
+    );
+    expect(inService).toContain('IN SERVICE');
+    expect(inService).toContain('since start');
+    expect(inService).toContain('pace--critical'); // 16 min against a 10 min average
+    expect(inService).toContain('Well over average');
+    expect(inService).toMatch(/class="action action--complete is-next/);
+    expect(inService).toContain('>Complete consultation<');
+  });
+
+  it('explains every disabled action when the room is empty', () => {
+    const html = render(
+      <NowServingCard token={null} canIssueLinked waitingCount={0} skipped={[]} busy={null} {...handlers} />,
+    );
+    expect(html).toContain('No patients are waiting right now');
+    expect(html).toContain('Call a patient first');
+    expect(html).toContain('No skipped patients');
+    expect(html).toContain('No patient in the room');
+    expect(html).toMatch(/aria-describedby="stage-why-start"/);
+  });
+
+  it('recalls the most recently skipped token from the action bar', () => {
+    const skipped = [
+      { ...calledToken, id: 5, displayNumber: 'OPD-002', status: 'SKIPPED', calledAt: '2026-10-29T09:10:00' },
+      { ...calledToken, id: 6, displayNumber: 'OPD-004', status: 'SKIPPED', calledAt: '2026-10-29T09:30:00' },
+    ];
+    const html = render(<NowServingCard token={null} waitingCount={0} skipped={skipped} busy={null} {...handlers} />);
+    expect(isDisabled(html, 'Recall OPD-004')).toBe(false);
+    const open = render(<NowServingCard token={calledToken} waitingCount={0} skipped={skipped} busy={null} {...handlers} />);
+    expect(isDisabled(open, 'Recall OPD-004')).toBe(true);
+  });
+
+  it('uses counter wording at laboratory / pharmacy points', () => {
+    const html = render(
+      <NowServingCard token={{ ...calledToken, status: 'IN_SERVICE' }} servicePointType="LAB" waitingCount={0} busy={null} {...handlers} />,
+    );
+    expect(html).toContain('>Complete service<');
+    expect(html).not.toContain('Complete consultation');
   });
 
   it('hides "Issue linked token" unless a doctor works in an OPD room (FR-04)', () => {
@@ -137,6 +209,39 @@ describe('WaitingList', () => {
     expect(html).toContain('token-row--priority');
     expect(html).toContain('Elderly');
     expect(isDisabled(html, 'Transfer OPD-001')).toBe(false);
+  });
+
+  it('labels every row with the queue badge (EMERGENCY / ELDERLY / APPOINTMENT / NORMAL)', () => {
+    const tokens = [
+      { ...calledToken, id: 1, displayNumber: 'OPD-009', status: 'WAITING', priorityLevel: 2 },
+      { ...calledToken, id: 2, displayNumber: 'OPD-003', status: 'WAITING', priorityLevel: 1, priorityCategory: 'DIFFERENTLY_ABLED' },
+      { ...calledToken, id: 3, displayNumber: 'OPD-005', status: 'WAITING', priorityLevel: 0, fromAppointment: true },
+      { ...calledToken, id: 4, displayNumber: 'OPD-001', status: 'WAITING', priorityLevel: 0 },
+    ];
+    const html = render(<WaitingList tokens={tokens} busy={null} onPriority={noop} onTransfer={noop} />);
+    expect(html).toMatch(/badge badge--emergency[^"]*" [^>]*data-kind="EMERGENCY"/);
+    expect(html).toContain('data-kind="DIFFERENTLY_ABLED"');
+    expect(html).toContain('Differently-abled');
+    expect(html).toContain('badge badge--appointment');
+    expect(html).toContain('token-row--appointment');
+    expect(html).toContain('badge badge--normal');
+    expect(html).toContain('>Normal<');
+  });
+
+  it('offers a quick priority-escalation selector on each operable row', () => {
+    const tokens = [
+      { ...calledToken, id: 3, displayNumber: 'OPD-001', status: 'WAITING', priorityLevel: 0, doctorId: 2 },
+      { ...calledToken, id: 4, displayNumber: 'OPD-002', status: 'WAITING', priorityLevel: 1, doctorId: 9 },
+    ];
+    const html = render(
+      <WaitingList tokens={tokens} busy={null} onPriority={noop} onTransfer={noop} canOperate={(t) => t.doctorId === 2} />,
+    );
+    expect(isSelectDisabled(html, 'Set priority of OPD-001')).toBe(false);
+    expect(isSelectDisabled(html, 'Set priority of OPD-002')).toBe(true);
+    expect(html).toContain('Another doctor’s patient');
+    expect(html).toContain('>Emergency</option>');
+    const busy = render(<WaitingList tokens={tokens} busy="call-next" onPriority={noop} onTransfer={noop} />);
+    expect(isSelectDisabled(busy, 'Set priority of OPD-001')).toBe(true);
   });
 
   it('shows an empty state', () => {
@@ -232,5 +337,36 @@ describe('Service-point type wording (LAB / PHARMACY counters)', () => {
     const lab = render(<RecentlyCompletedList tokens={[]} servicePointType="PHARMACY" busy={null} onIssueLinked={noop} />);
     expect(lab).toContain('No patients completed here yet today.');
     expect(lab).not.toContain('consultations');
+  });
+});
+
+describe('QueuePanel (tabs "Waiting queue" / "Skipped (recallable)")', () => {
+  const waiting = [
+    { ...calledToken, id: 1, displayNumber: 'OPD-010', status: 'WAITING', priorityLevel: 0 },
+    { ...calledToken, id: 2, displayNumber: 'OPD-011', status: 'WAITING', priorityLevel: 0 },
+  ];
+  const skipped = [{ ...calledToken, id: 3, displayNumber: 'OPD-003', status: 'SKIPPED', priorityLevel: 0 }];
+  const props = { waiting, skipped, busy: null, onTabChange: noop, onPriority: noop, onTransfer: noop, onRecall: noop };
+
+  it('shows both tabs with counts and the selected list', () => {
+    const html = render(<QueuePanel tab="waiting" hasOpenToken={false} {...props} />);
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain('Waiting queue');
+    expect(html).toContain('Skipped (recallable)');
+    expect(html).toContain('aria-label="2 patients waiting"');
+    expect(html).toContain('aria-label="1 skipped tokens"');
+    expect(html).toMatch(/id="queue-tab-waiting"[^>]*aria-selected="true"/);
+    expect(html).toContain('OPD-010');
+    expect(html).not.toContain('OPD-003');
+  });
+
+  it('switches to the skipped list with Recall', () => {
+    const html = render(<QueuePanel tab="skipped" hasOpenToken={false} {...props} />);
+    expect(html).toMatch(/id="queue-tab-skipped"[^>]*aria-selected="true"/);
+    expect(html).toContain('OPD-003');
+    expect(isDisabled(html, 'Recall OPD-003')).toBe(false);
+    const open = render(<QueuePanel tab="skipped" hasOpenToken {...props} />);
+    expect(isDisabled(open, 'Recall OPD-003')).toBe(true);
+    expect(open).toContain('Complete the current patient first');
   });
 });

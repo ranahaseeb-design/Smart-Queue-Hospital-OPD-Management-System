@@ -7,7 +7,12 @@ import Icon from './Icon.jsx';
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export default function Modal({ title, description, onClose, children, footer, busy = false, size = 'md' }) {
+/**
+ * `variant="drawer"` renders the same accessible dialog as a slide-over from the right edge
+ * (linked referral drawer); the focus handling is identical.
+ */
+export default function Modal({ title, description, onClose, children, footer, busy = false, size = 'md', variant = 'modal' }) {
+  const drawer = variant === 'drawer';
   const titleId = useId();
   const descId = useId();
   const dialogRef = useRef(null);
@@ -54,14 +59,14 @@ export default function Modal({ title, description, onClose, children, footer, b
 
   return createPortal(
     <div
-      className="modal-backdrop"
+      className={`modal-backdrop${drawer ? ' modal-backdrop--drawer' : ''}`}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget && !busy) onClose?.();
       }}
     >
       <div
         ref={dialogRef}
-        className={`modal modal--${size}`}
+        className={drawer ? 'modal drawer' : `modal modal--${size}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -84,7 +89,7 @@ export default function Modal({ title, description, onClose, children, footer, b
             className="btn btn--ghost btn--icon btn--sm"
             onClick={onClose}
             disabled={busy}
-            aria-label="Close dialog"
+            aria-label={drawer ? 'Close panel' : 'Close dialog'}
           >
             <Icon name="x" />
           </button>
