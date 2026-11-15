@@ -297,6 +297,20 @@ test('Eq. 6.2 baseline does not double-count priority tokens already in patients
   assert.equal(fb.baselineMinutes({ ...base, minutes_to_start: 15 }), 45);
 });
 
+test('start delay: counted before the session, none in DEMO_ALWAYS_OPEN mode', () => {
+  const fb = require('../src/services/featureBuilder');
+  const now = new Date(2026, 10, 16, 0, 30);
+  const token = { id: 1, status: 'WAITING', priorityLevel: 0, issuedAt: now };
+  const ctx = {
+    queue: [token],
+    recentEvents: [],
+    session: { start: new Date(2026, 10, 16, 8, 0), end: new Date(2026, 10, 16, 14, 0) },
+    doctor: { id: 1, departmentId: 1, branchId: 1, avgConsultMinutes: 10 },
+  };
+  assert.equal(fb.computeFeatures(ctx, token, now).minutes_to_start, 450);
+  assert.equal(fb.computeFeatures({ ...ctx, alwaysOpen: true }, token, now).minutes_to_start, 0);
+});
+
 test('the JS baseline forecast replaces today from 00:00, like the AI job (no mixed sources today)', async () => {
   const forecastService = require('../src/services/forecastService');
   const today = ctx.time.today();

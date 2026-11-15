@@ -233,6 +233,9 @@ const WaitPrediction = model(
     predicted_minutes: reqNum,
     model_version: reqStr,
     features: { type: Schema.Types.Mixed, default: null }, // the 14 contract feature keys
+    // Why the Eq. 6.2 baseline was used (null when the Random Forest answered):
+    // AI_UNAVAILABLE (service down / no active model) or COLD_START (doctor has too little history).
+    baseline_reason: { type: String, default: null },
     created_at: { type: Date, required: true },
   },
   [[{ token_id: 1, created_at: 1 }]],

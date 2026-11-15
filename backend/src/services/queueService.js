@@ -524,6 +524,33 @@ async function cancelToken(db, user, tokenId, now = time.clock.now()) {
   return getTokenDetail(db, tokenId, { now });
 }
 
+/**
+ * POST /tokens/:id/switch — FR-09 "switch my token here", only on the patient's own action
+ * (Section 6.5.3: the system never moves a token without consent). The new token is issued first
+ * through the normal path (same 409 rules), so a refusal leaves the old token untouched; then the
+ * old WAITING token is cancelled. If that cancel fails, the new token is cancelled again.
+ */
+async function switchToken(db, user, tokenId, doctorId, now = time.clock.now()) {
+  const row = await requireTokenRow(db, tokenId);
+  if (row.patient_id !== user.user_id) throw forbidden('You can only switch your own tokens');
+  if (row.queue_type !== 'OPD') throw badRequest('Only OPD tokens can be switched');
+  if (row.status !== 'WAITING') throw conflict('Only waiting tokens can be switched');
+  if (row.doctor_id === doctorId) throw badRequest('The token is already with this doctor');
+  const issued = await issueOpdToken(db, user, doctorId, { now });
+  let cancelled;
+  try {
+    cancelled = await cancelToken(db, user, tokenId, now);
+  } catch (err) {
+    await cancelToken(db, user, issued.id, now).catch(() => {});
+    throw err;
+  }
+  await QueueEvent.updateOne(
+    { token_id: tokenId, event_type: 'CANCELLED' },
+    { $set: { note: `Switched to ${issued.branch ? issued.branch.name : 'another branch'} · ${issued.doctor ? issued.doctor.fullName : ''}`.slice(0, 255) } }
+  );
+  return { cancelled, token: await getTokenDetail(db, issued.id, { now }) };
+}
+
 async function activeTokensForPatient(db, patientId, now = time.clock.now()) {
   const visitIds = await Visit.distinct('_id', { patient_id: patientId }).session(sess(db));
   const rows = visitIds.length
@@ -1136,6 +1163,7 @@ module.exports = {
   propagate,
   issueOpdToken,
   cancelToken,
+  switchToken,
   activeTokensForPatient,
   staffServicePoints,
   roomDoctorToday,

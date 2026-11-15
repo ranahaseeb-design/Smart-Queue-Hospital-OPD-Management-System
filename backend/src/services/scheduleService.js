@@ -190,6 +190,10 @@ async function availability(db, doctor, dateStr, now) {
   const isToday = dateStr === time.formatDate(now);
   let acceptingNow = false;
   let queueLength = 0;
+  // Why a doctor cannot take a walk-in token now (shown to patients instead of a bare "not accepting").
+  let unavailableReason = null;
+  if (!session) unavailableReason = 'NOT_SCHEDULED';
+  else if (!isDoctorBookable(doctor)) unavailableReason = 'INACTIVE';
   if (isToday && session && isDoctorBookable(doctor)) {
     const open = config.demoAlwaysOpen || now < session.end;
     // Same per-session count as issueOpdToken enforces.
@@ -197,9 +201,11 @@ async function availability(db, doctor, dateStr, now) {
       !session.maxPatients ||
       (await sessionIssuedCount(db, doctor.doctor_id, dateStr, sessions, session)) < session.maxPatients;
     acceptingNow = open && belowMax;
+    if (!open) unavailableReason = 'SESSION_ENDED';
+    else if (!belowMax) unavailableReason = 'SESSION_FULL';
   }
   if (isToday) queueLength = await waitingCount(db, doctor.doctor_id, dateStr);
-  return { sessions, session, availableToday: Boolean(session), acceptingNow, queueLength };
+  return { sessions, session, availableToday: Boolean(session), acceptingNow, unavailableReason, queueLength };
 }
 
 module.exports = {

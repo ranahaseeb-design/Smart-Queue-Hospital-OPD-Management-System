@@ -112,7 +112,13 @@ class ModelMetrics(CamelModel):
     r2: Optional[float] = None
     within10: Optional[float] = None
     baseline_mae: Optional[float] = None
+    # The Eq. 6.2 baseline scored on the same test rows (RF vs baseline scorecard).
+    baseline_rmse: Optional[float] = None
+    baseline_r2: Optional[float] = None
+    baseline_within10: Optional[float] = None
     test_rows: Optional[int] = None
+    # Forest importances summed per contract feature (one-hot columns folded back), sorted high -> low.
+    feature_importances: Optional[dict[str, float]] = None
 
 
 class ModelVersionOut(CamelModel):
@@ -123,6 +129,7 @@ class ModelVersionOut(CamelModel):
     status: str
     is_active: bool
     metrics: ModelMetrics
+    reason: Optional[str] = None  # why the version was accepted or rejected (null for versions trained before this field)
 
 
 class DepartmentCheck(CamelModel):

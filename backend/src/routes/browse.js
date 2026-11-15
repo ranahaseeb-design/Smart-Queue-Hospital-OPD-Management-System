@@ -107,6 +107,7 @@ router.get('/departments/:id/doctors', async (req, res) => {
         session: avail.session ? { startTime: avail.session.startTime, endTime: avail.session.endTime } : null,
         availableToday: avail.availableToday,
         acceptingNow: avail.acceptingNow,
+        unavailableReason: date === time.formatDate(now) ? avail.unavailableReason : avail.session ? null : 'NOT_SCHEDULED',
         queueLength: avail.queueLength,
         estimatedWaitMinutes: p ? Math.round(p.minutes) : null,
         estimateModelVersion: p ? p.modelVersion : null,

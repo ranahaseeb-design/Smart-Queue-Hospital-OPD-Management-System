@@ -59,6 +59,7 @@ async function servicePointAverage(db, servicePointId, type, dateStr) {
 
 function clearCaches() {
   spAverageCache.clear();
+  coldStartCache = { at: 0, counts: new Map() };
 }
 
 function rowToQueueToken(r, patientId) {
@@ -128,6 +129,8 @@ async function loadQueueContext(db, key, now) {
     queue,
     recentEvents,
     session: null,
+    // DEMO_ALWAYS_OPEN: sessions count as open now, so no "wait until the session starts" delay.
+    alwaysOpen: config.demoAlwaysOpen,
     bookedAppointments: [],
     departmentWaiting: 0,
     departmentActiveDoctors: 1,
@@ -178,6 +181,71 @@ async function latestPredictions(db, tokenIds) {
   return map;
 }
 
+// ---- Cold start (Section 6.4.4): doctors with too little history get the baseline ----
+const COLD_START_CACHE_MS = 60 * 1000;
+let coldStartCache = { at: 0, counts: new Map() };
+
+/** Set of doctor ids (among `doctorIds`) with fewer than config.coldStartMinConsults completed OPD consultations. */
+async function coldStartDoctors(db, doctorIds) {
+  const ids = [...new Set(doctorIds.filter(Boolean))];
+  if (!ids.length || config.coldStartMinConsults <= 0) return new Set();
+  if (Date.now() - coldStartCache.at > COLD_START_CACHE_MS) coldStartCache = { at: Date.now(), counts: new Map() };
+  const missing = ids.filter((id) => !coldStartCache.counts.has(id));
+  if (missing.length) {
+    const rows = await Token.aggregate([
+      { $match: { doctor_id: { $in: missing }, queue_type: 'OPD', status: 'COMPLETED' } },
+      { $group: { _id: '$doctor_id', n: { $sum: 1 } } },
+    ]).session(sess(db));
+    const found = new Map(rows.map((r) => [r._id, r.n]));
+    for (const id of missing) coldStartCache.counts.set(id, found.get(id) || 0);
+  }
+  return new Set(ids.filter((id) => coldStartCache.counts.get(id) < config.coldStartMinConsults));
+}
+
+/**
+ * Which predictor answers for one queue item: the Random Forest when the AI service returned a
+ * prediction and the doctor is not in cold start, else the baseline with its reason.
+ */
+function pickPredictor(aiResult, key, doctorId, cold) {
+  if (!aiResult || !aiResult.byTokenId.has(key)) return { useAi: false, baselineReason: 'AI_UNAVAILABLE' };
+  if (doctorId && cold.has(doctorId)) return { useAi: false, baselineReason: 'COLD_START' };
+  return { useAi: true, baselineReason: null };
+}
+
+/**
+ * FR-06 transparency: the inputs behind an estimate in plain numbers (aggregate counts only).
+ * Eq. 6.2 notation: baseline = (n_ahead + n_priority) * c_doctor + d_start, where patients_ahead
+ * already includes the priority tokens, so n_ahead = normal tokens ahead.
+ */
+function explainPrediction(predRow) {
+  const f = predRow && predRow.features;
+  if (!f) return null;
+  const num = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v));
+  const patientsAhead = num(f.patients_ahead) ?? 0;
+  const priorityAhead = Math.min(patientsAhead, num(f.priority_ahead) ?? 0);
+  const baseline = Math.max(0, Math.round(fb.baselineMinutes({
+    patients_ahead: patientsAhead,
+    doctor_avg_consult: num(f.doctor_avg_consult) ?? 0,
+    minutes_to_start: num(f.minutes_to_start) ?? 0,
+  })));
+  const model = predRow.model_version && predRow.model_version !== 'baseline';
+  return {
+    method: model ? 'MODEL' : 'BASELINE',
+    reason: model ? null : predRow.baseline_reason || 'AI_UNAVAILABLE',
+    patientsAhead,
+    priorityAhead,
+    normalAhead: patientsAhead - priorityAhead,
+    doctorAvgConsultMinutes: num(f.doctor_avg_consult) === null ? null : Math.round(num(f.doctor_avg_consult) * 10) / 10,
+    minutesToStart: Math.round(num(f.minutes_to_start) ?? 0),
+    baselineMinutes: baseline,
+    modelAdjustmentMinutes: model ? Math.round(Number(predRow.predicted_minutes) - baseline) : null,
+    hourOfDay: num(f.hour_of_day),
+    departmentLoad: num(f.department_load) === null ? null : Math.round(num(f.department_load) * 10) / 10,
+    interruptionsLastHour: num(f.interruptions_last_hour),
+    appointmentsAhead: num(f.appointments_ahead),
+  };
+}
+
 /** Remaining minutes of a stored prediction at `now` (predicted minus time elapsed since it was made). */
 function remainingMinutes(predRow, now) {
   if (!predRow) return null;
@@ -188,7 +256,7 @@ function remainingMinutes(predRow, now) {
 /** Contract estimate object for a stored prediction. */
 function estimateFromPrediction(predRow, now) {
   if (!predRow) return null;
-  return fb.estimateRange(remainingMinutes(predRow, now), predRow.model_version);
+  return { ...fb.estimateRange(remainingMinutes(predRow, now), predRow.model_version), explain: explainPrediction(predRow) };
 }
 
 /**
@@ -204,6 +272,7 @@ async function repredictQueue(db, key, now = time.clock.now()) {
 
   const features = waiting.map((t) => fb.computeFeatures(ctx, t, now));
   const aiResult = await ai.predictWait(waiting.map((t, i) => ({ tokenId: t.id, features: features[i] })));
+  const cold = await coldStartDoctors(db, [key.doctorId]);
   const previous = await latestPredictions(
     db,
     waiting.map((t) => t.id)
@@ -213,11 +282,11 @@ async function repredictQueue(db, key, now = time.clock.now()) {
   const docs = [];
   const results = waiting.map((t, i) => {
     const f = features[i];
-    const useAi = aiResult && aiResult.byTokenId.has(t.id);
+    const { useAi, baselineReason } = pickPredictor(aiResult, t.id, key.doctorId, cold);
     const raw = useAi ? aiResult.byTokenId.get(t.id) : fb.baselineMinutes(f);
     const modelVersion = useAi ? aiResult.modelVersion : 'baseline';
     const minutes = fb.boundMinutes(raw, now, ctx.session);
-    docs.push({ token_id: t.id, predicted_minutes: minutes, model_version: modelVersion, features: f, created_at: createdAt });
+    docs.push({ token_id: t.id, predicted_minutes: minutes, model_version: modelVersion, features: f, baseline_reason: baselineReason, created_at: createdAt });
 
     const prev = previous.get(t.id);
     const prevRemaining = prev ? remainingMinutes(prev, now) : null;
@@ -268,13 +337,15 @@ async function predictHypothetical(db, doctors, { priorityLevel = 0, now = time.
     prepared.push({ doctorId: d.doctor_id, features, session: ctx.session });
   }
   const aiResult = await ai.predictWait(prepared.map((p) => ({ tokenId: -p.doctorId, features: p.features })));
+  const cold = await coldStartDoctors(db, prepared.map((p) => p.doctorId));
   const out = new Map();
   for (const p of prepared) {
-    const useAi = aiResult && aiResult.byTokenId.has(-p.doctorId);
+    const { useAi, baselineReason } = pickPredictor(aiResult, -p.doctorId, p.doctorId, cold);
     const raw = useAi ? aiResult.byTokenId.get(-p.doctorId) : fb.baselineMinutes(p.features);
     out.set(p.doctorId, {
       minutes: fb.boundMinutes(raw, now, p.session),
       modelVersion: useAi ? aiResult.modelVersion : 'baseline',
+      baselineReason,
       features: p.features,
     });
   }
@@ -313,6 +384,8 @@ module.exports = {
   departmentWaitingCount,
   remainingMinutes,
   estimateFromPrediction,
+  explainPrediction,
+  coldStartDoctors,
   repredictQueue,
   predictHypothetical,
   servicePointAverage,

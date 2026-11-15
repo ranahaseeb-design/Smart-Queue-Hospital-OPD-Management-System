@@ -187,18 +187,33 @@ def _feature_importances(pipeline: Pipeline) -> dict[str, float]:
     return {name: round(value, 5) for name, value in sorted(totals.items(), key=lambda p: -p[1])}
 
 
-def _metrics(y_true: np.ndarray, y_pred: np.ndarray, baseline_mae: float) -> dict:
-    """Eq. 6.6-6.8 plus % within +/-10 minutes (Section 6.7.2)."""
+def _scores(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float, float, float]:
+    """MAE, RMSE, R^2 and % within +/-10 minutes (Eq. 6.6-6.8, Section 6.7.2)."""
     errors = np.abs(y_true - y_pred)
     r2 = float(r2_score(y_true, y_pred)) if len(y_true) > 1 else 0.0
-    return {
-        "mae": round(float(mean_absolute_error(y_true, y_pred)), 2),
-        "rmse": round(float(np.sqrt(mean_squared_error(y_true, y_pred))), 2),
-        "r2": round(r2 if np.isfinite(r2) else 0.0, 3),
-        "within10": round(float(np.mean(errors <= 10.0) * 100.0), 1),
+    return (
+        round(float(mean_absolute_error(y_true, y_pred)), 2),
+        round(float(np.sqrt(mean_squared_error(y_true, y_pred))), 2),
+        round(r2 if np.isfinite(r2) else 0.0, 3),
+        round(float(np.mean(errors <= 10.0) * 100.0), 1),
+    )
+
+
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray, baseline_mae: float, y_base: np.ndarray | None = None) -> dict:
+    """Model scores on the test period, plus the same scores of the Eq. 6.2 baseline when given."""
+    mae, rmse, r2, within10 = _scores(y_true, y_pred)
+    out = {
+        "mae": mae,
+        "rmse": rmse,
+        "r2": r2,
+        "within10": within10,
         "baselineMae": round(float(baseline_mae), 2),
         "testRows": int(len(y_true)),
     }
+    if y_base is not None and len(y_base) == len(y_true):
+        _, b_rmse, b_r2, b_within10 = _scores(y_true, y_base)
+        out.update({"baselineRmse": b_rmse, "baselineR2": b_r2, "baselineWithin10": b_within10})
+    return out
 
 
 def _department_check(test_X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray, y_base: np.ndarray) -> list[dict]:
@@ -334,7 +349,8 @@ def _retrain_locked(now: datetime) -> dict:
     y_base = baseline_series(X_test).to_numpy(dtype=float)
     baseline_mae = float(np.mean(np.abs(y_true - y_base)))
     model_mae = float(np.mean(np.abs(y_true - y_pred)))
-    metrics = _metrics(y_true, y_pred, baseline_mae)
+    metrics = _metrics(y_true, y_pred, baseline_mae, y_base)
+    metrics["featureImportances"] = feature_importances
     metrics["syntheticShareTrain"] = share_train
     metrics["syntheticShareTest"] = share_test
     department_check = _department_check(X_test, y_true, y_pred, y_base)
@@ -399,6 +415,7 @@ def _retrain_locked(now: datetime) -> dict:
         "metrics": _plain(metrics),
         "status": "ACTIVE" if accepted else "REJECTED",
         "is_active": bool(accepted),
+        "reason": reason,
     }
     versions = db.get_db()["model_versions"]
 
@@ -453,8 +470,13 @@ def list_models() -> list[dict]:
                     "r2": metrics.get("r2"),
                     "within10": metrics.get("within10"),
                     "baselineMae": metrics.get("baselineMae"),
+                    "baselineRmse": metrics.get("baselineRmse"),
+                    "baselineR2": metrics.get("baselineR2"),
+                    "baselineWithin10": metrics.get("baselineWithin10"),
                     "testRows": metrics.get("testRows"),
+                    "featureImportances": metrics.get("featureImportances") if isinstance(metrics.get("featureImportances"), dict) else None,
                 },
+                "reason": row.get("reason"),
             }
         )
     return out

@@ -10,6 +10,8 @@
  *        queue events, FR-21), past BOOKED appointments -> NO_SHOW, past OPEN visits -> CLOSED;
  *      * refresh of doctors.avg_consult_minutes = rolling mean of each doctor's last 30 completed
  *        consultations (input of the Eq. 6.2 baseline and the doctor_avg_consult feature).
+ *  - Once at start-up: re-predict every queue of today that has WAITING tokens (FR-07), so stored
+ *    estimates follow the model and rules of the code now running (not the ones before a restart).
  *
  * Every timer is unref()'d so it never keeps the process alive, and every run is guarded so a
  * failing job is logged and retried at the next tick instead of crashing the server.
@@ -42,6 +44,21 @@ async function runForecastRefresh(db, now = time.clock.now()) {
     if (alert.source === 'FORECAST' && alert.at <= horizon) realtime.emitAlert(alert);
   }
   return result;
+}
+
+/** Re-predict today's queues that have WAITING tokens (one propagate over all of them). */
+async function refreshOpenQueues(db, now = time.clock.now()) {
+  const date = time.formatDate(now);
+  const rows = await models.Token.find({ token_date: date, status: 'WAITING' }, { service_point_id: 1, doctor_id: 1 })
+    .session(sess(db))
+    .lean();
+  const keys = new Map();
+  for (const r of rows) {
+    keys.set(`${r.service_point_id}|${r.doctor_id || 0}`, { servicePointId: r.service_point_id, date, doctorId: r.doctor_id || null });
+  }
+  if (!keys.size) return undefined;
+  await queueService.propagate(db, [...keys.values()], { now });
+  return { queues: keys.size, waitingTokens: rows.length };
 }
 
 /** True when forecast rows exist for the current hour (no need to refresh at start-up). */
@@ -77,6 +94,7 @@ function start(db, { logger = console } = {}) {
     lastMaintenanceDate = today;
     return result;
   });
+  const startupRepredict = guarded('repredict-startup', () => refreshOpenQueues(db));
   const startupForecast = guarded('forecast-startup', async () => {
     if (await hasCurrentForecasts(db, time.clock.now())) return undefined;
     return runForecastRefresh(db);
@@ -90,6 +108,7 @@ function start(db, { logger = console } = {}) {
 
   schedule(dailyJob, STARTUP_DELAY_MS, false);
   schedule(startupForecast, STARTUP_DELAY_MS * 2, false);
+  schedule(startupRepredict, STARTUP_DELAY_MS * 3, false);
   schedule(dailyJob, DAILY_CHECK_INTERVAL_MS, true);
   schedule(forecastJob, FORECAST_INTERVAL_MS, true);
 
@@ -102,4 +121,4 @@ function start(db, { logger = console } = {}) {
   };
 }
 
-module.exports = { start, runDailyMaintenance, runForecastRefresh };
+module.exports = { start, runDailyMaintenance, runForecastRefresh, refreshOpenQueues };

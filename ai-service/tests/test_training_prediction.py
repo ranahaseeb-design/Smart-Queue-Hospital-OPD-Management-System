@@ -101,7 +101,12 @@ def test_retrain_predict_and_activate_flow(client, mongo, seed_wait_history, mon
     assert rows[version]["is_active"] is True
     assert rows[version]["metrics"]["baselineMae"] == metrics["baselineMae"]
     assert isinstance(rows[version]["trained_at"], datetime)
-    assert set(rows[version]) == {"_id", "trained_at", "training_rows", "data_source", "metrics", "status", "is_active"}
+    assert set(rows[version]) == {"_id", "trained_at", "training_rows", "data_source", "metrics", "status", "is_active", "reason"}
+    assert rows[version]["reason"].startswith("Accepted")
+    stored = rows[version]["metrics"]
+    assert {"baselineRmse", "baselineR2", "baselineWithin10"} <= set(stored)
+    importances = stored["featureImportances"]
+    assert "patients_ahead" in importances and abs(sum(importances.values()) - 1.0) < 0.01
     # The accepted model is served from memory at once (no file reload on the first prediction,
     # which could exceed the backend's 1.5 s timeout for a large forest).
     assert registry.cached_version() == version
@@ -121,6 +126,8 @@ def test_retrain_predict_and_activate_flow(client, mongo, seed_wait_history, mon
     listed = client.get("/ai/models").json()
     assert listed[0]["version"] == version and listed[0]["isActive"] is True
     assert listed[0]["metrics"]["baselineMae"] == metrics["baselineMae"]
+    assert listed[0]["metrics"]["featureImportances"]["patients_ahead"] > 0
+    assert listed[0]["metrics"]["baselineRmse"] is not None and listed[0]["reason"].startswith("Accepted")
 
     # --- prediction with the active model (served from the cache: loading the file would fail here)
     monkeypatch.setattr(predictor, "load_bundle", _no_reload)

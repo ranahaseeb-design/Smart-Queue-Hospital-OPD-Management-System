@@ -39,6 +39,12 @@ router.delete('/:id', patientOnly, async (req, res) => {
   res.json(await queueService.cancelToken(getDb(), req.user, v.id(req.params.id)));
 });
 
+// POST /tokens/:id/switch — FR-09: the patient moves a WAITING token to another doctor / branch.
+router.post('/:id/switch', patientOnly, async (req, res) => {
+  const doctorId = v.int((req.body || {}).doctorId, 'doctorId', { required: true, min: 1 });
+  res.status(201).json(await queueService.switchToken(getDb(), req.user, v.id(req.params.id), doctorId));
+});
+
 // Staff token actions (FR-12).
 router.post('/:id/start', staffOnly, async (req, res) => {
   res.json(await queueService.startToken(getDb(), req.user, v.id(req.params.id)));

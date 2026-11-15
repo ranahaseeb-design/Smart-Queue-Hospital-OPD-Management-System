@@ -330,6 +330,18 @@ test('live dashboard KPIs (FR-15) with branch scoping', async () => {
     assert.ok(key in dept, key);
   }
   assert.ok(res.body.servicePoints.every((sp) => 'nowServing' in sp && 'waiting' in sp));
+  // Per-doctor rows and the hourly trend (contract).
+  const withDoctors = res.body.departments.find((d) => d.doctors.length);
+  assert.ok(withDoctors, 'a department lists its doctors');
+  for (const key of ['doctorId', 'fullName', 'servicePointId', 'servicePointName', 'waiting', 'nowServing', 'avgConsultMinutes', 'estimatedWaitMinutes', 'acceptingNow']) {
+    assert.ok(key in withDoctors.doctors[0], key);
+  }
+  const doctorWaiting = res.body.departments.reduce((s, d) => s + d.doctors.reduce((a, x) => a + x.waiting, 0), 0);
+  assert.equal(doctorWaiting, res.body.departments.reduce((s, d) => s + d.waiting, 0));
+  assert.ok(Array.isArray(res.body.trend) && res.body.trend.length >= 1);
+  const last = res.body.trend[res.body.trend.length - 1];
+  assert.match(last.hour, /^\d{2}:00$/);
+  assert.equal(last.waiting, res.body.kpis.waiting);
   const own = await ctx.api.get('/admin/dashboard', branchAdmin);
   assert.deepEqual(own.body.branches.map((b) => b.branchId), [1]);
   assert.equal(own.body.kpis.waiting, 3);

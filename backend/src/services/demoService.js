@@ -365,4 +365,46 @@ async function peakActive() {
   return Boolean(await Token.exists({ visit_id: { $in: visits }, status: 'WAITING' }));
 }
 
-module.exports = { seedCommitteeDemo, setPeakCongestion, peakActive, branchLoads, doctorsToday, haversineKm: fb.haversineKm };
+/**
+ * POST /demo/reset — delete everything the demo tools created: demo, peak and walk-in kiosk patients
+ * (generated e-mail domains) with their visits, tokens, queue events, predictions, notifications,
+ * feedback and appointments. Seeded accounts and the seeded history are not touched. Queues that
+ * lose WAITING tokens are re-predicted once and pushed live.
+ */
+const GENERATED_DOMAINS = [DEMO_DOMAIN, 'walkin.opd.local'];
+async function resetDemoData(db = getDb(), { now = time.clock.now() } = {}) {
+  if (!config.demoTools) throw badRequest('Demo tools are not enabled');
+  const pattern = `@(${GENERATED_DOMAINS.map((d) => d.replace(/\./g, '\\.')).join('|')})$`;
+  const patients = await User.find({ role: 'PATIENT', email: { $regex: pattern } }, { _id: 1 }).lean();
+  const patientIds = patients.map((p) => p._id);
+  const visitIds = await Visit.distinct('_id', { patient_id: { $in: patientIds } });
+  const tokens = await Token.find({ visit_id: { $in: visitIds } }, { _id: 1, status: 1, service_point_id: 1, doctor_id: 1, token_date: 1 }).lean();
+  const tokenIds = tokens.map((t) => t._id);
+  const today = time.formatDate(now);
+  const keys = new Map();
+  for (const t of tokens) {
+    if (t.token_date !== today || !['WAITING', 'CALLED', 'IN_SERVICE'].includes(t.status)) continue;
+    keys.set(`${t.service_point_id}:${t.doctor_id || 0}`, { servicePointId: t.service_point_id, date: today, doctorId: t.doctor_id || null });
+  }
+  const removed = {
+    patients: patientIds.length,
+    visits: visitIds.length,
+    tokens: tokenIds.length,
+    events: (await models.QueueEvent.deleteMany({ token_id: { $in: tokenIds } })).deletedCount,
+    predictions: (await models.WaitPrediction.deleteMany({ token_id: { $in: tokenIds } })).deletedCount,
+    notifications: (await models.Notification.deleteMany({ $or: [{ user_id: { $in: patientIds } }, { token_id: { $in: tokenIds } }] })).deletedCount,
+    feedback: (await models.Feedback.deleteMany({ visit_id: { $in: visitIds } })).deletedCount,
+    appointments: (await models.Appointment.deleteMany({ patient_id: { $in: patientIds } })).deletedCount,
+  };
+  await Token.deleteMany({ _id: { $in: tokenIds } });
+  await Visit.deleteMany({ _id: { $in: visitIds } });
+  await User.deleteMany({ _id: { $in: patientIds } });
+  if (keys.size) {
+    await queueService.propagate(db, [...keys.values()], { now });
+    const points = await ServicePoint.find({ _id: { $in: [...new Set([...keys.values()].map((k) => k.servicePointId))] } }, { branch_id: 1 }).lean();
+    for (const sp of points) realtime.emitQueueUpdated(sp._id, sp.branch_id);
+  }
+  return { removed, peakActive: false };
+}
+
+module.exports = { resetDemoData, seedCommitteeDemo, setPeakCongestion, peakActive, branchLoads, doctorsToday, haversineKm: fb.haversineKm };

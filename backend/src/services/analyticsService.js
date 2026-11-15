@@ -13,6 +13,7 @@ const fb = require('./featureBuilder');
 const scheduleService = require('./scheduleService');
 const settingsService = require('./settingsService');
 const forecastService = require('./forecastService');
+const predictionService = require('./predictionService');
 const { models, sess, byIds, asRows, asRow } = require('../db');
 
 const { Branch, Department, ServicePoint, Doctor, DoctorSchedule, Token, Visit, Feedback, WaitPrediction, User } = models;
@@ -85,8 +86,123 @@ function onDutyDoctors(sessions, now) {
   return ids;
 }
 
+/**
+ * Hourly trend of today (contract: /admin/dashboard `trend`): one row per hour from the hour of the
+ * first issued token to the current hour. waiting / inService are snapshots at the end of the hour
+ * (the current hour = now); completed is cumulative COMPLETED OPD tokens; the waits are called - issued
+ * of OPD tokens called in that hour.
+ */
+function hourlyTrend(tokens, date, now) {
+  const issued = tokens.map((t) => ms(t.issued_at)).filter(Boolean);
+  if (!issued.length) return [];
+  const dayStart = ms(time.combine(date, '00:00:00'));
+  const nowMs = now.getTime();
+  const firstHour = Math.max(0, Math.floor((Math.min(...issued) - dayStart) / 3600000));
+  const lastHour = Math.min(23, Math.floor((nowMs - dayStart) / 3600000));
+  const rows = [];
+  for (let h = firstHour; h <= lastHour; h += 1) {
+    const from = dayStart + h * 3600000;
+    const end = Math.min(from + 3600000, nowMs);
+    let waiting = 0;
+    let inService = 0;
+    let completed = 0;
+    const waits = [];
+    for (const t of tokens) {
+      const iss = ms(t.issued_at);
+      const called = ms(t.called_at);
+      const done = ms(t.completed_at);
+      if (!iss || iss > end) continue;
+      if (called ? called > end : t.status === 'WAITING') waiting += 1;
+      else if (called && called <= end && (done ? done > end : t.status === 'CALLED' || t.status === 'IN_SERVICE')) inService += 1;
+      if (t.queue_type === 'OPD' && t.status === 'COMPLETED' && done && done <= end) completed += 1;
+      if (t.queue_type === 'OPD' && called >= from && called < from + 3600000) waits.push((called - iss) / 60000);
+    }
+    rows.push({
+      hour: `${String(h).padStart(2, '0')}:00`,
+      waiting,
+      inService,
+      completed,
+      avgWaitMinutes: r1(mean(waits)),
+      maxWaitMinutes: waits.length ? r1(Math.max(...waits)) : null,
+    });
+  }
+  return rows;
+}
+
+// Per-doctor estimates on the dashboard are hypothetical predictions (one per on-duty doctor);
+// cached briefly because the dashboard refreshes on every queue event.
+const DOCTOR_ESTIMATE_CACHE_MS = 10000;
+let doctorEstimateCache = { key: null, at: 0, value: new Map() };
+
+async function doctorEstimates(db, doctors, branchId, now) {
+  const key = `${branchId || 'all'}:${doctors.map((d) => d.doctor_id).join(',')}`;
+  if (doctorEstimateCache.key === key && Date.now() - doctorEstimateCache.at < DOCTOR_ESTIMATE_CACHE_MS) {
+    return doctorEstimateCache.value;
+  }
+  let value = new Map();
+  try {
+    value = await predictionService.predictHypothetical(db, doctors, { priorityLevel: 0, now });
+  } catch {
+    value = new Map();
+  }
+  doctorEstimateCache = { key, at: Date.now(), value };
+  return value;
+}
+
+/** Per-doctor rows of a department on the dashboard (contract: departments[].doctors). */
+async function doctorRowsByDepartment(db, sessionsByDept, tokens, servicePoints, branchId, now) {
+  const date = time.formatDate(now);
+  const spNames = new Map(servicePoints.map((sp) => [sp.service_point_id, sp.name]));
+  const ids = [];
+  for (const sessions of sessionsByDept.values()) sessions.forEach((s) => ids.push(s.doctorId));
+  const doctorMap = await scheduleService.getDoctors(db, [...new Set(ids)]);
+  const withSession = [];
+  const byDept = new Map();
+  for (const [deptId, sessions] of sessionsByDept) {
+    const seen = new Set();
+    const list = [];
+    for (const s of sessions) {
+      if (seen.has(s.doctorId)) continue;
+      const doctor = doctorMap.get(s.doctorId);
+      if (!doctor || !scheduleService.isDoctorBookable(doctor)) continue;
+      seen.add(s.doctorId);
+      const own = sessions.filter((x) => x.doctorId === s.doctorId);
+      const session = scheduleService.pickSession(own, date, now) || own[0];
+      withSession.push({ ...doctor, session });
+      list.push({ doctor, session });
+    }
+    byDept.set(deptId, list);
+  }
+  const estimates = await doctorEstimates(db, withSession, branchId, now);
+  const out = new Map();
+  for (const [deptId, list] of byDept) {
+    out.set(
+      deptId,
+      list.map(({ doctor, session }) => {
+        const mine = tokens.filter((t) => t.doctor_id === doctor.doctor_id && t.queue_type === 'OPD');
+        const serving = mine
+          .filter((t) => t.status === 'CALLED' || t.status === 'IN_SERVICE')
+          .sort((a, b) => ms(b.called_at) - ms(a.called_at))[0];
+        const p = estimates.get(doctor.doctor_id);
+        return {
+          doctorId: doctor.doctor_id,
+          fullName: doctor.full_name,
+          servicePointId: session.servicePointId,
+          servicePointName: spNames.get(session.servicePointId) || session.servicePointName || null,
+          waiting: mine.filter((t) => t.status === 'WAITING').length,
+          nowServing: serving ? fb.displayNumber(serving.queue_type, serving.token_number) : null,
+          avgConsultMinutes: Number(doctor.avg_consult_minutes),
+          estimatedWaitMinutes: p ? Math.round(p.minutes) : null,
+          acceptingNow: config.demoAlwaysOpen || (session.start <= now && now < session.end),
+        };
+      })
+    );
+  }
+  return out;
+}
+
 /** GET /admin/dashboard (FR-15) */
-async function dashboard(db, branchId, now = time.clock.now()) {
+async function dashboard(db, branchId, now = time.clock.now(), { detail = true } = {}) {
   const settings = await settingsService.getSettings(db);
   const date = time.formatDate(now);
   const { branches, departments, servicePoints } = await loadScope(db, branchId, { activeOnly: true });
@@ -98,6 +214,9 @@ async function dashboard(db, branchId, now = time.clock.now()) {
   const waits = waiting.map(waitOf);
   const allOnDuty = new Set();
   for (const sessions of sessionsByDept.values()) onDutyDoctors(sessions, now).forEach((id) => allOnDuty.add(id));
+  const doctorsByDept = detail
+    ? await doctorRowsByDepartment(db, sessionsByDept, tokens, servicePoints, branchId, now)
+    : new Map();
 
   const deptRows = departments
     .filter((d) => d.is_active)
@@ -124,6 +243,7 @@ async function dashboard(db, branchId, now = time.clock.now()) {
         maxWaitMinutes: dWaits.length ? r1(Math.max(...dWaits)) : null,
         congestionRatio: c.ratio,
         congestionLevel: c.level,
+        doctors: doctorsByDept.get(d.department_id) || [],
         _capacity: c.capacity,
       };
     });
@@ -183,6 +303,7 @@ async function dashboard(db, branchId, now = time.clock.now()) {
       activeDoctors: allOnDuty.size,
       activeServicePoints,
     },
+    trend: hourlyTrend(tokens, date, now),
     branches: branchRows,
     departments: deptRows.map(({ _capacity, ...rest }) => rest),
     servicePoints: spRows,
@@ -191,7 +312,7 @@ async function dashboard(db, branchId, now = time.clock.now()) {
 
 /** GET /admin/alerts (FR-17): live congestion + upcoming HIGH/CRITICAL forecasts (next 24 h). */
 async function alerts(db, branchId, now = time.clock.now()) {
-  const dash = await dashboard(db, branchId, now);
+  const dash = await dashboard(db, branchId, now, { detail: false });
   const out = [];
   for (const d of dash.departments) {
     if (d.congestionLevel === 'NORMAL') continue;

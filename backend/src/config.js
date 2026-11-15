@@ -84,6 +84,9 @@ const config = {
     serviceToken: (process.env.AI_SERVICE_TOKEN || '').trim(),
   },
   demoAlwaysOpen: bool(process.env.DEMO_ALWAYS_OPEN, false),
+  // Section 6.4.4: a doctor with fewer completed OPD consultations than this gets the Eq. 6.2 baseline
+  // even when a Random Forest is active (too little history for doctor-specific prediction).
+  coldStartMinConsults: Math.max(0, int(process.env.COLD_START_MIN_CONSULTS, 30)),
   // Demo / kiosk tools: walk-in guest check-in (POST /auth/guest) and the queue load simulator
   // (POST /demo/load-queue). On by default outside production; set DEMO_TOOLS=false to disable.
   demoTools: bool(process.env.DEMO_TOOLS, nodeEnv !== 'production'),

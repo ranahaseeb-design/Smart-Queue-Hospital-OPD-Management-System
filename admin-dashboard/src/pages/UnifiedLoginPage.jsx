@@ -6,12 +6,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { api, errorMessage } from '../api/client.js';
-import LoginPortalPicker, { PortalIcon } from '../components/LoginPortalPicker.jsx';
+import LoginPortalPicker, { PortalIcon } from '@staff/components/LoginPortalPicker.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
-import { portalById } from '../utils/loginPortals.js';
+import { portalById } from '@staff/utils/loginPortals.js';
 import { destinationAfterLogin, saveSession } from '../utils/unifiedSession.js';
 import { safeReturnPath } from '../utils/navigation.js';
-import '../styles/portal.css';
+import { useDemoTools } from '@staff/utils/demoMode.js';
+import '@staff/styles/portal.css';
 
 // Development-only quick fill with the seed accounts (docs/API_CONTRACT.md). Removed from
 // production builds because import.meta.env.DEV is false there.
@@ -233,6 +234,17 @@ function LoginForm({ portal, onBack, returnTo }) {
   );
 }
 
+/** Presentation switch for this browser (see @staff/utils/demoMode.js). */
+function DemoToolsSwitch() {
+  const [on, setOn] = useDemoTools();
+  return (
+    <label className="portal-demo-switch" title="Shows demo data, peak congestion, the doctor switcher and the patient load simulator">
+      <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} />
+      <span>Demo tools for presentations: <strong>{on ? 'On' : 'Off'}</strong></span>
+    </label>
+  );
+}
+
 export default function UnifiedLoginPage() {
   const location = useLocation();
   const [params, setParams] = useSearchParams();
@@ -268,8 +280,9 @@ export default function UnifiedLoginPage() {
         )}
 
         <p className="portal-footnote">
-          Patients use the Smart OPD patient app. Your role is verified when you sign in.
+          Your role is verified when you sign in.
         </p>
+        <DemoToolsSwitch />
       </div>
     </main>
   );

@@ -146,6 +146,21 @@ test('doctor / room switcher: list doctors and open another doctor without signi
   assert.equal((await ctx.api.post('/demo/switch-doctor', doctorToken, { doctorId: 999999 })).status, 404);
 });
 
+test('demo reset removes demo / walk-in patients and their tokens; seeded data stays', async () => {
+  const guest = (await ctx.api.post('/auth/guest', null, {})).body;
+  await ctx.api.post('/tokens', guest.token, { doctorId: room.doctorId });
+  const seededUsers = await ctx.models.User.countDocuments({ email: { $not: /@(demo|walkin)\.opd\.local$/ } });
+  assert.equal((await ctx.api.post('/demo/reset', guest.token)).status, 403);
+  const res = await ctx.api.post('/demo/reset', doctorToken);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.ok(res.body.removed.patients >= 2);
+  assert.ok(res.body.removed.tokens >= 1);
+  assert.equal(await ctx.models.User.countDocuments({ email: /@(demo|walkin)\.opd\.local$/ }), 0);
+  assert.equal(await ctx.models.User.countDocuments({}), seededUsers);
+  const queue = (await ctx.api.get(`/service-points/${room.id}/queue`, doctorToken)).body;
+  assert.ok(queue.waiting.every((t) => !/^(Demo|Walk-in)/.test(t.patientName || '')));
+});
+
 test('with demo tools off, guest check-in and the simulator do not exist', async () => {
   const config = require('../src/config');
   const saved = config.demoTools;

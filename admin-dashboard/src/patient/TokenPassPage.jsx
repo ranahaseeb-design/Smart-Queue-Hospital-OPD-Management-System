@@ -2,10 +2,11 @@
 // the patient's user room, with a 4 s polling fallback, so "Call next" in the doctor's room shows
 // here at once: "NOW SERVING — Proceed to Room 1" with a pulse and an optional chime.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { usePatient } from './PatientContext.jsx';
 import { errorText, papi } from './patientApi.js';
-import { estimateSource } from './geo.js';
+import { AREAS, estimateSource } from './geo.js';
+import { explainLines } from './explain.js';
 import { chimeEnabled, playChime, setChimeEnabled } from './chime.js';
 
 const POLL_MS = 4000;
@@ -68,8 +69,105 @@ export function journeySteps(token) {
   ];
 }
 
+/** "How was this estimated?" — the inputs behind the estimate (FR-06 transparency). */
+function ExplainEstimate({ estimate }) {
+  const ex = explainLines(estimate);
+  if (!ex) return null;
+  return (
+    <details className="pt-explain">
+      <summary>How was this estimate calculated?</summary>
+      <p className="pt-small">{ex.headline}</p>
+      <dl className="pt-explain-list">
+        {ex.lines.map((l) => (
+          <div key={l.label}><dt>{l.label}</dt><dd>{l.value}</dd></div>
+        ))}
+        <div className="is-total"><dt>Your estimate</dt><dd>{ex.range}</dd></div>
+      </dl>
+      {ex.note && <p className="pt-muted pt-small">{ex.note}</p>}
+      <p className="pt-muted pt-small">The range is ±20 % (at least ±5 min) and updates whenever the queue moves.</p>
+    </details>
+  );
+}
+
+/**
+ * FR-09: compare doctors of the same specialty in every branch (GET /recommendations) and move this
+ * token there — only when the patient presses "Switch my token here" (POST /tokens/:id/switch).
+ */
+function CompareAndSwitch({ token, onSwitched }) {
+  const { selection } = usePatient();
+  const [state, setState] = useState({ status: 'idle', items: [], error: null });
+  const [switching, setSwitching] = useState(null);
+  const area = AREAS.find((a) => a.id === selection.areaId) || null;
+  const current = token.estimate?.minutes ?? null;
+
+  async function compare() {
+    setState({ status: 'loading', items: [], error: null });
+    try {
+      const res = await papi.recommendations({
+        specialty: token.doctor.specialty,
+        lat: area?.lat,
+        lng: area?.lng,
+        excludeDoctorId: token.doctor.id,
+      });
+      const items = (res.items || [])
+        .filter((i) => i.predictedWaitMinutes != null && (current == null || i.predictedWaitMinutes < current))
+        .slice(0, 3);
+      setState({ status: 'done', items, error: null });
+    } catch (err) {
+      setState({ status: 'error', items: [], error: errorText(err) });
+    }
+  }
+
+  async function switchTo(item) {
+    if (!window.confirm(`Move your token to ${item.doctorName} at ${item.branchName}? Your place in the current queue (${token.displayNumber}) will be given up.`)) return;
+    setSwitching(item.doctorId);
+    try {
+      const res = await papi.switchToken(token.id, item.doctorId);
+      onSwitched(res.token);
+    } catch (err) {
+      setState((s) => ({ ...s, error: errorText(err) }));
+      setSwitching(null);
+    }
+  }
+
+  if (state.status === 'idle') {
+    return (
+      <button type="button" className="pt-btn pt-btn--ghost pt-btn--block" onClick={compare}>
+        Compare faster options in other branches
+      </button>
+    );
+  }
+  return (
+    <section className="pt-compare" aria-label="Faster options">
+      <h3 className="pt-compare-title">Faster options for {token.doctor.specialty}</h3>
+      {state.status === 'loading' && <div className="pt-skeleton pt-skeleton--rec" aria-label="Checking other branches" />}
+      {state.status === 'done' && state.items.length === 0 && (
+        <p className="pt-muted pt-small">Your current queue is already the quickest option right now.</p>
+      )}
+      {state.items.map((i) => (
+        <div key={i.doctorId} className="pt-compare-row">
+          <div>
+            <strong>{i.branchName} · {i.doctorName}</strong>
+            <span className="pt-muted pt-small">
+              ~{Math.round(i.predictedWaitMinutes)} min wait
+              {current != null ? ` (about ${Math.round(current - i.predictedWaitMinutes)} min sooner)` : ''}
+              {i.distanceKm != null ? ` · ${i.distanceKm} km from ${area?.name}` : ''}
+            </span>
+          </div>
+          <button type="button" className="pt-btn pt-btn--primary pt-btn--sm" disabled={Boolean(switching)} onClick={() => switchTo(i)}>
+            {switching === i.doctorId ? 'Switching…' : 'Switch my token here'}
+          </button>
+        </div>
+      ))}
+      {state.error && <p className="pt-error" role="alert">{state.error}</p>}
+      <p className="pt-muted pt-small">Your token never moves unless you press “Switch my token here”.</p>
+    </section>
+  );
+}
+
 export default function TokenPassPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const tokenId = Number(id);
   const { live, onLive, watchRoom } = usePatient();
   const [token, setToken] = useState(null);
@@ -213,6 +311,7 @@ export default function TokenPassPage() {
               <span style={{ width: `${progress}%` }} />
             </div>
             {token.nowServing && <p className="pt-muted pt-small">Now serving in this room: {token.nowServing.displayNumber}</p>}
+            <ExplainEstimate estimate={est} />
           </>
         )}
 
@@ -227,6 +326,17 @@ export default function TokenPassPage() {
             </li>
           ))}
         </ol>
+
+        {token.status === 'WAITING' && token.queueType === 'OPD' && token.doctor && (
+          <CompareAndSwitch
+            token={token}
+            onSwitched={(next) => {
+              startAhead.current = null;
+              lastStatus.current = null;
+              navigate(`/token/${next.id}`, { replace: true });
+            }}
+          />
+        )}
 
         {token.status === 'WAITING' && (
           <button type="button" className="pt-btn pt-btn--danger-ghost pt-btn--block" onClick={cancel} disabled={cancelling}>

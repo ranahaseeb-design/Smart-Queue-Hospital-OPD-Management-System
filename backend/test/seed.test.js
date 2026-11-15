@@ -339,7 +339,8 @@ test('seed replay reproduces the live first prediction of every token (features 
   ]);
   const scenarioIds = new Set(tokens.filter((t) => t.id > maxSeeded).map((t) => t.id));
   assert.ok(scenarioIds.size >= 15);
-  const replay = replayFirstPredictions({ tokens, events, doctors, counterAverages, departmentSessions, appointments, only: scenarioIds });
+  // Live predictions ran under DEMO_ALWAYS_OPEN (test env), so the replay uses the same rule.
+  const replay = replayFirstPredictions({ tokens, events, doctors, counterAverages, departmentSessions, appointments, only: scenarioIds, alwaysOpen: require('../src/config').demoAlwaysOpen });
 
   // First prediction (lowest _id) of every scenario token.
   const first = await M.WaitPrediction.aggregate([

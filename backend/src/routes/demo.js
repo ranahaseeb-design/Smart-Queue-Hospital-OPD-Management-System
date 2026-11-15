@@ -9,6 +9,7 @@
  */
 const { createRouter, notFound, forbidden, badRequest } = require('../utils/errors');
 const demoService = require('../services/demoService');
+const operationsService = require('../services/operationsService');
 const { signToken } = require('../middleware/auth');
 const time = require('../utils/time');
 const scheduleService = require('../services/scheduleService');
@@ -50,7 +51,18 @@ router.post('/demo/load-queue', async (req, res) => {
 // ---- One-click committee demo data and the peak-congestion toggle (any signed-in role) ----
 router.post('/demo/seed', async (req, res) => {
   if (!config.demoTools) throw notFound('Demo tools are not enabled');
-  res.status(201).json(await demoService.seedCommitteeDemo(getDb()));
+  const out = await demoService.seedCommitteeDemo(getDb());
+  operationsService.clearLoadBalancerCache();
+  res.status(201).json(out);
+});
+
+// Destructive, so staff and administrators only (patients 403).
+router.post('/demo/reset', async (req, res) => {
+  if (!config.demoTools) throw notFound('Demo tools are not enabled');
+  if (!['STAFF', 'BRANCH_ADMIN', 'HOSPITAL_ADMIN'].includes(req.user.role)) throw forbidden('Only staff and administrators can reset demo data');
+  const out = await demoService.resetDemoData(getDb());
+  operationsService.clearLoadBalancerCache();
+  res.json(out);
 });
 
 router.get('/demo/peak', async (req, res) => {
@@ -64,7 +76,9 @@ router.post('/demo/peak', async (req, res) => {
   if (!config.demoTools) throw notFound('Demo tools are not enabled');
   const enabled = v.bool((req.body || {}).enabled, 'enabled');
   if (enabled === null) throw badRequest('enabled (true/false) is required');
-  res.json(await demoService.setPeakCongestion(getDb(), enabled));
+  const out = await demoService.setPeakCongestion(getDb(), enabled);
+  operationsService.clearLoadBalancerCache();
+  res.json(out);
 });
 
 // ---- Doctor / room switcher for committee demos ----

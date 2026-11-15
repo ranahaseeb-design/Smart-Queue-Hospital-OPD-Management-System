@@ -2,8 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import LoginPortalPicker from '../components/LoginPortalPicker.jsx';
-import { LOGIN_PORTALS, portalById, portalHref } from './loginPortals.js';
+import LoginPortalPicker from '@staff/components/LoginPortalPicker.jsx';
+import { LOGIN_PORTALS, portalById, portalHref } from '@staff/utils/loginPortals.js';
 
 describe('login portals', () => {
   it('defines the patient card and the four staff cards in order with the backend portal names', () => {

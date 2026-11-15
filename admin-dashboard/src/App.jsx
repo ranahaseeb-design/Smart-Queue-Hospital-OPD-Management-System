@@ -4,7 +4,6 @@ import { useAuth } from './context/AuthContext.jsx';
 import { ScopeProvider } from './context/ScopeContext.jsx';
 import { RealtimeProvider } from './context/RealtimeContext.jsx';
 import Layout from './components/Layout.jsx';
-import LoginPage from './pages/LoginPage.jsx';
 import OverviewPage from './pages/OverviewPage.jsx';
 import BranchesPage from './pages/BranchesPage.jsx';
 import DepartmentsPage from './pages/DepartmentsPage.jsx';
@@ -45,7 +44,7 @@ function HospitalAdminOnly({ children }) {
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      {/* /login is the shared role-card sign-in, rendered by RootApp before this table. */}
       <Route element={<RequireAuth />}>
         <Route index element={<Navigate to="/overview" replace />} />
         <Route path="overview" element={<OverviewPage />} />

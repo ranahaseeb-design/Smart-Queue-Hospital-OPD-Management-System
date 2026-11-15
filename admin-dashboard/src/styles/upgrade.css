@@ -350,6 +350,25 @@
   .demo-hide-sm { display: none; }
 }
 
+/* The demo actions live in one "Demo" dropdown so the top bar stays tidy. */
+.demo-menu { position: relative; }
+.demo-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: var(--border-width) dashed var(--color-warning);
+  background: transparent;
+  color: var(--color-warning-text);
+}
+.demo-menu-btn.is-peak { border-style: solid; border-color: var(--color-danger); color: var(--color-danger-text); }
+.demo-menu-panel { min-width: 17rem; }
+.demo-menu-panel .menu-item:disabled { opacity: 0.6; cursor: progress; }
+.demo-peak-item.is-on { color: var(--color-danger-text); }
+.demo-peak-item.is-on .demo-peak-track { background: var(--color-danger); }
+.demo-peak-item.is-on .demo-peak-thumb { transform: translateX(14px); }
+.demo-peak-item .demo-peak-load { margin-left: auto; }
+.demo-menu-note { margin: var(--space-2) var(--space-3) var(--space-1); font-size: var(--text-xs); color: var(--color-text-subtle); }
+
 /* ---- Haversine cross-branch load balancer (components/LoadBalancerCard.jsx) ---- */
 .lb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-4); }
 .lb-branch {

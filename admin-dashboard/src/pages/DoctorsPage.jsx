@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useDepartments } from '../hooks/useLookups.js';
 import { fmtNum } from '../utils/format.js';
+import { useDemoTools } from '@staff/utils/demoMode.js';
 
 /**
  * Committee demo: open this doctor's live queue (Staff screens) in a new tab without signing the
@@ -61,6 +62,7 @@ export default function DoctorsPage() {
   const { scopeQuery, branchName, locked } = useScope();
   const departments = useDepartments(scopeQuery);
   const canManage = permissions.manageMasterData;
+  const [demoOn] = useDemoTools();
 
   const deptOptions = (currentId) => departments.list
     .filter((d) => d.isActive !== false || String(d.id) === String(currentId))
@@ -113,7 +115,7 @@ export default function DoctorsPage() {
       rowName={(r) => r.fullName}
       extraRowActions={(r) => (
         <>
-          {r.isActive !== false && <OpenLiveQueueButton doctor={r} />}
+          {demoOn && r.isActive !== false && <OpenLiveQueueButton doctor={r} />}
           <Link className="btn btn-sm btn-ghost" to={`/schedules?doctorId=${r.id}`} title="View weekly schedule">
             <Icon name="schedules" size={14} /> Schedule
           </Link>

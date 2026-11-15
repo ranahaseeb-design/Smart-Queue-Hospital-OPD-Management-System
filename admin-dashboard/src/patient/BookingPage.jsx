@@ -7,6 +7,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { usePatient } from './PatientContext.jsx';
 import { errorText, papi } from './patientApi.js';
 import { AREAS, CONGESTION_RULE, estimateSource, haversineKm, isCongested, pickRecommendation } from './geo.js';
+import { unavailableText } from './explain.js';
 
 const REFRESH_MS = 10000;
 
@@ -331,7 +332,7 @@ export default function BookingPage() {
                       <span className="pt-muted pt-small">
                         {d.acceptingNow
                           ? `${d.queueLength} waiting · avg ${d.avgConsultMinutes} min per patient`
-                          : d.availableToday ? 'Not taking patients right now' : 'Not scheduled today'}
+                          : unavailableText(d)}
                       </span>
                     </span>
                     {d.acceptingNow && <span className="pt-doctor-wait">~{waitLabel(d.estimatedWaitMinutes)}</span>}

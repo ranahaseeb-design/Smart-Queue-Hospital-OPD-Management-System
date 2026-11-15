@@ -68,6 +68,8 @@ function queueKey(tok) {
  *        per doctor: appointments that are BOOKED from bookedFrom (null = before the day) until
  *        bookedUntil (null = the whole day; check-in / cancellation time otherwise)
  * @param {Set<number>} [day.only]              restrict to these token ids
+ * @param {boolean} [day.alwaysOpen]            replay as under DEMO_ALWAYS_OPEN (no session start delay);
+ *        the seed leaves it off, so the synthetic history keeps real start delays
  * @returns {Map<number, { features: object, minutes: number }>}
  */
 function replayFirstPredictions(day) {
@@ -132,6 +134,7 @@ function replayFirstPredictions(day) {
           avgConsultMinutes: doctor.avgConsultMinutes,
         },
         session: doctor.session,
+        alwaysOpen: Boolean(day.alwaysOpen),
         bookedAppointments: booked,
         departmentWaiting,
         departmentActiveDoctors: fb.activeDoctorCount(day.departmentSessions.get(doctor.departmentId) || [], t),

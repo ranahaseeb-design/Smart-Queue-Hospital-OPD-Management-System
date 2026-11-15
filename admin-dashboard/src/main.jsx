@@ -5,8 +5,8 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import RootApp from './RootApp.jsx';
 import '@fontsource-variable/inter';
-import './styles/tokens.css';
-import './styles/portal.css';
+import '@staff/styles/tokens.css';
+import '@staff/styles/portal.css';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

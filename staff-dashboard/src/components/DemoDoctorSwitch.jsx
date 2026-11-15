@@ -6,6 +6,7 @@ import { useEffect, useId, useState } from 'react';
 import { api } from '../api.js';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { KEYS, setItem, setJSON } from '../utils/storage.js';
+import { useDemoTools } from '../utils/demoMode.js';
 
 export default function DemoDoctorSwitch() {
   const { user } = useAuth();
@@ -13,7 +14,8 @@ export default function DemoDoctorSwitch() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const id = useId();
-  const isDoctor = Boolean(user && user.doctorId);
+  const [demoOn] = useDemoTools();
+  const isDoctor = Boolean(user && user.doctorId) && demoOn;
 
   useEffect(() => {
     if (!isDoctor) return undefined;

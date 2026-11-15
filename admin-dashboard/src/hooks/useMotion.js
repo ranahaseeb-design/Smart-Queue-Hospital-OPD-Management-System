@@ -29,21 +29,23 @@ export function usePrefersReducedMotion() {
 /**
  * Animates a number from its previous value to `value` (ease-out, `duration` ms). Returns the
  * value to display. Non-numeric values (null -> "—") and reduced motion skip the animation.
- * The first render counts up from 0 so the tiles "arrive"; later updates count from the last value.
+ * The first real number is shown as is (no misleading "0" while the page loads); later updates
+ * count from the last value, so a changing KPI is easy to notice.
  */
 export function useCountUp(value, { duration = 700 } = {}) {
   const reduced = usePrefersReducedMotion();
   const numeric = value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
-  const [display, setDisplay] = useState(() => (numeric && !reduced ? 0 : value));
-  const fromRef = useRef(numeric && !reduced ? 0 : value);
+  const [display, setDisplay] = useState(value);
+  const fromRef = useRef(value);
 
   useEffect(() => {
-    if (!numeric || reduced || typeof requestAnimationFrame === 'undefined') {
+    const hadNumber = fromRef.current !== null && fromRef.current !== undefined && fromRef.current !== '' && Number.isFinite(Number(fromRef.current));
+    if (!numeric || !hadNumber || reduced || typeof requestAnimationFrame === 'undefined') {
       fromRef.current = value;
       setDisplay(value);
       return undefined;
     }
-    const from = Number.isFinite(Number(fromRef.current)) ? Number(fromRef.current) : 0;
+    const from = Number(fromRef.current);
     const to = Number(value);
     if (from === to) {
       setDisplay(to);

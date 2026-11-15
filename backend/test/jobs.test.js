@@ -101,3 +101,18 @@ test('the scheduler starts and stops cleanly', async () => {
   handle.stop();
   handle.stop();
 });
+
+test('start-up re-prediction refreshes stored estimates of every open queue', async () => {
+  const patient = await ctx.newPatient();
+  const doctorId = (await ctx.api.get('/auth/me', await ctx.login('doctor2'))).body.user.doctorId;
+  const token = await ctx.api.post('/tokens', patient.token, { doctorId });
+  assert.equal(token.status, 201, JSON.stringify(token.body));
+  const before = await ctx.models.WaitPrediction.countDocuments({ token_id: token.body.id });
+  ctx.advance(2);
+  const result = await jobs.refreshOpenQueues(ctx.db);
+  assert.ok(result.queues >= 1 && result.waitingTokens >= 1);
+  const after = await ctx.models.WaitPrediction.countDocuments({ token_id: token.body.id });
+  assert.ok(after >= before, 'the token still has its prediction rows');
+  const latest = await ctx.models.WaitPrediction.findOne({ token_id: token.body.id }).sort({ _id: -1 }).lean();
+  assert.ok(latest.created_at >= ctx.time.dbDate(ctx.time.clock.now()) || after > before, 'a fresh prediction was stored');
+});

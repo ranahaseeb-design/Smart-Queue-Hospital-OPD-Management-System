@@ -8,6 +8,7 @@
  *  - displayBoard: the waiting-room board (/display): now serving, next 3 and waiting per service
  *    point, live estimated wait per department. Token numbers only — never patient names.
  */
+const config = require('../config');
 const time = require('../utils/time');
 const { notFound } = require('../utils/errors');
 const { models, sess } = require('../db');
@@ -25,12 +26,27 @@ const MIN_SAVING = 5;
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const round1 = (x) => (x === null || x === undefined ? null : Math.round(x * 10) / 10);
 
-async function loadBalancer(db, user, now = time.clock.now()) {
-  const settings = await settingsService.getSettings(db);
+// The admin Overview polls the load balancer and it predicts every accepting doctor once; the inputs
+// are reused for 10 s (not under tests, where the clock is simulated). Demo data changes clear it.
+const LB_CACHE_MS = 10000;
+let lbCache = { at: 0, inputs: null };
+function clearLoadBalancerCache() {
+  lbCache = { at: 0, inputs: null };
+}
+
+async function loadBalancerInputs(db, now) {
+  if (config.env !== 'test' && lbCache.inputs && Date.now() - lbCache.at < LB_CACHE_MS) return lbCache.inputs;
   const loads = await demoService.branchLoads(db, now);
   const doctors = await demoService.doctorsToday(db, now);
   const accepting = doctors.filter((d) => d.acceptingNow);
   const predictions = await predictionService.predictHypothetical(db, accepting, { now });
+  lbCache = { at: Date.now(), inputs: { loads, accepting, predictions } };
+  return lbCache.inputs;
+}
+
+async function loadBalancer(db, user, now = time.clock.now()) {
+  const settings = await settingsService.getSettings(db);
+  const { loads, accepting, predictions } = await loadBalancerInputs(db, now);
 
   const branches = loads.map((l) => {
     const here = accepting.filter((d) => d.branch_id === l.branch._id);
@@ -187,4 +203,4 @@ async function displayBoard(db, requestedBranchId = null, now = time.clock.now()
   };
 }
 
-module.exports = { loadBalancer, displayBoard, REDIRECT_LOAD };
+module.exports = { loadBalancer, clearLoadBalancerCache, displayBoard, REDIRECT_LOAD };

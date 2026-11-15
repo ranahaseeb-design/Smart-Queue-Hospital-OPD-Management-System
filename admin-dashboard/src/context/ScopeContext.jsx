@@ -67,12 +67,13 @@ export function ScopeProvider({ children }) {
       reloadBranches: loadBranches,
       branchId,
       branch: current,
-      branchName: current?.name || (branchId ? `Branch #${branchId}` : 'All branches'),
+      // While the branch list loads, a bare id ("Branch #3") would flash in titles: say loading instead.
+      branchName: current?.name || (branchId ? (branchesLoading ? 'Loading branch…' : `Branch #${branchId}`) : 'All branches'),
       locked,
       setBranchId,
       /** Query object to spread into admin requests (?branchId=). */
       scopeQuery: branchId ? { branchId } : {},
-      branchNameById: (id) => branches.find((b) => b.id === Number(id))?.name || (id ? `Branch #${id}` : '—'),
+      branchNameById: (id) => branches.find((b) => b.id === Number(id))?.name || (id ? (branchesLoading ? '…' : `Branch #${id}`) : '—'),
     };
   }, [branches, branchesLoading, loadBranches, branchId, locked, setBranchId]);
 

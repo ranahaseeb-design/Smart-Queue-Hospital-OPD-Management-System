@@ -10,6 +10,7 @@ import { useScope } from '../context/ScopeContext.jsx';
 import { useRealtime } from '../context/RealtimeContext.jsx';
 import { ROLE_LABELS } from '../utils/roles.js';
 import DemoControls from './DemoControls.jsx';
+import { useDemoTools } from '@staff/utils/demoMode.js';
 
 const NAV = [
   {
@@ -97,6 +98,7 @@ function UserMenu({ user, onSignOut }) {
   const ref = useRef(null);
   const initials = (user?.fullName || '?').split(/\s+/).map((p) => p[0]).slice(0, 2).join('').toUpperCase();
   const role = ROLE_LABELS[user?.role] || user?.role;
+  const [demoOn, setDemoOn] = useDemoTools();
 
   useEffect(() => {
     if (!open) return undefined;
@@ -133,6 +135,16 @@ function UserMenu({ user, onSignOut }) {
             <span>{user?.email || role}</span>
             <span className="badge badge-primary">{role}</span>
           </div>
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={demoOn}
+            className="menu-item"
+            onClick={() => setDemoOn(!demoOn)}
+            title="Show the presentation tools: demo data, peak congestion, doctor switcher, live queue"
+          >
+            <Icon name="play" size={16} /> Demo tools: {demoOn ? 'On' : 'Off'}
+          </button>
           <button type="button" role="menuitem" className="menu-item" onClick={() => { setOpen(false); onSignOut(); }}>
             <Icon name="logout" size={16} /> Sign out
           </button>

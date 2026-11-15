@@ -169,14 +169,20 @@ account; patients can also use the 1-click walk-in check-in.
 `DEMO_ALWAYS_OPEN=true` (the default in `.env.example`) lets doctors accept patients at any hour
 of a scheduled weekday, so the demo works outside clinic hours.
 
+**Demo tools for presentations** (load committee demo data, peak congestion, reset demo data, the
+doctor / room switcher, "Live queue" and the patient load simulator) are hidden by default. Turn
+them on with the switch under the role cards on the login page, or in the admin user menu
+("Demo tools: On"). The switch is saved per browser. In the admin header the tools sit in one
+**Demo** menu; **Reset demo data** removes every demo, peak and walk-in patient again.
+
 ## Tests
 
 | Component | Command | Suite |
 |---|---|---|
-| Backend | `cd backend && npm test` | 115 tests (node:test; integration tests use temporary MongoDB databases) |
+| Backend | `cd backend && npm test` | 129 tests (node:test; integration tests use temporary MongoDB databases) |
 | AI service | `cd ai-service && pytest` | 45 tests (mongomock) |
-| Staff screens (module) | `cd staff-dashboard && npx vitest run` | 63 tests |
-| Smart OPD Dashboard | `cd admin-dashboard && npx vitest run` | 61 tests |
+| Staff screens (module) | `cd staff-dashboard && npx vitest run` | 96 tests |
+| Smart OPD Dashboard | `cd admin-dashboard && npx vitest run` | 131 tests |
 | Patient app | `cd mobile_app && flutter test` | widget and model tests |
 
 ## Requirements coverage
@@ -202,9 +208,9 @@ of a scheduled weekday, so the demo works outside clinic hours.
 - **Synthetic data.** The seed history is simulated and flagged `is_synthetic`. Model metrics on
   it only show that the pipeline works; they say nothing about real-world accuracy (Section 6.11).
 - **Not yet run:** the Flutter app compiles (`flutter analyze`, `flutter test`) but has not run on
-  a device; the AI service has not yet run against a real MongoDB server (its tests use
-  mongomock) and has only been tested in Pyodide, not native CPython. The backend (all 109 tests,
-  seed, API smoke test) and both dashboards have been verified against MongoDB 8.0.16 (`rs0`).
+  a device. The backend (129 tests), the AI service (native Python 3.12, training and forecasts
+  against the live database) and the Smart OPD Dashboard have been run against MongoDB 9.0.8 (`rs0`).
+- **Differences from the FYP document** are listed in [docs/IMPLEMENTATION_NOTES.md](docs/IMPLEMENTATION_NOTES.md).
 - **Database choice:** the FYP documentation (Section 3.8) specifies MySQL. This MERN version
   uses MongoDB instead, so the documentation's database design and deployment sections need
   updating to match.

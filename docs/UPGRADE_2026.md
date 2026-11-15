@@ -70,6 +70,15 @@ non-clinical queue data only (FR-01…FR-22, UC-01…UC-19, Data Dictionary 4.9,
     The paused `upgrade/patient` agent is superseded; reuse its appointments / history / feedback
     screens here if they are worth keeping.
 
+12. **Review fix pass (November 2026)** — after a full review against the FYP document: patient
+    token switch (`POST /tokens/:id/switch`), "Explain AI estimate" (`estimate.explain`), cold-start
+    rule, dashboard `trend` + per-doctor rows, `POST /demo/reset`, session-full reason, model
+    scorecard (baseline RMSE / R² / ±10 min, feature importances, accept / reject reason),
+    appointments and visit history with feedback in the Patient Portal, the per-browser **Demo
+    tools** switch, start-up re-prediction, and removal of the duplicate login files (the dashboard
+    imports them from `@staff`). Every difference from the FYP document is listed in
+    [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md).
+
 ## Phase 1 — backend, database, AI (branch `upgrade/backend`)
 
 - Health: `.env` / `MONGODB_URI` checks, async error handling on every route, all tests green.

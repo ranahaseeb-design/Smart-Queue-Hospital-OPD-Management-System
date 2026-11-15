@@ -90,8 +90,10 @@ function computeFeatures(ctx, token, now) {
   ).length;
 
   const sessionStarted = ctx.queue.some((q) => q.calledAt && q.calledAt.getTime() <= nowMs) ? 1 : 0;
+  // With ctx.alwaysOpen (DEMO_ALWAYS_OPEN) the doctor takes patients at any hour, so a session that
+  // starts later today adds no start delay (otherwise a 00:30 token would wait until 08:00).
   const minutesToStart =
-    sessionStarted || !ctx.session ? 0 : Math.max(0, round((ctx.session.start - now) / MINUTE, 1));
+    sessionStarted || !ctx.session || ctx.alwaysOpen ? 0 : Math.max(0, round((ctx.session.start - now) / MINUTE, 1));
 
   // Appointments due before this token's expected turn (baseline estimate of the turn).
   const expectedTurn = nowMs + (patientsAhead * avg + minutesToStart) * MINUTE;

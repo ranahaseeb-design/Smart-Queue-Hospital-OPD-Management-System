@@ -18,7 +18,10 @@ async function acceptingNow() {
   const patient = await ctx.newPatient();
   const res = await ctx.api.get(`/departments/${doc.departmentId}/doctors`, patient.token);
   assert.equal(res.status, 200);
-  return res.body.find((d) => d.id === doc.doctorId).acceptingNow;
+  const row = res.body.find((d) => d.id === doc.doctorId);
+  // The reason always agrees with acceptingNow (null while accepting).
+  assert.equal(row.unavailableReason, row.acceptingNow ? null : 'SESSION_FULL');
+  return row.acceptingNow;
 }
 
 async function join() {

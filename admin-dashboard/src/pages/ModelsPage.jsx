@@ -2,8 +2,8 @@
 // Lists waiting-time model versions with their evaluation metrics, triggers retraining and
 // activates a version. The backend proxies these calls to the AI service; when it is down the
 // API answers 503 AI_UNAVAILABLE and waiting times keep using the baseline (Eq. 6.2).
-import { useState } from 'react';
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { useMemo, useState } from 'react';
+import { Bar, BarChart, CartesianGrid, Cell, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import DataTable from '../components/DataTable.jsx';
 import Icon from '../components/Icon.jsx';
 import ChartTooltip from '../components/ChartTooltip.jsx';
@@ -14,7 +14,7 @@ import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { fmtNum, formatDateTime } from '../utils/format.js';
 import { useChartTheme } from '../hooks/useChartTheme.js';
-import { fmtShare, improvementVsBaseline } from '../utils/models.js';
+import { fmtShare, importanceRows, improvementVsBaseline, scorecardRows } from '../utils/models.js';
 
 const STATUS_TONE = { ACTIVE: 'success', CANDIDATE: 'info', REJECTED: 'danger', RETIRED: 'neutral' };
 
@@ -69,6 +69,66 @@ function MetricsList({ metrics }) {
   );
 }
 
+/** Random Forest vs Eq. 6.2 baseline on the same hold-out rows (Section 6.7.2 / 6.7.3). */
+function Scorecard({ model }) {
+  const rows = scorecardRows(model?.metrics);
+  if (!rows.length) return null;
+  const fmt = (r, v) => (v === null || v === undefined ? '—' : r.share ? fmtShare(v) : fmtNum(v, r.digits));
+  const wins = rows.filter((r) => r.better === 'model').length;
+  const compared = rows.filter((r) => r.better !== null).length;
+  return (
+    <Card
+      title="Random Forest vs. baseline formula"
+      subtitle={`${model.version} and Eq. 6.2 scored on the same ${fmtNum(model.metrics?.testRows)} most recent tokens (never seen in training).`}
+      actions={compared > 0 && <Badge tone={wins > compared / 2 ? 'success' : 'warning'}>{`Model better on ${wins} of ${compared}`}</Badge>}
+    >
+      <div className="table-wrap">
+        <table className="table table-dense scorecard">
+          <thead>
+            <tr><th>Metric</th><th className="align-right">Random Forest</th><th className="align-right">Baseline (Eq. 6.2)</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key}>
+                <td>{r.label} <span className="muted small">{r.lowerIsBetter ? '(lower is better)' : '(higher is better)'}</span></td>
+                <td className={`align-right${r.better === 'model' ? ' text-good' : ''}`}>{fmt(r, r.model)}</td>
+                <td className={`align-right${r.better === 'baseline' ? ' text-good' : ''}`}>{fmt(r, r.baseline)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.some((r) => r.baseline === null || r.baseline === undefined) && (
+        <p className="muted small">Baseline RMSE / R² / ±10 min are recorded for versions trained after this update. Retrain to fill them in.</p>
+      )}
+    </Card>
+  );
+}
+
+/** What the forest relies on: importances summed per feature (one-hot ids folded back). */
+function FeatureImportance({ model, chart }) {
+  const rows = importanceRows(model?.metrics?.featureImportances, 10);
+  if (!rows.length) return null;
+  return (
+    <Card title="What drives the prediction" subtitle={`Feature importance of ${model.version} (share of the forest's split gain, top ${rows.length}).`}>
+      <div className="chart-box" style={{ height: `${Math.max(220, rows.length * 32 + 24)}px` }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 40, bottom: 4, left: 8 }}>
+            <CartesianGrid horizontal={false} stroke={chart.grid} />
+            <XAxis type="number" tick={chart.tick} stroke={chart.grid} tickLine={false} unit="%" domain={[0, 'dataMax']} />
+            <YAxis type="category" dataKey="label" tick={chart.tick} stroke={chart.grid} tickLine={false} width={210} />
+            <Tooltip cursor={{ fill: chart.cursor }} content={<ChartTooltip valueFormatter={(v) => `${fmtNum(v, 1)}%`} />} />
+            <Bar dataKey="percent" name="Importance" radius={[0, 4, 4, 0]} maxBarSize={20}
+              label={{ position: 'right', fill: chart.tick?.fill, fontSize: 12, formatter: (v) => `${fmtNum(v, 1)}%` }}>
+              {rows.map((r, i) => <Cell key={r.key} fill={i === 0 ? chart.series1 : chart.series2} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </Card>
+  );
+}
+
 export default function ModelsPage() {
   const toast = useToast();
   const models = useResource('/admin/models');
@@ -78,10 +138,22 @@ export default function ModelsPage() {
   const [actionError, setActionError] = useState(null);
   const [activating, setActivating] = useState(null);
   const [activateBusy, setActivateBusy] = useState(false);
+  const [showRejected, setShowRejected] = useState(false);
 
   const list = Array.isArray(models.data) ? models.data : [];
   const active = list.find((m) => m.isActive);
   const anySynthetic = list.some((m) => String(m.dataSource).toLowerCase() === 'synthetic');
+  const rejectedCount = list.filter((m) => m.status === 'REJECTED').length;
+  // Rejected versions can never be activated; they are hidden unless asked for, so the table stays readable.
+  const visible = useMemo(() => (showRejected ? list : list.filter((m) => m.status !== 'REJECTED')), [list, showRejected]);
+  // Scorecard / importances: the active model when it has the full scorecard (versions trained before
+  // it was recorded do not), else the newest version that has it.
+  const newestFirst = [...list].sort((a, b) => String(b.trainedAt).localeCompare(String(a.trainedAt)));
+  const hasScorecard = (m) => m?.metrics?.featureImportances && m.metrics.baselineRmse != null;
+  const featured = (hasScorecard(active) && active) || newestFirst.find(hasScorecard) || active || newestFirst[0];
+  const featuredNote = featured && active && featured !== active
+    ? `Shown for ${featured.version}, the latest evaluation with the full scorecard (status ${featured.status}); the active model ${active.version} was trained before these figures were recorded.`
+    : null;
 
   const retrain = async () => {
     setRetraining(true);
@@ -141,7 +213,7 @@ export default function ModelsPage() {
       key: 'dataSource', label: 'Data',
       render: (m) => <Badge tone={String(m.dataSource).toLowerCase() === 'synthetic' ? 'warning' : 'neutral'}>{m.dataSource || '—'}</Badge>,
     },
-    { key: 'status', label: 'Status', render: (m) => <Badge tone={STATUS_TONE[m.status] || 'neutral'}>{m.status}</Badge> },
+    { key: 'status', label: 'Status', render: (m) => <Badge tone={STATUS_TONE[m.status] || 'neutral'} title={m.reason || undefined}>{m.status}</Badge> },
     { key: 'mae', label: 'MAE', align: 'right', sortValue: (m) => Number(m.metrics?.mae), render: (m) => fmtNum(m.metrics?.mae, 2) },
     { key: 'rmse', label: 'RMSE', align: 'right', sortValue: (m) => Number(m.metrics?.rmse), render: (m) => fmtNum(m.metrics?.rmse, 2) },
     { key: 'r2', label: 'R²', align: 'right', sortValue: (m) => Number(m.metrics?.r2), render: (m) => fmtNum(m.metrics?.r2, 3) },
@@ -258,6 +330,10 @@ export default function ModelsPage() {
             </Banner>
           )}
 
+          {featuredNote && <p className="muted small">{featuredNote}</p>}
+          {featured && <Scorecard model={featured} />}
+          {featured && <FeatureImportance model={featured} chart={chart} />}
+
           {chartData.length > 0 && (
             <Card title="MAE: model vs. baseline" subtitle="Lower is better. Mean absolute error in minutes on each version's test period.">
               <div className="chart-box chart-h-md">
@@ -277,15 +353,23 @@ export default function ModelsPage() {
             </Card>
           )}
 
-          <Card title="Model versions">
+          <Card
+            title="Model versions"
+            actions={rejectedCount > 0 && (
+              <label className="check-inline small">
+                <input type="checkbox" checked={showRejected} onChange={(e) => setShowRejected(e.target.checked)} />
+                {` Show rejected (${rejectedCount})`}
+              </label>
+            )}
+          >
             {list.length === 0 ? (
               <EmptyState icon="models" title="No model versions yet">Use “Retrain model” to train the first version.</EmptyState>
             ) : (
               <DataTable
                 columns={columns}
-                rows={list}
+                rows={visible}
                 rowKey="version"
-                searchable={list.length > 10}
+                searchable={visible.length > 10}
                 initialSort={{ key: 'trainedAt', dir: 'desc' }}
                 rowClassName={(m) => (m.isActive ? 'row-highlight' : undefined)}
                 dense
