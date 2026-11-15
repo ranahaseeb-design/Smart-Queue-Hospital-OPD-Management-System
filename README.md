@@ -94,6 +94,13 @@ OPD → Lab/Pharmacy → Completed journey. The header's **Demo load simulator**
 patients into a doctor's queue for presentations. Walk-in check-in and the simulator need
 `DEMO_TOOLS=true` (default outside production).
 
+**Several roles at once.** Each role keeps its own browser session (`smartopd.doctor.*`,
+`smartopd.staff.*`, `smartopd.admin.*`, `smartopd.patient.*`) and each tab remembers its role, so a
+doctor, an admin and a walk-in patient can be signed in side by side in three tabs; signing in or
+out in one tab never signs another role out. For committee demos (`DEMO_TOOLS`), the doctor
+header has **Switch doctor / room (demo)** and Admin > Doctors has a **Live queue** button that
+opens that doctor's queue in a new tab.
+
 ### 3. AI service (optional)
 
 ```bash

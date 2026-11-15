@@ -140,6 +140,8 @@ Scoring (Eq. 6.3): min-max normalise wait, distance, congestion across candidate
 | Method | Path | Body | Response |
 |---|---|---|---|
 | POST | `/demo/load-queue` | `{ doctorId, count? }` (count 1–10, default 5) | 201 `{ doctorId, servicePoint: {id,name,type}, branch: {id,name}, issued: [ { id, displayNumber, patientsAhead } ], waitingNow }` — creates `count` "Demo Patient" accounts and issues their OPD tokens for that doctor through the normal issue path (events, predictions, notifications, sockets), flagged `is_synthetic`. A refusal (doctor not accepting) stops the batch with that error |
+| GET | `/demo/doctors` | – | STAFF and admins (patients 403; branch admins see their branch only): `[ { doctorId, fullName, specialty, branchId, branchName, servicePointName, acceptingNow, queueLength } ]` — active doctors with today's room, for the doctor / room switcher |
+| POST | `/demo/switch-doctor` | `{ doctorId }` | STAFF and admins: `{ token, user }` — a session for that doctor's account, so committee demos can show several doctors' live queues without signing out (Doctor Portal header "Switch doctor / room (demo)", Admin > Doctors "Live queue"). Branch admins only for doctors of their branch (403); unknown/inactive doctor 404 |
 
 ### Staff (FR-04, FR-12, FR-13) — role STAFF, limited to assigned service points
 | GET | `/staff/service-points` | – | `[ { id, name, type, branchId, branchName, doctorId, doctorName } ]` (doctorId = doctor scheduled in that room today, or the logged-in doctor) |

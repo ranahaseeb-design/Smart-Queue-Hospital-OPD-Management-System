@@ -1,7 +1,7 @@
 // REST client of the patient portal (PATIENT JWT from smartopd.patient.token). Same backend and
 // contract as the mobile app: docs/API_CONTRACT.md. A 401 ends the patient session.
 import { API_URL } from '../api/client.js';
-import { SESSION_KEYS, clearSessions } from '../utils/unifiedSession.js';
+import { SESSION_KEYS, clearSession } from '../utils/unifiedSession.js';
 
 export class PatientApiError extends Error {
   constructor(status, code, message) {
@@ -27,9 +27,9 @@ export function patientUser() {
   }
 }
 
-/** Sign out: drop the session and reload into the shared login. */
+/** Sign out of the patient session only (other roles in other tabs stay signed in). */
 export function signOut() {
-  clearSessions();
+  clearSession('patient');
   window.location.assign('/login');
 }
 

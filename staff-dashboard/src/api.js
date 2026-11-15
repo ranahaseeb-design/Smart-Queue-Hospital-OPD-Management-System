@@ -125,6 +125,10 @@ export const api = {
     request('POST', '/auth/login', portal ? { identifier, password, portal } : { identifier, password }, { auth: false }),
   me: () => request('GET', '/auth/me'),
 
+  // Committee demo: doctor / room switcher (only while the server's DEMO_TOOLS is on).
+  demoDoctors: () => request('GET', '/demo/doctors'),
+  switchDoctor: (doctorId) => request('POST', '/demo/switch-doctor', { doctorId }),
+
   // FR-12 staff queue view and operations
   servicePoints: () => request('GET', '/staff/service-points'),
   queue: (servicePointId, opts) => request('GET', `/service-points/${enc(servicePointId)}/queue`, undefined, opts),

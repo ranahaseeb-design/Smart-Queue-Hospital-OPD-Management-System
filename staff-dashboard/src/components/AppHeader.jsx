@@ -6,6 +6,7 @@ import { servicePointTypeLabel } from '../utils/format.js';
 import Icon from './Icon.jsx';
 import { BrandGlyph } from './Spinner.jsx';
 import ThemeToggle from './ThemeToggle.jsx';
+import DemoDoctorSwitch from './DemoDoctorSwitch.jsx';
 
 export default function AppHeader({ servicePoint = null }) {
   const { user, logout } = useAuth();
@@ -39,6 +40,7 @@ export default function AppHeader({ servicePoint = null }) {
         )}
 
         <div className="header-actions">
+          <DemoDoctorSwitch />
           {servicePoint && canSwitch && (
             <button
               type="button"

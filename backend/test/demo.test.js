@@ -91,6 +91,38 @@ test('doctor list reports which model produced each estimate', async () => {
   assert.ok(withEstimate.every((d) => d.estimateModelVersion === 'baseline'));
 });
 
+test('doctor / room switcher: list doctors and open another doctor without signing out', async () => {
+  const list = await ctx.api.get('/demo/doctors', doctorToken);
+  assert.equal(list.status, 200, JSON.stringify(list.body));
+  assert.ok(list.body.length >= 2);
+  const me = list.body.find((d) => d.doctorId === room.doctorId);
+  assert.ok(me && me.servicePointName, 'own row with today’s room');
+  const other = list.body.find((d) => d.doctorId !== room.doctorId && d.servicePointName);
+
+  const sw = await ctx.api.post('/demo/switch-doctor', doctorToken, { doctorId: other.doctorId });
+  assert.equal(sw.status, 200, JSON.stringify(sw.body));
+  assert.equal(sw.body.user.doctorId, other.doctorId);
+  assert.equal(sw.body.user.role, 'STAFF');
+  const theirRooms = (await ctx.api.get('/staff/service-points', sw.body.token)).body;
+  assert.ok(theirRooms.some((s) => s.type === 'OPD' && s.doctorId === other.doctorId), 'the new session sees that doctor’s room');
+  assert.equal((await ctx.api.get('/staff/service-points', doctorToken)).status, 200, 'the original session still works');
+
+  // Admins may open doctors too (hospital admin: any; branch admin: own branch only).
+  const admin = await ctx.login('admin');
+  assert.equal((await ctx.api.post('/demo/switch-doctor', admin, { doctorId: other.doctorId })).status, 200);
+  const branchAdmin = await ctx.login('branchAdmin');
+  const own = (await ctx.api.get('/demo/doctors', branchAdmin)).body;
+  assert.ok(own.length > 0 && own.every((d) => d.branchId === own[0].branchId));
+  const foreign = list.body.find((d) => d.branchId !== own[0].branchId);
+  assert.equal((await ctx.api.post('/demo/switch-doctor', branchAdmin, { doctorId: foreign.doctorId })).status, 403);
+
+  // Patients cannot; unknown doctors are 404.
+  const guest = (await ctx.api.post('/auth/guest', null, {})).body.token;
+  assert.equal((await ctx.api.get('/demo/doctors', guest)).status, 403);
+  assert.equal((await ctx.api.post('/demo/switch-doctor', guest, { doctorId: other.doctorId })).status, 403);
+  assert.equal((await ctx.api.post('/demo/switch-doctor', doctorToken, { doctorId: 999999 })).status, 404);
+});
+
 test('with demo tools off, guest check-in and the simulator do not exist', async () => {
   const config = require('../src/config');
   const saved = config.demoTools;
@@ -98,6 +130,8 @@ test('with demo tools off, guest check-in and the simulator do not exist', async
   try {
     assert.equal((await ctx.api.post('/auth/guest', null, {})).status, 404);
     assert.equal((await ctx.api.post('/demo/load-queue', doctorToken, { doctorId: room.doctorId })).status, 404);
+    assert.equal((await ctx.api.get('/demo/doctors', doctorToken)).status, 404);
+    assert.equal((await ctx.api.post('/demo/switch-doctor', doctorToken, { doctorId: room.doctorId })).status, 404);
   } finally {
     config.demoTools = saved;
   }

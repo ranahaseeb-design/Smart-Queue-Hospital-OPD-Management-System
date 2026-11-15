@@ -1,6 +1,10 @@
 // Doctors (FR-14). Creating a doctor also creates the doctor's STAFF login account
 // (POST /admin/doctors creates the user and the doctor row in one request).
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { api } from '../api/client.js';
+import { useToast } from '../context/ToastContext.jsx';
+import { saveSession } from '../utils/unifiedSession.js';
 import CrudPage from '../components/CrudPage.jsx';
 import Icon from '../components/Icon.jsx';
 import { ActiveBadge, Banner } from '../components/ui.jsx';
@@ -8,6 +12,49 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useScope } from '../context/ScopeContext.jsx';
 import { useDepartments } from '../hooks/useLookups.js';
 import { fmtNum } from '../utils/format.js';
+
+/**
+ * Committee demo: open this doctor's live queue (Staff screens) in a new tab without signing the
+ * administrator out. POST /demo/switch-doctor (DEMO_TOOLS only) returns a doctor session, stored
+ * under the doctor keys only; the new tab is told to show it (?session=doctor).
+ */
+function OpenLiveQueueButton({ doctor }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+
+  async function open() {
+    // Open the tab inside the click (pop-up blockers), then point it at the queue.
+    const tab = window.open('about:blank', '_blank');
+    setBusy(true);
+    try {
+      const res = await api.post('/demo/switch-doctor', { doctorId: doctor.id });
+      saveSession(res.token, res.user, { inThisTab: false });
+      if (tab) {
+        tab.opener = null;
+        tab.location.href = '/?session=doctor';
+      } else {
+        toast.warning('Allow pop-ups for this site to open the queue in a new tab.');
+      }
+    } catch (err) {
+      if (tab) tab.close();
+      toast.error(err?.status === 404 ? 'Demo tools are turned off on the server (DEMO_TOOLS=false).' : err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="btn btn-sm btn-ghost"
+      onClick={open}
+      disabled={busy}
+      title={`Open ${doctor.fullName}'s live queue in a new tab (demo)`}
+    >
+      <Icon name="play" size={14} /> {busy ? 'Opening…' : 'Live queue'}
+    </button>
+  );
+}
 
 export default function DoctorsPage() {
   const { permissions } = useAuth();
@@ -65,9 +112,12 @@ export default function DoctorsPage() {
       isActive={(r) => r.isActive !== false}
       rowName={(r) => r.fullName}
       extraRowActions={(r) => (
-        <Link className="btn btn-sm btn-ghost" to={`/schedules?doctorId=${r.id}`} title="View weekly schedule">
-          <Icon name="schedules" size={14} /> Schedule
-        </Link>
+        <>
+          {r.isActive !== false && <OpenLiveQueueButton doctor={r} />}
+          <Link className="btn btn-sm btn-ghost" to={`/schedules?doctorId=${r.id}`} title="View weekly schedule">
+            <Icon name="schedules" size={14} /> Schedule
+          </Link>
+        </>
       )}
       emptyValues={() => ({
         fullName: '', email: '', phone: '', password: '', departmentId: '', avgConsultMinutes: '10', isActive: true,

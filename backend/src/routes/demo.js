@@ -7,7 +7,10 @@
  *   fills instantly and congestion / branch-recommendation behaviour can be shown.
  * The tokens are flagged is_synthetic, like the seeded history.
  */
-const { createRouter, notFound } = require('../utils/errors');
+const { createRouter, notFound, forbidden } = require('../utils/errors');
+const { signToken } = require('../middleware/auth');
+const time = require('../utils/time');
+const scheduleService = require('../services/scheduleService');
 const config = require('../config');
 const { getDb, models } = require('../db');
 const v = require('../utils/validate');
@@ -41,6 +44,63 @@ router.post('/demo/load-queue', async (req, res) => {
     issued: tokens.map((t) => ({ id: t.id, displayNumber: t.displayNumber, patientsAhead: t.patientsAhead })),
     waitingNow: last ? last.patientsAhead + 1 : 0,
   });
+});
+
+// ---- Doctor / room switcher for committee demos ----
+// Staff and admins can open any doctor's live queue without signing out: the switcher lists the
+// active doctors with today's room, and switch-doctor returns a session for the chosen doctor.
+// Demo tools only (404 when DEMO_TOOLS is off); branch admins only for their own branch.
+const SWITCH_ROLES = ['STAFF', 'BRANCH_ADMIN', 'HOSPITAL_ADMIN'];
+
+function assertCanSwitch(user) {
+  if (!SWITCH_ROLES.includes(user.role)) throw forbidden('Only staff and administrators can switch doctors');
+}
+
+async function activeDoctorRows(db, now) {
+  const ids = await models.Doctor.distinct('_id', { is_active: true });
+  const doctors = [...(await scheduleService.getDoctors(db, ids)).values()].filter(scheduleService.isDoctorBookable);
+  const date = time.formatDate(now);
+  const rows = [];
+  for (const d of doctors) {
+    const avail = await scheduleService.availability(db, d, date, now);
+    rows.push({ doctor: d, avail });
+  }
+  return rows;
+}
+
+router.get('/demo/doctors', async (req, res) => {
+  if (!config.demoTools) throw notFound('Demo tools are not enabled');
+  assertCanSwitch(req.user);
+  const rows = await activeDoctorRows(getDb(), time.clock.now());
+  const visible = req.user.role === 'BRANCH_ADMIN' ? rows.filter((r) => r.doctor.branch_id === req.user.admin_branch_id) : rows;
+  res.json(
+    visible
+      .map(({ doctor, avail }) => ({
+        doctorId: doctor.doctor_id,
+        fullName: doctor.full_name,
+        specialty: doctor.specialty,
+        branchId: doctor.branch_id,
+        branchName: doctor.branch_name,
+        servicePointName: avail.session ? avail.session.servicePointName : null,
+        acceptingNow: avail.acceptingNow,
+        queueLength: avail.queueLength,
+      }))
+      .sort((a, b) => a.branchName.localeCompare(b.branchName) || (a.servicePointName || '~').localeCompare(b.servicePointName || '~', undefined, { numeric: true }))
+  );
+});
+
+router.post('/demo/switch-doctor', async (req, res) => {
+  if (!config.demoTools) throw notFound('Demo tools are not enabled');
+  assertCanSwitch(req.user);
+  const doctorId = v.int((req.body || {}).doctorId, 'doctorId', { required: true, min: 1 });
+  const db = getDb();
+  const doctor = await scheduleService.getDoctor(db, doctorId);
+  if (!doctor || !scheduleService.isDoctorBookable(doctor)) throw notFound('Doctor not found or not active');
+  if (req.user.role === 'BRANCH_ADMIN' && doctor.branch_id !== req.user.admin_branch_id) {
+    throw forbidden('Branch administrators can only open doctors of their own branch');
+  }
+  const row = await userService.getUserRow(db, doctor.user_id);
+  res.json({ token: signToken(row), user: await userService.serializeUser(db, row) });
 });
 
 module.exports = router;
