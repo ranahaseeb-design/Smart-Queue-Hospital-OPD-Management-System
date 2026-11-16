@@ -107,8 +107,11 @@ Open <http://localhost:5174>. The login page shows every login type; doctors and
 queue console, branch and hospital administrators get the admin screens, and patients get the
 **Patient Portal & token kiosk** — same address.
 
-**Patient Portal / Get Token** (featured card): sign in with phone/email, or **1-click walk-in
-check-in** (no account). Choose an area (preset Lahore coordinates or your browser location),
+**Patient Portal / Get Token** (featured card): sign in with phone/email, **create an account**
+("New patient? Create an account"), or **1-click walk-in check-in** (no account). The portal's
+menu: **Get token**, **Appointments** (book, reschedule, cancel, check in), **My visits** (history
+and one rating per visit), **Notifications** (unread badge; token updates and appointment
+reminders) and your name → **Profile**. Choose an area (preset Lahore coordinates or your browser location),
 department, branch and doctor/OPD room; the AI estimated wait comes from the Random Forest (or the
 Eq. 6.2 fallback, labelled). When the chosen queue is busy (> 25 min or > 4 waiting) the portal
 shows the best option from the haversine + load-balancing scorer with minutes saved and a
@@ -179,7 +182,7 @@ them on with the switch under the role cards on the login page, or in the admin 
 
 | Component | Command | Suite |
 |---|---|---|
-| Backend | `cd backend && npm test` | 129 tests (node:test; integration tests use temporary MongoDB databases) |
+| Backend | `cd backend && npm test` | 131 tests (node:test; integration tests use temporary MongoDB databases) |
 | AI service | `cd ai-service && pytest` | 45 tests (mongomock) |
 | Staff screens (module) | `cd staff-dashboard && npx vitest run` | 96 tests |
 | Smart OPD Dashboard | `cd admin-dashboard && npx vitest run` | 131 tests |
@@ -208,7 +211,7 @@ them on with the switch under the role cards on the login page, or in the admin 
 - **Synthetic data.** The seed history is simulated and flagged `is_synthetic`. Model metrics on
   it only show that the pipeline works; they say nothing about real-world accuracy (Section 6.11).
 - **Not yet run:** the Flutter app compiles (`flutter analyze`, `flutter test`) but has not run on
-  a device. The backend (129 tests), the AI service (native Python 3.12, training and forecasts
+  a device. The backend (131 tests), the AI service (native Python 3.12, training and forecasts
   against the live database) and the Smart OPD Dashboard have been run against MongoDB 9.0.8 (`rs0`).
 - **Differences from the FYP document** are listed in [docs/IMPLEMENTATION_NOTES.md](docs/IMPLEMENTATION_NOTES.md).
 - **Database choice:** the FYP documentation (Section 3.8) specifies MySQL. This MERN version

@@ -1,6 +1,7 @@
 // Patient Portal & self-service token kiosk — the PATIENT section of the Smart OPD Dashboard.
 // Loaded on demand by RootApp with its own stylesheet. Routes: / (booking), /token/:id (pass),
-// /appointments (FR-10) and /visits (history + feedback, FR-19/20).
+// /appointments (FR-10), /visits (history + feedback, FR-19/20), /notifications (FR-11) and
+// /profile (FR-01).
 import { useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import ThemeToggle from '../components/ThemeToggle.jsx';
@@ -10,12 +11,14 @@ import BookingPage from './BookingPage.jsx';
 import TokenPassPage from './TokenPassPage.jsx';
 import AppointmentsPage from './AppointmentsPage.jsx';
 import VisitsPage from './VisitsPage.jsx';
+import NotificationsPage from './NotificationsPage.jsx';
+import ProfilePage from './ProfilePage.jsx';
 import DemoDrawer from './DemoDrawer.jsx';
 import { useDemoTools } from '@staff/utils/demoMode.js';
 import './patient.css';
 
 function Header({ onDemo }) {
-  const { user, live } = usePatient();
+  const { user, live, unread } = usePatient();
   return (
     <header className="pt-header">
       <div className="pt-brand">
@@ -33,6 +36,9 @@ function Header({ onDemo }) {
         <NavLink to="/" end className={({ isActive }) => `pt-nav-link${isActive ? ' is-on' : ''}`}>Get token</NavLink>
         <NavLink to="/appointments" className={({ isActive }) => `pt-nav-link${isActive ? ' is-on' : ''}`}>Appointments</NavLink>
         <NavLink to="/visits" className={({ isActive }) => `pt-nav-link${isActive ? ' is-on' : ''}`}>My visits</NavLink>
+        <NavLink to="/notifications" className={({ isActive }) => `pt-nav-link${isActive ? ' is-on' : ''}`} aria-label={unread ? `Notifications, ${unread} new` : 'Notifications'}>
+          Notifications{unread > 0 && <span className="pt-nav-badge" aria-hidden="true">{unread > 99 ? '99+' : unread}</span>}
+        </NavLink>
       </nav>
       <div className="pt-header-right">
         <span className={`pt-live${live ? ' is-on' : ''}`} title={live ? 'Live updates connected' : 'Reconnecting…'}>
@@ -44,7 +50,7 @@ function Header({ onDemo }) {
           </button>
         )}
         <ThemeToggle className="pt-theme" />
-        <span className="pt-user" title={user?.email || user?.phone || ''}>{user?.fullName || 'Patient'}</span>
+        <NavLink to="/profile" className="pt-user pt-user-link" title="My profile">{user?.fullName || 'Patient'}</NavLink>
         <button type="button" className="pt-btn pt-btn--ghost pt-btn--sm" onClick={signOut}>
           Sign out
         </button>
@@ -66,6 +72,8 @@ export default function PatientSection() {
             <Route path="/token/:id" element={<TokenPassPage />} />
             <Route path="/appointments" element={<AppointmentsPage />} />
             <Route path="/visits" element={<VisitsPage />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

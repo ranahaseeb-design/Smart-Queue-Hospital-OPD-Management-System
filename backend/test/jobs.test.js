@@ -116,3 +116,28 @@ test('start-up re-prediction refreshes stored estimates of every open queue', as
   const latest = await ctx.models.WaitPrediction.findOne({ token_id: token.body.id }).sort({ _id: -1 }).lean();
   assert.ok(latest.created_at >= ctx.time.dbDate(ctx.time.clock.now()) || after > before, 'a fresh prediction was stored');
 });
+
+test('appointment reminder: once per booked appointment, inside the reminder window only (FR-11)', async () => {
+  const appointmentService = require('../src/services/appointmentService');
+  const patient = await ctx.newPatient();
+  const doctorId = (await ctx.api.get('/auth/me', await ctx.login('doctor3'))).body.user.doctorId;
+  const today = ctx.time.today();
+  const tomorrow = ctx.time.addDaysStr(today, 1);
+  const slots = (await ctx.api.get(`/doctors/${doctorId}/slots?date=${tomorrow}`, patient.token)).body.slots;
+  const slot = slots.find((s) => s.available);
+  const booked = await ctx.api.post('/appointments', patient.token, { doctorId, slotStart: slot.start });
+  assert.equal(booked.status, 201, JSON.stringify(booked.body));
+  const remindersOf = () => ctx.models.Notification.countDocuments({ user_id: patient.user.id, message: /^Reminder: appointment/ });
+
+  // A day ahead: outside the 60-minute window.
+  assert.equal((await appointmentService.sendDueReminders(ctx.db)).sent >= 0, true);
+  assert.equal(await remindersOf(), 0);
+
+  // 30 minutes before the slot: sent once, and not again on the next run.
+  const thirtyBefore = new Date(ctx.time.parseDateTime(slot.start.replace('T', ' ')).getTime() - 30 * 60 * 1000);
+  await appointmentService.sendDueReminders(ctx.db, thirtyBefore);
+  await appointmentService.sendDueReminders(ctx.db, thirtyBefore);
+  assert.equal(await remindersOf(), 1);
+  const stored = await ctx.models.Appointment.findById(booked.body.id).lean();
+  assert.ok(stored.reminder_sent_at, 'reminder flag set');
+});

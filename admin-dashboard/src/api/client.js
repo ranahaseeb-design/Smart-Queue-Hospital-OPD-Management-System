@@ -138,6 +138,13 @@ export const api = {
       auth: false,
     }),
 
+  /** FR-01 patient self-registration: { fullName, email?, phone?, password, dateOfBirth?, priorityCategory? }. */
+  register: (details) =>
+    request('POST', '/auth/register', {
+      body: Object.fromEntries(Object.entries(details).filter(([, v]) => v !== undefined && v !== '')),
+      auth: false,
+    }),
+
   // `portal` (DOCTOR | STAFF | BRANCH_ADMIN | HOSPITAL_ADMIN | PATIENT) makes the backend verify
   // the account type before issuing a token.
   login: (identifier, password, portal) =>

@@ -162,6 +162,8 @@ const Appointment = model(
     slot_start: { type: Date, required: true },
     status: oneOf(APPOINTMENT_STATUSES, 'BOOKED'),
     updated_at: { type: Date, required: true },
+    // FR-11 reminder: set when the "appointment soon" reminder was sent (cleared on reschedule).
+    reminder_sent_at: { type: Date, default: null },
   },
   [
     [{ doctor_id: 1, slot_start: 1 }],

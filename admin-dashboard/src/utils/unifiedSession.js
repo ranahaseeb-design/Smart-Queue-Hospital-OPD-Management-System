@@ -160,7 +160,7 @@ export function landingPath(section) {
 // patient/PatientSection.jsx).
 const ROOTS = {
   staff: ['select', 'queue', 'display'],
-  patient: ['token', 'appointments', 'visits'],
+  patient: ['token', 'appointments', 'visits', 'notifications', 'profile'],
   admin: [
     'overview', 'branches', 'departments', 'doctors', 'schedules', 'service-points', 'users',
     'reports', 'forecasts', 'workload', 'feedback', 'models', 'settings', 'display',

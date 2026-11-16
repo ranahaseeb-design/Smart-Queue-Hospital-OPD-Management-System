@@ -431,3 +431,7 @@
 .model-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--color-warning); }
 .model-dot.is-on { background: var(--color-live); box-shadow: 0 0 0 4px var(--color-primary-soft); }
 .model-banner-sub { color: var(--color-text-muted); }
+
+/* Model Management: automatic retraining schedule (FR-22). */
+.schedule-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); margin-bottom: var(--space-3); }
+.schedule-row .field { min-width: 11rem; }

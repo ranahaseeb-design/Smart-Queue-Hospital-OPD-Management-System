@@ -9,6 +9,7 @@
  * backstop for two simultaneous bookings (duplicate key -> 409 CONFLICT).
  */
 const time = require('../utils/time');
+const config = require('../config');
 const { badRequest, conflict, forbidden, notFound } = require('../utils/errors');
 const { models, sess, insertOne, isDuplicateKey, lockKey } = require('../db');
 const scheduleService = require('./scheduleService');
@@ -212,7 +213,7 @@ async function reschedule(db, user, appointmentId, slot, now = time.clock.now())
       await assertNoOtherBookingThatDay(tx, user.user_id, row.doctor_id, dateStr, appointmentId);
       const r = await Appointment.updateOne(
         { _id: appointmentId, status: 'BOOKED' },
-        { $set: { slot_start: slotAt, updated_at: at } },
+        { $set: { slot_start: slotAt, updated_at: at, reminder_sent_at: null } },
         { session: sess(tx) }
       );
       if (r.matchedCount !== 1) throw conflict('Appointment changed, please refresh');
@@ -272,7 +273,41 @@ async function checkIn(db, user, appointmentId, now = time.clock.now()) {
   return queueService.issueOpdToken(db, user, row.doctor_id, { appointmentId, session, now });
 }
 
+/**
+ * FR-11 appointment reminders: one in-app (and e-mail, when SMTP is set) reminder per BOOKED
+ * appointment whose slot starts within the next `config.appointmentReminderMinutes`. The flag is
+ * claimed with a guarded update first, so two runs never send the same reminder twice.
+ */
+async function sendDueReminders(db, now = time.clock.now()) {
+  const minutes = config.appointmentReminderMinutes;
+  if (!minutes) return { sent: 0 };
+  const from = time.dbDate(now);
+  const until = time.dbDate(new Date(now.getTime() + minutes * 60 * 1000));
+  const due = await Appointment.find(
+    { status: 'BOOKED', reminder_sent_at: null, slot_start: { $gt: from, $lte: until } },
+    { _id: 1 }
+  )
+    .session(sess(db))
+    .lean();
+  let sent = 0;
+  for (const { _id } of due) {
+    const claimed = await Appointment.updateOne({ _id, status: 'BOOKED', reminder_sent_at: null }, { $set: { reminder_sent_at: from } });
+    if (!claimed.modifiedCount) continue;
+    const row = await appointmentRow(db, _id);
+    if (!row) continue;
+    const slot = time.parseDateTime(row.slot_start);
+    await notificationService.notify(db, row.patient_id, {
+      message: `Reminder: appointment with ${row.doctor_name} (${row.specialty}, ${row.branch_name}) ${formatSlotHuman(slot)}. Check in from ${CHECK_IN_EARLY_MINUTES} minutes before to get your token.`,
+      email: true,
+      subject: 'Appointment reminder',
+    });
+    sent += 1;
+  }
+  return { sent };
+}
+
 module.exports = {
+  sendDueReminders,
   listSlots,
   listForPatient,
   book,

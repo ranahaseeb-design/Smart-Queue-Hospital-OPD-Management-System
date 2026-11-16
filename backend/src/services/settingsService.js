@@ -15,7 +15,12 @@ const DEFAULTS = Object.freeze({
   alternativeSuggestionWaitMinutes: 45,
   notifyPositionsAhead: 3,
   slotMinutes: 15,
+  // FR-22 scheduled retraining: OFF | DAILY | WEEKLY, at `hour` (0-23, hospital time); WEEKLY on
+  // `dayOfWeek` (ISO 1 = Monday … 7 = Sunday). Activation still follows the acceptance rules.
+  retrainSchedule: { frequency: 'OFF', hour: 2, dayOfWeek: 7 },
 });
+
+const RETRAIN_FREQUENCIES = ['OFF', 'DAILY', 'WEEKLY'];
 
 const CACHE_MS = 10 * 1000;
 let cache = null;
@@ -92,6 +97,16 @@ function validate(current, input) {
   intSetting('alternativeSuggestionWaitMinutes', 1, 600);
   intSetting('notifyPositionsAhead', 0, 50);
   intSetting('slotMinutes', 5, 120);
+
+  if (input.retrainSchedule !== undefined) {
+    const r = { ...current.retrainSchedule, ...(input.retrainSchedule || {}) };
+    if (!RETRAIN_FREQUENCIES.includes(r.frequency)) throw badRequest('retrainSchedule.frequency must be OFF, DAILY or WEEKLY');
+    const hour = Number(r.hour);
+    const dow = Number(r.dayOfWeek);
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw badRequest('retrainSchedule.hour must be an integer between 0 and 23');
+    if (!Number.isInteger(dow) || dow < 1 || dow > 7) throw badRequest('retrainSchedule.dayOfWeek must be an integer between 1 (Monday) and 7 (Sunday)');
+    next.retrainSchedule = { frequency: r.frequency, hour, dayOfWeek: dow };
+  }
   return next;
 }
 

@@ -27,6 +27,15 @@ export function patientUser() {
   }
 }
 
+/** Keep the stored patient profile in step after a profile change (header name, booking rules). */
+export function storePatientUser(user) {
+  try {
+    window.localStorage.setItem(SESSION_KEYS.patient.user, JSON.stringify(user));
+  } catch {
+    /* storage blocked: the change still applies on the server */
+  }
+}
+
 /** Sign out of the patient session only (other roles in other tabs stay signed in). */
 export function signOut() {
   clearSession('patient');
@@ -67,6 +76,9 @@ const enc = encodeURIComponent;
 
 export const papi = {
   me: () => request('GET', '/auth/me'),
+  updateMe: (changes) => request('PUT', '/auth/me', changes),
+  notifications: () => request('GET', '/notifications'),
+  readAllNotifications: () => request('POST', '/notifications/read-all', {}),
   specialties: () => request('GET', '/specialties'),
   branches: () => request('GET', '/branches'),
   departments: (branchId) => request('GET', `/branches/${branchId}/departments`),

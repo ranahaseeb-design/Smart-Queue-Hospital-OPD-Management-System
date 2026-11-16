@@ -129,6 +129,85 @@ function FeatureImportance({ model, chart }) {
   );
 }
 
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const LAST_TONE = { ACCEPTED: 'success', REJECTED: 'warning', FAILED: 'danger', RUNNING: 'info' };
+
+/** FR-22: retrain automatically (daily / weekly at a chosen hour); activation follows the same rules. */
+function RetrainSchedule() {
+  const toast = useToast();
+  const status = useResource('/admin/models/schedule');
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const current = status.data?.schedule;
+  const form = draft || current;
+  if (!form) return status.error ? null : <Card title="Automatic retraining"><Spinner size="sm" /></Card>;
+  const dirty = Boolean(draft) && JSON.stringify(draft) !== JSON.stringify(current);
+  const set = (key) => (e) => setDraft({ ...form, [key]: key === 'frequency' ? e.target.value : Number(e.target.value) });
+  const last = status.data?.lastRun;
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.put('/admin/models/schedule', form);
+      toast.success(form.frequency === 'OFF' ? 'Automatic retraining turned off' : 'Retraining schedule saved');
+      setDraft(null);
+      status.reload({ silent: true });
+    } catch (err) {
+      toast.error(err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card
+      title="Automatic retraining"
+      subtitle="Retrain on a schedule. A new version is still activated only if it beats the baseline and the active model."
+    >
+      <div className="schedule-row">
+        <label className="field">
+          <span className="field-label">Frequency</span>
+          <select value={form.frequency} onChange={set('frequency')}>
+            <option value="OFF">Off (manual only)</option>
+            <option value="DAILY">Every day</option>
+            <option value="WEEKLY">Every week</option>
+          </select>
+        </label>
+        {form.frequency === 'WEEKLY' && (
+          <label className="field">
+            <span className="field-label">Day</span>
+            <select value={form.dayOfWeek} onChange={set('dayOfWeek')}>
+              {DAYS.map((d, i) => <option key={d} value={i + 1}>{d}</option>)}
+            </select>
+          </label>
+        )}
+        {form.frequency !== 'OFF' && (
+          <label className="field">
+            <span className="field-label">Time (hospital)</span>
+            <select value={form.hour} onChange={set('hour')}>
+              {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{`${String(h).padStart(2, '0')}:00`}</option>)}
+            </select>
+          </label>
+        )}
+        <button type="button" className="btn btn-primary" onClick={save} disabled={!dirty || saving} aria-busy={saving || undefined}>
+          {saving ? <Spinner size="xs" /> : <Icon name="check" size={14} />} Save schedule
+        </button>
+      </div>
+      <p className="muted small">
+        {status.data?.nextRunAt ? `Next run: ${formatDateTime(status.data.nextRunAt)}.` : 'No automatic run planned.'}
+        {' '}Quiet hours (e.g. 02:00) keep training away from OPD traffic.
+      </p>
+      {last && (
+        <p className="small">
+          Last scheduled run {formatDateTime(last.startedAt)}:{' '}
+          <Badge tone={LAST_TONE[last.status] || 'neutral'}>{last.status}</Badge>{' '}
+          <span className="muted">{last.version ? `${last.version} — ` : ''}{last.reason || last.error || ''}</span>
+        </p>
+      )}
+    </Card>
+  );
+}
+
 export default function ModelsPage() {
   const toast = useToast();
   const models = useResource('/admin/models');
@@ -329,6 +408,8 @@ export default function ModelsPage() {
               Waiting times are currently estimated with the baseline formula (Eq. 6.2). Retrain to create a model version.
             </Banner>
           )}
+
+          <RetrainSchedule />
 
           {featuredNote && <p className="muted small">{featuredNote}</p>}
           {featured && <Scorecard model={featured} />}

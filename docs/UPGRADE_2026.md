@@ -79,6 +79,11 @@ non-clinical queue data only (FR-01…FR-22, UC-01…UC-19, Data Dictionary 4.9,
     imports them from `@staff`). Every difference from the FYP document is listed in
     [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md).
 
+13. **Website-only delivery (November 2026)** — the project is delivered as the website; the Patient
+    Portal takes over the mobile app's patient tasks: sign-up on the login page, **Profile**, and
+    **Notifications** (unread badge). The backend adds appointment reminders and scheduled
+    retraining (`GET/PUT /admin/models/schedule`, setting `retrainSchedule`).
+
 ## Phase 1 — backend, database, AI (branch `upgrade/backend`)
 
 - Health: `.env` / `MONGODB_URI` checks, async error handling on every route, all tests green.

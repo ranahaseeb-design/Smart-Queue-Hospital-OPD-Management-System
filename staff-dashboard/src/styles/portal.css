@@ -738,3 +738,25 @@ body:has(.portal-loading) {
   cursor: pointer;
 }
 .portal-demo-switch input { accent-color: var(--color-primary); }
+
+/* Patient self-registration (Smart OPD Dashboard login, FR-01). */
+.portal-register { display: flex; flex-direction: column; gap: var(--space-4); }
+.portal-register-title { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); color: var(--color-text); }
+.portal-check { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--color-text-muted); cursor: pointer; }
+.portal-check input { width: 18px; height: 18px; accent-color: var(--color-primary); }
+.portal-link-btn {
+  align-self: center;
+  min-height: 40px;
+  margin-top: var(--space-2);
+  padding: 0 var(--space-3);
+  border: 0;
+  background: none;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+.portal-link-btn:hover { text-decoration: underline; }
+.portal-link-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--color-focus-ring); border-radius: var(--radius-sm); }
+@media (max-width: 480px) { .portal-register .portal-walkin-grid { grid-template-columns: 1fr; } }

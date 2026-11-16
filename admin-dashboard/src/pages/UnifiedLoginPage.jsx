@@ -104,6 +104,101 @@ function WalkInCheckIn({ disabled }) {
   );
 }
 
+/**
+ * FR-01: a patient creates an account (e-mail or phone + password, optional date of birth and
+ * priority category). Patients aged 60+ get priority automatically from the date of birth.
+ */
+function RegisterForm({ onCancel }) {
+  const [form, setForm] = useState({ fullName: '', email: '', phone: '', password: '', confirm: '', dateOfBirth: '', disabled: false });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const nameRef = useRef(null);
+  const ids = { name: useId(), email: useId(), phone: useId(), pw: useId(), confirm: useId(), dob: useId(), error: useId() };
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+
+  useEffect(() => {
+    nameRef.current?.focus();
+  }, []);
+
+  function validate() {
+    if (!form.fullName.trim()) return 'Enter your full name.';
+    if (!form.email.trim() && !form.phone.trim()) return 'Enter an e-mail address or a phone number (or both).';
+    if (form.password.length < 6) return 'The password needs at least 6 characters.';
+    if (form.password !== form.confirm) return 'The two passwords do not match.';
+    return null;
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    const problem = validate();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.register({
+        fullName: form.fullName.trim(),
+        email: form.email.trim() || undefined,
+        phone: form.phone.trim() || undefined,
+        password: form.password,
+        dateOfBirth: form.dateOfBirth || undefined,
+        priorityCategory: form.disabled ? 'DIFFERENTLY_ABLED' : undefined,
+      });
+      saveSession(res.token, res.user);
+      window.location.assign('/');
+    } catch (err) {
+      setError(err?.status === 409 ? 'An account with this e-mail or phone already exists. Sign in instead.' : errorMessage(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="portal-register" onSubmit={submit} noValidate aria-describedby={error ? ids.error : undefined}>
+      <h3 className="portal-register-title">Create a patient account</h3>
+      <div className="portal-field">
+        <label className="portal-label" htmlFor={ids.name}>Full name</label>
+        <input ref={nameRef} id={ids.name} className="portal-input" autoComplete="name" maxLength={100} value={form.fullName} onChange={set('fullName')} disabled={busy} />
+      </div>
+      <div className="portal-walkin-grid">
+        <div className="portal-field">
+          <label className="portal-label" htmlFor={ids.email}>E-mail</label>
+          <input id={ids.email} className="portal-input" type="email" autoComplete="email" value={form.email} onChange={set('email')} disabled={busy} />
+        </div>
+        <div className="portal-field">
+          <label className="portal-label" htmlFor={ids.phone}>Phone</label>
+          <input id={ids.phone} className="portal-input" type="tel" inputMode="tel" autoComplete="tel" placeholder="03xx xxxxxxx" value={form.phone} onChange={set('phone')} disabled={busy} />
+        </div>
+      </div>
+      <div className="portal-walkin-grid">
+        <div className="portal-field">
+          <label className="portal-label" htmlFor={ids.pw}>Password (6+ characters)</label>
+          <input id={ids.pw} className="portal-input" type="password" autoComplete="new-password" value={form.password} onChange={set('password')} disabled={busy} />
+        </div>
+        <div className="portal-field">
+          <label className="portal-label" htmlFor={ids.confirm}>Repeat password</label>
+          <input id={ids.confirm} className="portal-input" type="password" autoComplete="new-password" value={form.confirm} onChange={set('confirm')} disabled={busy} />
+        </div>
+      </div>
+      <div className="portal-field">
+        <label className="portal-label" htmlFor={ids.dob}>Date of birth (optional — patients 60+ get priority)</label>
+        <input id={ids.dob} className="portal-input" type="date" max={new Date().toISOString().slice(0, 10)} value={form.dateOfBirth} onChange={set('dateOfBirth')} disabled={busy} />
+      </div>
+      <label className="portal-check">
+        <input type="checkbox" checked={form.disabled} onChange={set('disabled')} disabled={busy} />
+        I am differently-abled (staff confirm priority at the counter)
+      </label>
+      {error && <p id={ids.error} className="portal-error" role="alert">{error}</p>}
+      <button type="submit" className="portal-submit" disabled={busy} aria-busy={busy || undefined}>
+        {busy && <span className="portal-submit-spinner" aria-hidden="true" />}
+        {busy ? 'Creating account…' : 'Create account'}
+      </button>
+      <button type="button" className="portal-link-btn" onClick={onCancel} disabled={busy}>I already have an account — sign in</button>
+    </form>
+  );
+}
+
 function LoginForm({ portal, onBack, returnTo }) {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -116,6 +211,7 @@ function LoginForm({ portal, onBack, returnTo }) {
   const pwId = useId();
   const errorId = useId();
   const devAccount = DEV_ACCOUNTS[portal.id];
+  const [registering, setRegistering] = useState(false);
 
   useEffect(() => {
     idRef.current?.focus();
@@ -161,6 +257,7 @@ function LoginForm({ portal, onBack, returnTo }) {
         </div>
       </div>
 
+      {registering ? <RegisterForm onCancel={() => setRegistering(false)} /> : (
       <form onSubmit={submit} noValidate aria-describedby={error ? errorId : undefined}>
         <div className="portal-field">
           <label className="portal-label" htmlFor={idId}>
@@ -214,11 +311,17 @@ function LoginForm({ portal, onBack, returnTo }) {
           {busy && <span className="portal-submit-spinner" aria-hidden="true" />}
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
+        {portal.id === 'patient' && (
+          <button type="button" className="portal-link-btn" onClick={() => { setRegistering(true); setError(null); }} disabled={busy}>
+            New patient? Create an account
+          </button>
+        )}
       </form>
+      )}
 
-      {portal.id === 'patient' && <WalkInCheckIn disabled={busy} />}
+      {portal.id === 'patient' && !registering && <WalkInCheckIn disabled={busy} />}
 
-      {devAccount && (
+      {devAccount && !registering && (
         <p className="portal-dev">
           Development seed account:{' '}
           <button

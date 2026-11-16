@@ -13,6 +13,7 @@ const analyticsService = require('../services/analyticsService');
 const forecastService = require('../services/forecastService');
 const settingsService = require('../services/settingsService');
 const ai = require('../services/aiClient');
+const retrainScheduleService = require('../services/retrainScheduleService');
 const operationsService = require('../services/operationsService');
 const time = require('../utils/time');
 
@@ -178,6 +179,19 @@ router.put('/settings', async (req, res) => {
 // ---- Model management (FR-22): proxied to the AI service, 503 AI_UNAVAILABLE when it is down ----
 router.get('/models', async (req, res) => {
   res.json(await ai.listModels());
+});
+
+// FR-22 scheduled retraining: GET the schedule with the next and last run; PUT { frequency, hour, dayOfWeek }.
+router.get('/models/schedule', async (req, res) => {
+  admin.requireHospitalAdmin(req.user, 'model retraining');
+  res.json(await retrainScheduleService.status(getDb()));
+});
+
+router.put('/models/schedule', async (req, res) => {
+  admin.requireHospitalAdmin(req.user, 'model retraining');
+  const db = getDb();
+  await settingsService.updateSettings(db, { retrainSchedule: req.body || {} });
+  res.json(await retrainScheduleService.status(db));
 });
 
 router.post('/models/retrain', async (req, res) => {

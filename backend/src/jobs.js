@@ -10,6 +10,9 @@
  *        queue events, FR-21), past BOOKED appointments -> NO_SHOW, past OPEN visits -> CLOSED;
  *      * refresh of doctors.avg_consult_minutes = rolling mean of each doctor's last 30 completed
  *        consultations (input of the Eq. 6.2 baseline and the doctor_avg_consult feature).
+ *  - Every minute: appointment reminders (FR-11) for BOOKED slots starting within
+ *    APPOINTMENT_REMINDER_MINUTES (default 60).
+ *  - Every minute: scheduled model retraining (FR-22) when settings.retrainSchedule is due.
  *  - Once at start-up: re-predict every queue of today that has WAITING tokens (FR-07), so stored
  *    estimates follow the model and rules of the code now running (not the ones before a restart).
  *
@@ -21,6 +24,8 @@ const forecastService = require('./services/forecastService');
 const predictionService = require('./services/predictionService');
 const queueService = require('./services/queueService');
 const analyticsService = require('./services/analyticsService');
+const appointmentService = require('./services/appointmentService');
+const retrainScheduleService = require('./services/retrainScheduleService');
 const realtime = require('./services/realtime');
 const { models, sess } = require('./db');
 
@@ -94,6 +99,11 @@ function start(db, { logger = console } = {}) {
     lastMaintenanceDate = today;
     return result;
   });
+  const reminderJob = guarded('appointment-reminders', async () => {
+    const r = await appointmentService.sendDueReminders(db);
+    return r.sent ? r : undefined;
+  });
+  const retrainJob = guarded('scheduled-retrain', () => retrainScheduleService.runIfDue(db));
   const startupRepredict = guarded('repredict-startup', () => refreshOpenQueues(db));
   const startupForecast = guarded('forecast-startup', async () => {
     if (await hasCurrentForecasts(db, time.clock.now())) return undefined;
@@ -111,6 +121,8 @@ function start(db, { logger = console } = {}) {
   schedule(startupRepredict, STARTUP_DELAY_MS * 3, false);
   schedule(dailyJob, DAILY_CHECK_INTERVAL_MS, true);
   schedule(forecastJob, FORECAST_INTERVAL_MS, true);
+  schedule(reminderJob, DAILY_CHECK_INTERVAL_MS, true);
+  schedule(retrainJob, DAILY_CHECK_INTERVAL_MS, true);
 
   return {
     stop() {

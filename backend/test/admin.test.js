@@ -464,6 +464,7 @@ test('settings: defaults per contract; only the hospital admin can change them',
     alternativeSuggestionWaitMinutes: 45,
     notifyPositionsAhead: 3,
     slotMinutes: 15,
+    retrainSchedule: { frequency: 'OFF', hour: 2, dayOfWeek: 7 },
   });
   assert.equal((await ctx.api.put('/admin/settings', branchAdmin, { slotMinutes: 20 })).status, 403);
   assert.equal((await ctx.api.put('/admin/settings', admin, { notifyPositionsAhead: -1 })).status, 400);
@@ -502,4 +503,34 @@ test('branch soft delete hides it from patients', async () => {
   assert.ok(!patientView.body.some((b) => b.id === created.branch.id));
   const adminView = await ctx.api.get('/branches', admin);
   assert.ok(adminView.body.some((b) => b.id === created.branch.id));
+});
+
+test('scheduled retraining: validated settings, hospital admin only, runs once per due slot (FR-22)', async () => {
+  const retrainScheduleService = require('../src/services/retrainScheduleService');
+  const off = await ctx.api.get('/admin/models/schedule', admin);
+  assert.equal(off.status, 200);
+  assert.deepEqual(off.body.schedule, { frequency: 'OFF', hour: 2, dayOfWeek: 7 });
+  assert.equal(off.body.nextRunAt, null);
+  assert.equal((await ctx.api.get('/admin/models/schedule', branchAdmin)).status, 403);
+  assert.equal((await ctx.api.put('/admin/models/schedule', admin, { frequency: 'HOURLY' })).status, 400);
+  assert.equal((await ctx.api.put('/admin/models/schedule', admin, { frequency: 'DAILY', hour: 24 })).status, 400);
+
+  const set = await ctx.api.put('/admin/models/schedule', admin, { frequency: 'WEEKLY', hour: 3, dayOfWeek: 1 });
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  assert.deepEqual(set.body.schedule, { frequency: 'WEEKLY', hour: 3, dayOfWeek: 1 });
+  assert.match(set.body.nextRunAt, /T03:00:00$/);
+
+  const schedule = set.body.schedule;
+  const monday3 = new Date(2026, 10, 16, 3, 20); // Monday
+  assert.equal(retrainScheduleService.isDueSlot(schedule, monday3), true);
+  assert.equal(retrainScheduleService.isDueSlot(schedule, new Date(2026, 10, 17, 3, 20)), false);
+  assert.equal(retrainScheduleService.isDueSlot({ ...schedule, frequency: 'DAILY' }, new Date(2026, 10, 17, 3, 5)), true);
+
+  // The AI service is down in tests: the due run is recorded as FAILED, and not repeated in the same slot.
+  const first = await retrainScheduleService.runIfDue(ctx.db, monday3);
+  assert.equal(first.status, 'FAILED');
+  assert.equal(await retrainScheduleService.runIfDue(ctx.db, new Date(2026, 10, 16, 3, 40)), undefined);
+  const status = (await ctx.api.get('/admin/models/schedule', admin)).body;
+  assert.equal(status.lastRun.status, 'FAILED');
+  await ctx.api.put('/admin/models/schedule', admin, { frequency: 'OFF' });
 });

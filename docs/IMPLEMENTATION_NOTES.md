@@ -12,7 +12,7 @@ questions. The API details live in [API_CONTRACT.md](API_CONTRACT.md) and the bu
 |---|---|---|
 | MySQL database (Section 3.8) | MongoDB (single-node replica set `rs0`), Mongoose models with the same tables / fields | The MERN stack was required; transactions need a replica set. The report's ER diagram still applies table-for-table. |
 | Separate admin and staff web apps | One **Smart OPD Dashboard** (`admin-dashboard/`, port 5174) with one login page and five role cards | Users asked for one dashboard for every login. The doctor / staff screens are shared from `staff-dashboard/src`. |
-| Patients use the Flutter mobile app | Patients can also use the **Patient Portal** in the dashboard (book a token, live pass, appointments, visits and feedback). The Flutter app is paused. | The portal can be demonstrated on any laptop or kiosk without installing the app. |
+| Patients use the Flutter mobile app (NFR-09: Android) | Patients use the **Patient Portal** in the dashboard: sign up, profile, get a token, live pass, appointments, visit history with feedback and notifications. The Flutter app is future work. | The project is delivered as a website; the portal works on any phone, laptop or kiosk browser without installing an app. |
 | Start each service by hand | `npm run dev` (from the project folder or any sub-folder) starts MongoDB, the AI service, the backend and the dashboard | One command for demos. |
 
 ## AI and prediction (Chapter 6)
@@ -36,6 +36,15 @@ questions. The API details live in [API_CONTRACT.md](API_CONTRACT.md) and the bu
   MAE is more than 2 % better in the back-test; every forecast row says which engine produced it.
 - **Data:** the seeded history (about 60 days) is synthetic and flagged `is_synthetic`. Model metrics
   on it show that the pipeline works, not real-world accuracy (Section 6.11).
+
+## Notifications and scheduled jobs
+
+- **In-app notifications (FR-11)** for token issue, turn approaching, called / skipped / recalled,
+  big estimate changes, appointment confirmation, cancellation and **reminders** (one reminder
+  `APPOINTMENT_REMINDER_MINUTES`, default 60, before a booked slot). Patients see them under
+  **Notifications** with an unread badge. E-mail is sent too when an SMTP server is configured.
+- **Scheduled retraining (FR-22):** Model Management → "Automatic retraining" (off / every day /
+  every week at a chosen hour). A scheduled run uses the same acceptance rules as a manual retrain.
 
 ## Queue rules
 
@@ -67,6 +76,7 @@ These exist only for presentations and are off in production (`DEMO_TOOLS=false`
 
 ## Not implemented
 
-- Firebase push notifications and SMS (in-app notifications only).
-- The Flutter app has not been run on a phone in this round.
+- Phone push notifications (Firebase) and SMS: the website uses in-app notifications (and e-mail
+  when configured) instead.
+- The Flutter app (future work; not part of the website delivery).
 - Production hardening (HTTPS, secure token storage) is described in each client README but not set up.
