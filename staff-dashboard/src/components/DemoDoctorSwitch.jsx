@@ -49,7 +49,9 @@ export default function DemoDoctorSwitch() {
 
   return (
     <div className="demo-switch">
-      <label htmlFor={id} className="demo-switch-label">
+      {/* Short visible chip; the full name stays for screen readers (the long label overlapped the header). */}
+      <span className="demo-switch-chip" aria-hidden="true">Demo</span>
+      <label htmlFor={id} className="sr-only">
         Switch doctor / room (demo)
       </label>
       <select

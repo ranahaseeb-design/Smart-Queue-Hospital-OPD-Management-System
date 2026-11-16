@@ -145,9 +145,14 @@ a {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden; /* when space runs out the room text is cut with "…", never drawn under the buttons */
   padding-left: var(--space-4);
   border-left: var(--border-width) solid var(--color-divider);
 }
+.header-point > * { flex-shrink: 0; }
+.header-point > .header-point-name,
+.header-point > .header-point-branch { flex-shrink: 1; min-width: 0; }
 
 .header-point-name {
   font-weight: var(--weight-semibold);
@@ -160,6 +165,8 @@ a {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .header-actions {
@@ -167,7 +174,10 @@ a {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
 }
+.header-actions > * { flex-shrink: 0; }
+.header-actions > .demo-switch { flex-shrink: 1; }
 
 .header-user {
   display: inline-flex;
@@ -2569,6 +2579,11 @@ kbd {
   }
 }
 
+/* Below 1200 px some header buttons show their icon only (title / aria-label keep the name). */
+@media (max-width: 1200px) {
+  .hide-md { display: none; }
+}
+
 /* ---- Committee demo: doctor / room switcher (components/DemoDoctorSwitch.jsx) ---- */
 .demo-switch {
   display: flex;
@@ -2577,7 +2592,11 @@ kbd {
   min-width: 0;
 }
 
-.demo-switch-label {
+.demo-switch-chip {
+  flex-shrink: 0;
+  padding: 2px var(--space-2);
+  border: var(--border-width) dashed var(--color-warning);
+  border-radius: var(--radius-full);
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-caps);
@@ -2587,7 +2606,9 @@ kbd {
 }
 
 .demo-switch-select {
-  max-width: 280px;
+  width: 240px;
+  min-width: 120px;
+  max-width: 100%;
   min-height: var(--control-height-sm);
   padding: 0 var(--space-2);
   border: var(--border-width) dashed var(--color-warning);
@@ -2610,10 +2631,10 @@ kbd {
 }
 
 @media (max-width: 900px) {
-  .demo-switch-label {
+  .demo-switch-chip {
     display: none;
   }
   .demo-switch-select {
-    max-width: 180px;
+    width: 170px;
   }
 }

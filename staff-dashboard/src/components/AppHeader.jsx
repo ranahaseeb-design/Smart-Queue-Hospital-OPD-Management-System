@@ -49,9 +49,10 @@ export default function AppHeader({ servicePoint = null }) {
               target="_blank"
               rel="noopener"
               title="Open the waiting-room display board in a new tab"
+              aria-label="Waiting room display"
             >
               <Icon name="monitor" />
-              <span className="hide-sm">Waiting room display</span>
+              <span className="hide-md">Waiting room display</span>
             </a>
           )}
           {servicePoint && canSwitch && (
